@@ -1,0 +1,4 @@
+__pycache__/
+*.pyc
+signin.db
+sample_data.xlsx
