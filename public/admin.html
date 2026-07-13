@@ -1,0 +1,227 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>管理后台 - 盛和塾签到</title>
+
+<script src="https://cdn.sheetjs.com/xlsx-0.20.2/package/dist/xlsx.full.min.js"></script>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;background:#0f172a;color:#e2e8f0;min-height:100vh}
+.container{max-width:600px;margin:0 auto;padding:16px}
+.header{text-align:center;padding:20px 0}
+.header h1{font-size:18px;margin-bottom:4px}
+.header .sub{font-size:12px;color:#64748b}
+.login-card{background:rgba(255,255,255,.06);border-radius:16px;padding:24px;margin-bottom:16px;border:1px solid rgba(255,255,255,.08);text-align:center}
+.login-card input{width:100%;padding:14px 16px;border-radius:10px;border:1px solid rgba(255,255,255,.12);background:rgba(255,255,255,.06);color:#fff;font-size:16px;outline:none;margin-bottom:12px;text-align:center}
+.login-card input:focus{border-color:#3b82f6}
+.overview{display:flex;gap:10px;margin-bottom:16px}
+.ov-item{flex:1;text-align:center;background:rgba(255,255,255,.05);border-radius:12px;padding:16px 8px}
+.ov-item .num{font-size:32px;font-weight:800}
+.ov-item .num.green{color:#4ade80}.ov-item .num.blue{color:#60a5fa}.ov-item .num.yellow{color:#fbbf24}
+.ov-item .label{font-size:11px;color:#64748b;margin-top:4px}
+.section{margin-bottom:16px}
+.section h3{font-size:14px;margin-bottom:10px;color:#94a3b8}
+.upload-area{border:2px dashed rgba(255,255,255,.15);border-radius:12px;padding:20px;text-align:center;margin-bottom:12px;cursor:pointer}
+.upload-area:hover{border-color:#3b82f6;background:rgba(59,130,246,.05)}
+.upload-area .icon{font-size:32px;margin-bottom:6px}
+.upload-area .text{font-size:13px;color:#94a3b8}
+.upload-area .hint{font-size:11px;color:#475569;margin-top:4px}
+.btn{padding:10px 24px;border-radius:10px;font-size:14px;cursor:pointer;border:none;font-weight:600;transition:all .2s}
+.btn:active{transform:scale(.97)}
+.btn.primary{background:linear-gradient(135deg,#3b82f6,#2563eb);color:#fff}
+.btn.danger{background:rgba(239,68,68,.2);color:#f87171}
+.btn.full{width:100%;padding:14px;font-size:16px}
+.btn-group{display:flex;gap:8px;margin-top:12px}
+.btn-group .btn{flex:1;text-align:center}
+.msg{padding:10px 14px;border-radius:8px;font-size:13px;margin-bottom:12px;display:none}
+.msg.show{display:block}
+.msg.success{background:rgba(34,197,94,.15);color:#4ade80}
+.msg.error{background:rgba(239,68,68,.15);color:#f87171}
+.msg.info{background:rgba(59,130,246,.15);color:#60a5fa}
+.tabs{display:flex;gap:8px;margin-bottom:12px}
+.tab{padding:8px 16px;border-radius:20px;font-size:13px;cursor:pointer;background:rgba(255,255,255,.05);color:#94a3b8;border:none;transition:all .2s}
+.tab.active{background:#3b82f6;color:#fff}
+.list-item{display:flex;justify-content:space-between;align-items:center;padding:10px 0;border-bottom:1px solid rgba(255,255,255,.05);font-size:13px}
+.list-item .li-name{font-weight:500}
+.list-item .li-meta{color:#64748b;font-size:11px}
+.center-bars{margin-bottom:12px}
+.center-row{display:flex;align-items:center;padding:6px 0;font-size:13px}
+.center-row .c-name{width:70px;text-align:right;margin-right:10px;color:#94a3b8;flex-shrink:0}
+.center-row .c-bar{flex:1;height:20px;background:rgba(255,255,255,.06);border-radius:4px;overflow:hidden}
+.center-row .c-fill{height:100%;background:linear-gradient(90deg,#3b82f6,#60a5fa);border-radius:4px;transition:width .5s}
+.center-row .c-num{width:70px;margin-left:8px;font-size:12px;color:#64748b;flex-shrink:0}
+.footer{text-align:center;padding:20px;font-size:12px;color:#475569}
+.footer a{color:#64748b;text-decoration:none}
+@keyframes fadeIn{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}
+</style>
+</head>
+<body>
+<div class="container">
+  <div class="header"><h1>&#x1f4ca; <span id="eventTitle">管理后台</span></h1><div class="sub" id="lastUpdate"></div></div>
+  <div class="login-card" id="loginCard">
+    <div style="font-size:40px;margin-bottom:12px">&#x1f512;</div>
+    <h3 style="margin-bottom:16px">管理员登录</h3>
+    <input type="password" id="pwdInput" placeholder="请输入管理密码" autocomplete="off">
+    <button class="btn primary full" onclick="doLogin()">登录</button>
+    <div class="msg" id="loginMsg"></div>
+  </div>
+  <div id="mainPanel" style="display:none">
+    <div class="overview" id="overview"></div>
+    <div class="section">
+      <h3>&#x1f4e4; 更换活动（上传 Excel 报名表）</h3>
+      <div class="upload-area" id="uploadArea" onclick="document.getElementById('fileInput').click()">
+        <div class="icon">&#x1f4c1;</div>
+        <div class="text" id="uploadText">点击上传 Excel 报名表</div>
+        <div class="hint">支持互动吧导出的 .xls / .xlsx</div>
+      </div>
+      <input type="file" id="fileInput" accept=".xls,.xlsx" style="display:none" onchange="handleFile(event)">
+      <button class="btn primary full" id="upBtn" onclick="uploadData()" style="display:none">确认导入</button>
+      <div class="msg" id="uploadMsg"></div>
+    </div>
+    <div class="tabs">
+      <button class="tab active" onclick="switchTab('centers')">分中心</button>
+      <button class="tab" onclick="switchTab('missing')">未签到</button>
+      <button class="tab" onclick="switchTab('recent')">已签到</button>
+    </div>
+    <div id="tabContent"></div>
+    <div class="btn-group">
+      <button class="btn danger" onclick="resetCheckins()">&#x1f504; 清空签到</button>
+      <button class="btn danger" onclick="clearAll()">&#x1f5d1; 清空全部</button>
+    </div>
+  </div>
+  <div class="footer"><a href="index.html">&larr; 返回签到页</a></div>
+</div>
+<script>
+var API = "https://shengheshu-d2g2zyyl99f6c6fc2-1453587887.ap-shanghai.app.tcloudbase.com/api";
+var ADMIN_PWD = "shenghe2024";
+var currentTab = "centers", currentData = null, excelData = null;
+
+function doLogin() {
+  var p = document.getElementById("pwdInput").value.trim();
+  var m = document.getElementById("loginMsg");
+  if (p !== ADMIN_PWD) { m.textContent="密码错误"; m.className="msg show error"; setTimeout(function(){m.classList.remove("show")},2000); return; }
+  document.getElementById("loginCard").style.display="none";
+  document.getElementById("mainPanel").style.display="block";
+  loadData();
+}
+
+async function loadData() {
+  try {
+    var r = await fetch(API + "/stats");
+    currentData = await r.json();
+    document.getElementById("eventTitle").textContent = currentData.event_name || "管理后台";
+    document.getElementById("lastUpdate").textContent = new Date().toLocaleTimeString();
+    document.getElementById("overview").innerHTML =
+      '<div class="ov-item"><div class="num green">'+currentData.checked+'</div><div class="label">已签到</div></div>'+
+      '<div class="ov-item"><div class="num blue">'+currentData.total+'</div><div class="label">报名总数</div></div>'+
+      '<div class="ov-item"><div class="num yellow">'+currentData.rate+'%</div><div class="label">签到率</div></div>';
+    renderTab();
+  } catch(e) { console.error(e); }
+}
+
+function renderTab() {
+  if (!currentData) return; var h = "";
+  if (currentTab === "centers") {
+    h = '<div class="section"><h3>分中心签到分布</h3><div class="center-bars">';
+    for (var c in currentData.centers) {
+      var d = currentData.centers[c], pct = d.total > 0 ? Math.round(d.checked / d.total * 100) : 0;
+      h += '<div class="center-row"><span class="c-name">'+c+'</span><div class="c-bar"><div class="c-fill" style="width:'+pct+'%"></div></div><span class="c-num">'+d.checked+'/'+d.total+'</span></div>';
+    }
+    h += '</div></div>';
+  } else if (currentTab === "missing") {
+    h = '<div class="section"><h3>&#x26a0; 未签到 ('+currentData.not_checked.length+'人)</h3>';
+    currentData.not_checked.forEach(function(n) {
+      h += '<div class="list-item"><div><span class="li-name">'+n.name+'</span><span class="li-meta"> · '+(n.center||"")+'</span></div><span class="li-meta">'+(n.company||"")+'</span></div>';
+    });
+  } else if (currentTab === "recent") {
+    h = '<div class="section"><h3>&#x2705; 最近签到</h3>';
+    currentData.recent.forEach(function(r) {
+      h += '<div class="list-item"><div><span class="li-name">'+r.name+'</span><span class="li-meta"> · '+(r.center||"")+'</span></div><span class="li-meta">'+(r.checked_at||"")+'</span></div>';
+    });
+  }
+  document.getElementById("tabContent").innerHTML = h || '<div style="text-align:center;padding:40px;color:#64748b">暂无数据</div>';
+}
+
+function switchTab(t) {
+  currentTab = t;
+  var tabs = document.querySelectorAll(".tab");
+  for (var i = 0; i < tabs.length; i++) tabs[i].classList.remove("active");
+  event.target.classList.add("active");
+  renderTab();
+}
+
+function handleFile(e) {
+  var file = e.target.files[0];
+  if (!file) return;
+  document.getElementById("uploadArea").innerHTML = '<div class="icon">&#x2705;</div><div class="text">已选择：'+file.name+'</div><div class="hint">点击重新选择</div>';
+  var reader = new FileReader();
+  reader.onload = function(evt) {
+    try {
+      var wb = XLSX.read(evt.target.result, {type:"array"});
+      var arr = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], {header:1, defval:""});
+      excelData = [];
+      for (var i = 4; i < arr.length; i++) {
+        var row = arr[i]; if (!row || !row[0]) break;
+        var n = String(row[0]||"").trim(); if (!n || n === "undefined" || n === "nan") break;
+        var ph = String(row[1]||"").trim(); if (ph.endsWith(".0")) ph = ph.slice(0,-2);
+        excelData.push({
+          name: n, phone: ph,
+          center: (row[4]&&String(row[4]).trim()!=="nan")?String(row[4]).trim():"",
+          is_student: (row[6]&&String(row[6]).trim()!=="nan")?String(row[6]).trim():"",
+          company: (row[2]&&String(row[2]).trim()!=="nan")?String(row[2]).trim():""
+        });
+      }
+      document.getElementById("upBtn").style.display = "block";
+      showMsg(document.getElementById("uploadMsg"), "已解析 "+excelData.length+" 条记录，点击确认导入", "info");
+    } catch(ex) { showMsg(document.getElementById("uploadMsg"), "解析失败："+ex.message, "error"); }
+  };
+  reader.readAsArrayBuffer(file);
+}
+
+async function uploadData() {
+  if (!excelData || !excelData.length) { showMsg(document.getElementById("uploadMsg"),"请先选择文件","error"); return; }
+  var btn = document.getElementById("upBtn"), msg = document.getElementById("uploadMsg");
+  btn.disabled = true; btn.textContent = "导入中...";
+  try {
+    var evName = ""; var fi = document.getElementById("fileInput"); if (fi&&fi.files[0]) evName = fi.files[0].name.replace(/\.(xls|xlsx)$/i,"");
+    var r = await fetch(API + "/upload", {
+      method:"POST",
+      headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({event_name:evName,attendees:excelData,password:"shenghe2024"})
+    });
+    var d = await r.json();
+    if (d.ok) {
+      showMsg(msg, d.msg+" | "+d.event_name, "success");
+      document.getElementById("uploadArea").innerHTML = '<div class="icon">&#x1f4c1;</div><div class="text">点击上传 Excel 报名表</div><div class="hint">支持互动吧导出的 .xls / .xlsx</div>';
+      document.getElementById("upBtn").style.display = "none"; excelData = null;
+      document.getElementById("fileInput").value = "";
+      loadData();
+    } else { showMsg(msg, d.msg, "error"); }
+  } catch(e) { showMsg(msg, "网络错误："+e.message, "error"); }
+  btn.disabled = false; btn.textContent = "确认导入";
+}
+
+function showMsg(el, text, type) {
+  el.textContent = text; el.className = "msg show " + (type || "");
+  if (type) setTimeout(function() { el.classList.remove("show"); }, 4000);
+}
+
+async function resetCheckins() {
+  if (!confirm("确定清空所有签到记录？")) return;
+  await fetch(API+"/reset", {method:"POST"});
+  loadData();
+}
+
+async function clearAll() {
+  if (!confirm("确定清空全部数据？此操作不可恢复！")) return;
+  await fetch(API+"/clear_all", {method:"POST"});
+  loadData();
+}
+
+loadData();
+setInterval(loadData, 5000);
+</script>
+</body>
+</html>

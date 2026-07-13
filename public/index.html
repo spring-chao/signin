@@ -1,0 +1,109 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no">
+<title>盛和塾签到</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;background:linear-gradient(135deg,#1a1a2e,#16213e,#0f3460);min-height:100vh;color:#fff}
+.container{max-width:420px;margin:0 auto;padding:20px}
+.header{text-align:center;padding:30px 0 20px}
+.header .icon{font-size:48px;margin-bottom:10px}
+.header h1{font-size:20px;font-weight:600;margin-bottom:6px}
+.header .sub{font-size:13px;color:#8892b0}
+.card{background:rgba(255,255,255,.06);border-radius:16px;padding:24px;margin-bottom:16px;border:1px solid rgba(255,255,255,.08)}
+.card h3{font-size:15px;margin-bottom:16px;color:#e2e8f0}
+.input-group{margin-bottom:14px}
+.input-group label{display:block;font-size:13px;color:#94a3b8;margin-bottom:6px}
+.input-group input{width:100%;padding:14px 16px;border-radius:10px;border:1px solid rgba(255,255,255,.12);background:rgba(255,255,255,.06);color:#fff;font-size:16px;outline:none}
+.input-group input:focus{border-color:#3b82f6;background:rgba(255,255,255,.1)}
+.btn{width:100%;padding:15px;border:none;border-radius:12px;font-size:17px;font-weight:600;cursor:pointer;background:linear-gradient(135deg,#3b82f6,#2563eb);color:#fff;letter-spacing:1px}
+.btn:active{transform:scale(.97)}
+.btn:disabled{opacity:.5;pointer-events:none}
+.msg{margin-top:14px;padding:14px 16px;border-radius:10px;font-size:14px;text-align:center;display:none}
+.msg.show{display:block}
+.msg.success{background:rgba(34,197,94,.15);color:#4ade80}
+.msg.error{background:rgba(239,68,68,.15);color:#f87171}
+.result-card{background:rgba(34,197,94,.08);border:1px solid rgba(34,197,94,.2);border-radius:14px;padding:20px;text-align:center;display:none}
+.result-card.show{display:block}
+.result-card .check-icon{font-size:56px;margin-bottom:8px}
+.result-card .welcome{font-size:18px;font-weight:700;margin-bottom:10px;color:#4ade80}
+.result-card .info{font-size:13px;color:#94a3b8;line-height:1.6}
+.stats{display:flex;gap:12px;margin-bottom:16px}
+.stat{flex:1;text-align:center;background:rgba(255,255,255,.04);border-radius:12px;padding:14px 8px}
+.stat .num{font-size:28px;font-weight:800;color:#60a5fa}
+.stat .label{font-size:11px;color:#64748b;margin-top:2px}
+.loading{text-align:center;padding:60px 20px;color:#64748b}
+.spinner{display:inline-block;width:30px;height:30px;border:3px solid rgba(255,255,255,.1);border-top-color:#3b82f6;border-radius:50%;animation:spin .8s linear infinite;margin-bottom:12px}
+@keyframes spin{to{transform:rotate(360deg)}}
+.footer{text-align:center;padding:10px;font-size:11px;color:#475569}
+.footer a{color:#64748b}
+</style>
+</head>
+<body>
+<div class="container">
+  <div id="loadingArea" class="loading"><div class="spinner"></div><div>加载中...</div></div>
+  <div id="mainArea" style="display:none">
+    <div class="header"><div class="icon">&#x1f4cb;</div><h1 id="eventName"></h1><div class="sub" id="eventSub"></div></div>
+    <div id="statsArea"></div>
+    <div class="card" id="formCard">
+      <h3>&#x270d;&#xfe0f; 签到</h3>
+      <div class="input-group"><label>姓名</label><input type="text" id="nameInput" placeholder="请输入报名时的姓名"></div>
+      <div class="input-group"><label>手机号</label><input type="tel" id="phoneInput" placeholder="请输入11位手机号" maxlength="11"><div class="hint">仅用于验证报名身份</div></div>
+      <button class="btn" id="submitBtn" onclick="doCheckin()">&#x2713; 确认签到</button>
+      <div class="msg" id="msgBox"></div>
+    </div>
+    <div class="result-card" id="resultCard">
+      <div class="check-icon">&#x2705;</div><div class="welcome" id="welcomeText"></div><div class="info" id="resultInfo"></div>
+      <button class="btn" style="margin-top:16px;background:rgba(255,255,255,.1);color:#94a3b8" onclick="resetForm()">继续签到</button>
+    </div>
+    <div class="footer"><a href="/v3/admin.html">&#x1f512; 管理后台</a></div>
+  </div>
+</div>
+<script>
+var API="https://shengheshu-d2g2zyyl99f6c6fc2-1453587887.ap-shanghai.app.tcloudbase.com/api",totalRegs=0;
+
+async function init(){
+  try{
+    var r=await fetch(API+"/event");var d=await r.json();
+    document.getElementById("eventName").textContent=d.event_name||"盛和塾签到";
+    totalRegs=d.total||0;
+    document.getElementById("eventSub").textContent="微信扫码签到 · 共 "+totalRegs+" 人报名";
+    loadStats();
+    document.getElementById("loadingArea").style.display="none";
+    document.getElementById("mainArea").style.display="block";
+  }catch(e){document.getElementById("loadingArea").innerHTML='<div style="color:#f87171">⚠️ 加载失败</div><div style="font-size:12px">请刷新重试</div>'}
+}
+
+async function loadStats(){
+  try{
+    var r=await fetch(API+"/stats");var s=await r.json();
+    var rate=totalRegs>0?Math.round(s.checked/totalRegs*100):0;
+    document.getElementById("statsArea").innerHTML='<div class="stats"><div class="stat"><div class="num">'+s.checked+'</div><div class="label">已签到</div></div><div class="stat"><div class="num">'+totalRegs+'</div><div class="label">报名总数</div></div><div class="stat"><div class="num">'+rate+'%</div><div class="label">签到率</div></div></div>';
+  }catch(e){}
+}
+
+function m(t,ty){var e=document.getElementById("msgBox");e.textContent=t;e.className="msg show "+ty;setTimeout(function(){e.classList.remove("show")},3000)}
+
+async function doCheckin(){
+  var name=document.getElementById("nameInput").value.trim();
+  var phone=document.getElementById("phoneInput").value.trim().replace(/\s/g,"").replace(/-/g,"");
+  var btn=document.getElementById("submitBtn");
+  if(!name||!phone){m("请输入姓名和手机号","error");return}
+  if(phone.length!==11||!/^\d+$/.test(phone)){m("请输入正确的11位手机号","error");return}
+  btn.disabled=true;btn.textContent="验证中...";
+  try{
+    var r=await fetch(API+"/checkin",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({name:encodeURIComponent(name),phone:phone,_e:1})});
+    var d=await r.json();
+    if(d.ok){document.getElementById("formCard").style.display="none";document.getElementById("resultCard").classList.add("show");document.getElementById("welcomeText").textContent="欢迎 "+d.data.name+"！";var info="";if(d.data.center)info+="分中心："+d.data.center+"<br>";if(d.data.company)info+="公司："+d.data.company;document.getElementById("resultInfo").innerHTML=info||"签到成功";loadStats()}
+    else{m(d.msg,"error")}
+  }catch(e){m("网络错误","error")}
+  btn.disabled=false;btn.textContent="\u2713 确认签到";
+}
+
+function resetForm(){document.getElementById("formCard").style.display="block";document.getElementById("resultCard").classList.remove("show");document.getElementById("nameInput").value="";document.getElementById("phoneInput").value="";}
+init();setInterval(loadStats,10000);
+</script>
+</body>
+</html>

@@ -1,0 +1,1 @@
+{"version":"2.0","envId":"shengheshu-d2g2zyyl99f6c6fc2","functions":[{"name":"checkinApi","runtime":"Nodejs18.15","timeout":15,"installDependency":true,"dir":"cloudfunc","securityRule":{"invoke":"ALL_USER"}}]}
