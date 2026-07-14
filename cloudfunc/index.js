@@ -1,4 +1,4 @@
-﻿const cloudbase = require("@cloudbase/node-sdk");
+const cloudbase = require("@cloudbase/node-sdk");
 
 exports.main = async (event, context) => {
   const app = cloudbase.init({ env: "shengheshu-d2g2zyyl99f6c6fc2" });
@@ -100,12 +100,12 @@ exports.main = async (event, context) => {
       const existing = await db.collection("checkins").where({ phone, name: regName }).get();
       const ds = await getDisplaySettings();
       if (existing.data.length > 0) {
-        return { statusCode: 200, headers: h, body: JSON.stringify({ ok: true, already: true, msg: "您已签到过", data: { name: regName, phone, center: reg.center || "", class_name: reg.class_name || "", company: reg.company || "", group_num: ds.show_group === "true" ? (reg.group_num || null) : null, dinner_table_num: ds.show_dinner_table === "true" ? (reg.dinner_table_num || null) : null, show_group: ds.show_group, show_dinner_table: ds.show_dinner_table, checked_at: existing.data[0].checked_at || "" } }) };
+        return { statusCode: 200, headers: h, body: JSON.stringify({ ok: true, already: true, msg: "您已签到过", data: { name: regName, phone, center: reg.center || "", class_name: reg.class_name || "", group_name: reg.group_name || "", company: reg.company || "", group_num: ds.show_group === "true" ? (reg.group_num || null) : null, dinner_table_num: ds.show_dinner_table === "true" ? (reg.dinner_table_num || null) : null, show_group: ds.show_group, show_dinner_table: ds.show_dinner_table, checked_at: existing.data[0].checked_at || "" } }) };
       }
       
       const now = new Date().toISOString();
-      await db.collection("checkins").add({ name: regName, phone, center: reg.center || "", class_name: reg.class_name || "", company: reg.company || "", group_num: reg.group_num || null, dinner_table_num: reg.dinner_table_num || null, checked_at: now });
-      return { statusCode: 200, headers: h, body: JSON.stringify({ ok: true, msg: "签到成功", data: { name: regName, phone, center: reg.center || "", class_name: reg.class_name || "", company: reg.company || "", group_num: ds.show_group === "true" ? (reg.group_num || null) : null, dinner_table_num: ds.show_dinner_table === "true" ? (reg.dinner_table_num || null) : null, show_group: ds.show_group, show_dinner_table: ds.show_dinner_table, checked_at: now } }) };
+      await db.collection("checkins").add({ name: regName, phone, center: reg.center || "", class_name: reg.class_name || "", group_name: reg.group_name || "", company: reg.company || "", group_num: reg.group_num || null, dinner_table_num: reg.dinner_table_num || null, checked_at: now });
+      return { statusCode: 200, headers: h, body: JSON.stringify({ ok: true, msg: "签到成功", data: { name: regName, phone, center: reg.center || "", class_name: reg.class_name || "", group_name: reg.group_name || "", company: reg.company || "", group_num: ds.show_group === "true" ? (reg.group_num || null) : null, dinner_table_num: ds.show_dinner_table === "true" ? (reg.dinner_table_num || null) : null, show_group: ds.show_group, show_dinner_table: ds.show_dinner_table, checked_at: now } }) };
     } catch (e) {
       return { statusCode: 200, headers: h, body: JSON.stringify({ ok: false, msg: "签到失败: " + (e.message || "") }) };
     }

@@ -1,4 +1,4 @@
-﻿<!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
@@ -100,7 +100,10 @@ async function doCheckin(){
       if(shDin && d.data.dinner_table_num) seatHtml+='<div class="seat-item">空巴晚宴：第 '+d.data.dinner_table_num+' 桌</div>';
       document.getElementById("seatArea").innerHTML=seatHtml;
       var info="";
-      if(d.data.center) info+="分中心："+d.data.center+"<br>";
+      var gf=d.data.center?"分中心":(d.data.class_name?"班级":(d.data.group_name?"小组":""));
+      if(d.data.center) info+=gf+"："+d.data.center+"<br>";
+      else if(d.data.class_name) info+=gf+"："+d.data.class_name+"<br>";
+      else if(d.data.group_name) info+=gf+"："+d.data.group_name+"<br>";
       if(d.data.company) info+="公司："+d.data.company;
       if(d.already) info=(info?info+"<br>":"")+"（已签到 · "+new Date(d.data.checked_at).toLocaleString("zh-CN")+"）";
       document.getElementById("resultInfo").innerHTML=info||"签到成功";

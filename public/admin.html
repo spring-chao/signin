@@ -1,4 +1,4 @@
-﻿<!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
@@ -188,7 +188,7 @@ async function exportExcel() {
     
     // Build Excel using SheetJS
     var rows = d.rows || [];
-    var headers = ["序号","姓名","手机号","公司","分中心","班级","组号","桌号","签到状态","签到时间"];
+    var headers = ["序号","姓名","手机号","公司","分中心","班级","小组","组号","桌号","签到状态","签到时间"];
     var data = [];
     rows.forEach(function(row, idx) {
       data.push([
@@ -207,7 +207,7 @@ async function exportExcel() {
     var ws = XLSX.utils.aoa_to_sheet([headers].concat(data));
     // Set column widths
     ws["!cols"] = [
-      {wch:6},{wch:10},{wch:15},{wch:18},{wch:14},{wch:12},{wch:6},{wch:6},{wch:10},{wch:20}
+      {wch:6},{wch:10},{wch:15},{wch:18},{wch:14},{wch:12},{wch:10},{wch:6},{wch:6},{wch:10},{wch:20}
     ];
     var wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, "签到名单");
@@ -239,7 +239,7 @@ function renderTab() {
   } else if (currentTab === "missing") {
     h = '<div class="section"><h3>&#x26a0; 未签到 ('+currentData.not_checked.length+'人)</h3>';
     currentData.not_checked.forEach(function(n) {
-      h += '<div class="list-item"><div><span class="li-name">'+n.name+'</span><span class="li-meta"> · '+(n.center||n.class_name||"")+'</span></div><span class="li-meta">'+(n.company||"")+'</span></div>';
+      h += '<div class="list-item"><div><span class="li-name">'+n.name+'</span><span class="li-meta"> · '+(n.center||n.class_name||n.group_name||"")+'</span></div><span class="li-meta">'+(n.company||"")+'</span></div>';
     });
   } else if (currentTab === "recent") {
     h = '<div class="section"><h3>&#x2705; 最近签到</h3>';
@@ -247,7 +247,7 @@ function renderTab() {
       var extra="";
       if(r.group_num) extra+=" · 组"+r.group_num;
       if(r.dinner_table_num) extra+=" · 桌"+r.dinner_table_num;
-      h += '<div class="list-item"><div><span class="li-name">'+r.name+'</span><span class="li-meta">'+extra+' · '+(r.center||"")+'</span></div><span class="li-meta">'+(r.checked_at||"")+'</span></div>';
+      h += '<div class="list-item"><div><span class="li-name">'+r.name+'</span><span class="li-meta">'+extra+' · '+(r.center||r.class_name||r.group_name||"")+'</span></div><span class="li-meta">'+(r.checked_at||"")+'</span></div>';
     });
   }
   document.getElementById("tabContent").innerHTML = h || '<div style="text-align:center;padding:40px;color:#64748b">暂无数据</div>';
@@ -262,7 +262,7 @@ function switchTab(t) {
 }
 
 function detectColumns(headers) {
-  var map = { name:-1, phone:-1, company:-1, center:-1, class_name:-1, group_num:-1, dinner_table_num:-1, is_student:-1 };
+  var map = { name:-1, phone:-1, company:-1, center:-1, class_name:-1, group_name:-1, group_num:-1, dinner_table_num:-1, is_student:-1 };
   function match(h) {
     h = String(h||"").trim().toLowerCase();
     if (/^(姓名|名字|name|学员姓名|参会人)$/i.test(h)) return "name";
@@ -270,7 +270,8 @@ function detectColumns(headers) {
     if (/^(公司|企业|单位|company|公司名称|工作单位)$/i.test(h)) return "company";
     if (/^(分中心|中心|center|分部|所属分中心)$/i.test(h)) return "center";
     if (/^(班级|班|class|班级名称)$/i.test(h)) return "class_name";
-    if (/^(组号|小组|组别|group|大组|分组)$/i.test(h)) return "group_num";
+    if (/^(组号|组别|大组|分组)$/i.test(h)) return "group_num";
+    if (/^(小组|小组名称|组名)$/i.test(h)) return "group_name";
     if (/^(桌号|桌数|桌子|空巴桌号|晚宴桌号|dinner|table)$/i.test(h)) return "dinner_table_num";
     if (/^(是否学员|学员|is_student)$/i.test(h)) return "is_student";
     return null;
@@ -283,7 +284,7 @@ function detectColumns(headers) {
 }
 
 function guessByPosition(headers) {
-  return { name:0, phone:1, company:2, center:4, class_name:3, group_num:7, dinner_table_num:8, is_student:6 };
+  return { name:0, phone:1, company:2, center:4, class_name:3, group_name:5, group_num:7, dinner_table_num:8, is_student:6 };
 }
 
 function handleFile(e) {
