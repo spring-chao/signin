@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+﻿<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
@@ -31,6 +31,7 @@ body{font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;backgr
 .btn{padding:10px 24px;border-radius:10px;font-size:14px;cursor:pointer;border:none;font-weight:600;transition:all .2s}
 .btn:active{transform:scale(.97)}
 .btn.primary{background:linear-gradient(135deg,#3b82f6,#2563eb);color:#fff}
+.btn.success{background:rgba(34,197,94,.25);color:#4ade80}
 .btn.danger{background:rgba(239,68,68,.2);color:#f87171}
 .btn.full{width:100%;padding:14px;font-size:16px}
 .btn-group{display:flex;gap:8px;margin-top:12px}
@@ -46,15 +47,28 @@ body{font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;backgr
 .list-item{display:flex;justify-content:space-between;align-items:center;padding:10px 0;border-bottom:1px solid rgba(255,255,255,.05);font-size:13px}
 .list-item .li-name{font-weight:500}
 .list-item .li-meta{color:#64748b;font-size:11px}
-.center-bars{margin-bottom:12px}
-.center-row{display:flex;align-items:center;padding:6px 0;font-size:13px}
-.center-row .c-name{width:70px;text-align:right;margin-right:10px;color:#94a3b8;flex-shrink:0}
-.center-row .c-bar{flex:1;height:20px;background:rgba(255,255,255,.06);border-radius:4px;overflow:hidden}
-.center-row .c-fill{height:100%;background:linear-gradient(90deg,#3b82f6,#60a5fa);border-radius:4px;transition:width .5s}
-.center-row .c-num{width:70px;margin-left:8px;font-size:12px;color:#64748b;flex-shrink:0}
+.group-bars{margin-bottom:12px}
+.group-row{display:flex;align-items:center;padding:6px 0;font-size:13px}
+.group-row .g-name{width:80px;text-align:right;margin-right:10px;color:#94a3b8;flex-shrink:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.group-row .g-bar{flex:1;height:22px;background:rgba(255,255,255,.06);border-radius:4px;overflow:hidden;position:relative}
+.group-row .g-fill{height:100%;background:linear-gradient(90deg,#3b82f6,#60a5fa);border-radius:4px;transition:width .5s}
+.group-row .g-bar-txt{position:absolute;left:8px;top:50%;transform:translateY(-50%);font-size:10px;color:#fff;font-weight:600;text-shadow:0 1px 2px rgba(0,0,0,.4)}
+.group-row .g-num{width:80px;margin-left:8px;font-size:12px;color:#94a3b8;flex-shrink:0}
+.toggle-row{display:flex;justify-content:space-between;align-items:center;padding:12px 0;border-bottom:1px solid rgba(255,255,255,.05)}
+.toggle-row .t-label{font-size:14px;color:#e2e8f0}
+.toggle-row .t-desc{font-size:11px;color:#64748b;margin-top:2px}
+.switch{position:relative;display:inline-block;width:48px;height:28px;flex-shrink:0}
+.switch input{opacity:0;width:0;height:0}
+.slider{position:absolute;cursor:pointer;top:0;left:0;right:0;bottom:0;background:rgba(255,255,255,.15);transition:.3s;border-radius:28px}
+.slider:before{position:absolute;content:"";height:22px;width:22px;left:3px;bottom:3px;background:white;transition:.3s;border-radius:50%}
+input:checked+.slider{background:#3b82f6}
+input:checked+.slider:before{transform:translateX(20px)}
+.col-map{font-size:12px;color:#64748b;margin-top:8px;line-height:1.8}
+.col-map span{color:#94a3b8}
+.col-map .ok{color:#4ade80}
+.col-map .warn{color:#fbbf24}
 .footer{text-align:center;padding:20px;font-size:12px;color:#475569}
 .footer a{color:#64748b;text-decoration:none}
-@keyframes fadeIn{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}
 </style>
 </head>
 <body>
@@ -69,19 +83,41 @@ body{font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;backgr
   </div>
   <div id="mainPanel" style="display:none">
     <div class="overview" id="overview"></div>
+
+    <div class="section" style="background:rgba(255,255,255,.04);border-radius:12px;padding:16px;border:1px solid rgba(255,255,255,.06)">
+      <h3>&#x2699;&#xfe0f; 签到页显示设置</h3>
+      <div class="toggle-row">
+        <div><div class="t-label">显示组别</div><div class="t-desc">签到完成后显示"大会现场：第X组"</div></div>
+        <label class="switch"><input type="checkbox" id="toggleGroup" onchange="saveToggle()"><span class="slider"></span></label>
+      </div>
+      <div class="toggle-row" style="border-bottom:none">
+        <div><div class="t-label">显示空巴桌号</div><div class="t-desc">签到完成后显示"空巴晚宴：第X桌"</div></div>
+        <label class="switch"><input type="checkbox" id="toggleDinner" onchange="saveToggle()"><span class="slider"></span></label>
+      </div>
+      <div class="msg" id="toggleMsg"></div>
+    </div>
+
     <div class="section">
       <h3>&#x1f4e4; 更换活动（上传 Excel 报名表）</h3>
       <div class="upload-area" id="uploadArea" onclick="document.getElementById('fileInput').click()">
         <div class="icon">&#x1f4c1;</div>
         <div class="text" id="uploadText">点击上传 Excel 报名表</div>
-        <div class="hint">支持互动吧导出的 .xls / .xlsx</div>
+        <div class="hint">支持互动吧导出的 .xls / .xlsx（自动识别列名）</div>
       </div>
       <input type="file" id="fileInput" accept=".xls,.xlsx" style="display:none" onchange="handleFile(event)">
+      <div id="colMapInfo" class="col-map" style="display:none"></div>
       <button class="btn primary full" id="upBtn" onclick="uploadData()" style="display:none">确认导入</button>
       <div class="msg" id="uploadMsg"></div>
     </div>
-    <div class="tabs">
-      <button class="tab active" onclick="switchTab('centers')">分中心</button>
+
+    <!-- Export button -->
+    <div class="section">
+      <button class="btn success full" onclick="exportExcel()">&#x1f4e5; 导出签到名单（Excel）</button>
+      <div class="msg" id="exportMsg"></div>
+    </div>
+
+    <div class="tabs" id="tabBar">
+      <button class="tab active" onclick="switchTab('groups')">分组进展</button>
       <button class="tab" onclick="switchTab('missing')">未签到</button>
       <button class="tab" onclick="switchTab('recent')">已签到</button>
     </div>
@@ -96,7 +132,7 @@ body{font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;backgr
 <script>
 var API = "https://shengheshu-d2g2zyyl99f6c6fc2-1453587887.ap-shanghai.app.tcloudbase.com/api";
 var ADMIN_PWD = "shenghe2024";
-var currentTab = "centers", currentData = null, excelData = null;
+var currentTab = "groups", currentData = null, excelData = null;
 
 function doLogin() {
   var p = document.getElementById("pwdInput").value.trim();
@@ -117,28 +153,101 @@ async function loadData() {
       '<div class="ov-item"><div class="num green">'+currentData.checked+'</div><div class="label">已签到</div></div>'+
       '<div class="ov-item"><div class="num blue">'+currentData.total+'</div><div class="label">报名总数</div></div>'+
       '<div class="ov-item"><div class="num yellow">'+currentData.rate+'%</div><div class="label">签到率</div></div>';
+    document.getElementById("toggleGroup").checked = currentData.show_group !== "false";
+    document.getElementById("toggleDinner").checked = currentData.show_dinner_table !== "false";
+    var gt = currentData.group_type || "分中心";
+    var tabs = document.querySelectorAll("#tabBar .tab");
+    if (tabs.length > 0) tabs[0].textContent = gt;
     renderTab();
-  } catch(e) { console.error(e); }
+  } catch(e) { setTimeout(loadData, 3000); }
+}
+
+async function saveToggle() {
+  var grp = document.getElementById("toggleGroup").checked;
+  var din = document.getElementById("toggleDinner").checked;
+  try {
+    var r = await fetch(API + "/settings", {
+      method:"POST", headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({show_group:grp, show_dinner_table:din, password:"shenghe2024"})
+    });
+    var d = await r.json();
+    if(d.ok) showMsg(document.getElementById("toggleMsg"), "设置已保存", "success");
+  } catch(e) {}
+}
+
+async function exportExcel() {
+  var btn = event.target, msg = document.getElementById("exportMsg");
+  btn.disabled = true; btn.textContent = "导出中...";
+  try {
+    var r = await fetch(API + "/export", {
+      method:"POST", headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({password:"shenghe2024"})
+    });
+    var d = await r.json();
+    if (!d.ok) { showMsg(msg, d.msg, "error"); btn.disabled = false; btn.textContent = "导出签到名单（Excel）"; return; }
+    
+    // Build Excel using SheetJS
+    var rows = d.rows || [];
+    var headers = ["序号","姓名","手机号","公司","分中心","班级","组号","桌号","签到状态","签到时间"];
+    var data = [];
+    rows.forEach(function(row, idx) {
+      data.push([
+        idx + 1,
+        row.name,
+        row.phone,
+        row.company,
+        row.center,
+        row.class_name,
+        row.group_num,
+        row.dinner_table_num,
+        row.sign_status,
+        row.sign_time
+      ]);
+    });
+    var ws = XLSX.utils.aoa_to_sheet([headers].concat(data));
+    // Set column widths
+    ws["!cols"] = [
+      {wch:6},{wch:10},{wch:15},{wch:18},{wch:14},{wch:12},{wch:6},{wch:6},{wch:10},{wch:20}
+    ];
+    var wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "签到名单");
+    var evName = currentData ? (currentData.event_name || "签到名单") : "签到名单";
+    var now = new Date();
+    var fn = evName + "_" + now.getFullYear() + ("0"+(now.getMonth()+1)).slice(-2) + ("0"+now.getDate()).slice(-2) + "_" + ("0"+now.getHours()).slice(-2) + ("0"+now.getMinutes()).slice(-2) + ".xlsx";
+    XLSX.writeFile(wb, fn);
+    showMsg(msg, "导出成功："+rows.length+" 条记录", "success");
+  } catch(e) { showMsg(msg, "导出失败："+e.message, "error"); }
+  btn.disabled = false; btn.textContent = "导出签到名单（Excel）";
 }
 
 function renderTab() {
-  if (!currentData) return; var h = "";
-  if (currentTab === "centers") {
-    h = '<div class="section"><h3>分中心签到分布</h3><div class="center-bars">';
-    for (var c in currentData.centers) {
-      var d = currentData.centers[c], pct = d.total > 0 ? Math.round(d.checked / d.total * 100) : 0;
-      h += '<div class="center-row"><span class="c-name">'+c+'</span><div class="c-bar"><div class="c-fill" style="width:'+pct+'%"></div></div><span class="c-num">'+d.checked+'/'+d.total+'</span></div>';
-    }
+  if (!currentData) return;
+  var h = "";
+  if (currentTab === "groups") {
+    var gt = currentData.group_type || "分中心";
+    h = '<div class="section"><h3>&#x1f3e2; '+gt+'签到进展</h3><div class="group-bars">';
+    var groups = currentData.groups || {};
+    var keys = Object.keys(groups).sort(function(a,b){return groups[b].total - groups[a].total;});
+    keys.forEach(function(c) {
+      var d = groups[c], pct = d.total > 0 ? Math.round(d.checked / d.total * 100) : 0;
+      h += '<div class="group-row"><span class="g-name" title="'+c+'">'+c+'</span>'+
+        '<div class="g-bar"><div class="g-fill" style="width:'+pct+'%"></div>'+
+        '<div class="g-bar-txt">'+pct+'%</div></div>'+
+        '<span class="g-num">'+d.checked+'/'+d.total+'</span></div>';
+    });
     h += '</div></div>';
   } else if (currentTab === "missing") {
     h = '<div class="section"><h3>&#x26a0; 未签到 ('+currentData.not_checked.length+'人)</h3>';
     currentData.not_checked.forEach(function(n) {
-      h += '<div class="list-item"><div><span class="li-name">'+n.name+'</span><span class="li-meta"> · '+(n.center||"")+'</span></div><span class="li-meta">'+(n.company||"")+'</span></div>';
+      h += '<div class="list-item"><div><span class="li-name">'+n.name+'</span><span class="li-meta"> · '+(n.center||n.class_name||"")+'</span></div><span class="li-meta">'+(n.company||"")+'</span></div>';
     });
   } else if (currentTab === "recent") {
     h = '<div class="section"><h3>&#x2705; 最近签到</h3>';
     currentData.recent.forEach(function(r) {
-      h += '<div class="list-item"><div><span class="li-name">'+r.name+'</span><span class="li-meta"> · '+(r.center||"")+'</span></div><span class="li-meta">'+(r.checked_at||"")+'</span></div>';
+      var extra="";
+      if(r.group_num) extra+=" · 组"+r.group_num;
+      if(r.dinner_table_num) extra+=" · 桌"+r.dinner_table_num;
+      h += '<div class="list-item"><div><span class="li-name">'+r.name+'</span><span class="li-meta">'+extra+' · '+(r.center||"")+'</span></div><span class="li-meta">'+(r.checked_at||"")+'</span></div>';
     });
   }
   document.getElementById("tabContent").innerHTML = h || '<div style="text-align:center;padding:40px;color:#64748b">暂无数据</div>';
@@ -146,10 +255,35 @@ function renderTab() {
 
 function switchTab(t) {
   currentTab = t;
-  var tabs = document.querySelectorAll(".tab");
+  var tabs = document.querySelectorAll("#tabBar .tab");
   for (var i = 0; i < tabs.length; i++) tabs[i].classList.remove("active");
   event.target.classList.add("active");
   renderTab();
+}
+
+function detectColumns(headers) {
+  var map = { name:-1, phone:-1, company:-1, center:-1, class_name:-1, group_num:-1, dinner_table_num:-1, is_student:-1 };
+  function match(h) {
+    h = String(h||"").trim().toLowerCase();
+    if (/^(姓名|名字|name|学员姓名|参会人)$/i.test(h)) return "name";
+    if (/^(手机号|手机号码|电话|phone|tel|mobile|联系电话)$/i.test(h)) return "phone";
+    if (/^(公司|企业|单位|company|公司名称|工作单位)$/i.test(h)) return "company";
+    if (/^(分中心|中心|center|分部|所属分中心)$/i.test(h)) return "center";
+    if (/^(班级|班|class|班级名称)$/i.test(h)) return "class_name";
+    if (/^(组号|小组|组别|group|大组|分组)$/i.test(h)) return "group_num";
+    if (/^(桌号|桌数|桌子|空巴桌号|晚宴桌号|dinner|table)$/i.test(h)) return "dinner_table_num";
+    if (/^(是否学员|学员|is_student)$/i.test(h)) return "is_student";
+    return null;
+  }
+  for (var i = 0; i < headers.length; i++) {
+    var m = match(headers[i]);
+    if (m && map[m] === -1) map[m] = i;
+  }
+  return map;
+}
+
+function guessByPosition(headers) {
+  return { name:0, phone:1, company:2, center:4, class_name:3, group_num:7, dinner_table_num:8, is_student:6 };
 }
 
 function handleFile(e) {
@@ -161,16 +295,78 @@ function handleFile(e) {
     try {
       var wb = XLSX.read(evt.target.result, {type:"array"});
       var arr = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], {header:1, defval:""});
+      
+      var headerRow = 0, dataStart = 1;
+      for (var hr = 0; hr < Math.min(5, arr.length); hr++) {
+        var row = arr[hr];
+        if (!row) continue;
+        for (var ci = 0; ci < row.length; ci++) {
+          if (/^(姓名|名字|name|学员姓名)$/i.test(String(row[ci]||"").trim())) {
+            headerRow = hr; dataStart = hr + 1; break;
+          }
+        }
+        if (dataStart > 1) break;
+      }
+      if (dataStart === 1) {
+        var tryRow = arr[3];
+        if (tryRow) {
+          for (var ci2 = 0; ci2 < tryRow.length; ci2++) {
+            if (/^(姓名|名字|name)/i.test(String(tryRow[ci2]||"").trim())) { headerRow = 3; dataStart = 4; break; }
+          }
+        }
+      }
+      
+      var headers = headerRow >= 0 && arr[headerRow] ? arr[headerRow] : [];
+      var col = detectColumns(headers);
+      var fallback = guessByPosition(headers);
+      
+      var mapHtml = "列识别：";
+      function colStatus(key, label) {
+        var idx = col[key];
+        if (idx >= 0) return '<span class="ok">'+label+'=第'+(idx+1)+'列</span>';
+        col[key] = fallback[key];
+        return '<span class="warn">'+label+'=第'+(fallback[key]+1)+'列(推测)</span>';
+      }
+      mapHtml += colStatus("name","姓名") + "　";
+      mapHtml += colStatus("phone","手机号") + "<br>";
+      mapHtml += colStatus("company","公司") + "　";
+      mapHtml += colStatus("center","分中心") + "　";
+      mapHtml += colStatus("class_name","班级") + "<br>";
+      mapHtml += colStatus("group_num","组号") + "　";
+      mapHtml += colStatus("dinner_table_num","桌号");
+      document.getElementById("colMapInfo").innerHTML = mapHtml;
+      document.getElementById("colMapInfo").style.display = "block";
+      
       excelData = [];
-      for (var i = 4; i < arr.length; i++) {
-        var row = arr[i]; if (!row || !row[0]) break;
-        var n = String(row[0]||"").trim(); if (!n || n === "undefined" || n === "nan") break;
-        var ph = String(row[1]||"").trim(); if (ph.endsWith(".0")) ph = ph.slice(0,-2);
+      for (var i = dataStart; i < arr.length; i++) {
+        var row = arr[i]; if (!row) continue;
+        var nameIdx = col.name, phoneIdx = col.phone;
+        if (nameIdx < 0 || phoneIdx < 0) break;
+        var n = String(row[nameIdx]||"").trim();
+        if (!n || n === "undefined" || n === "nan") break;
+        var ph = String(row[phoneIdx]||"").trim();
+        ph = ph.replace(/\s/g,"").replace(/-/g,"");
+        if (ph.indexOf(".") >= 0) {
+          var num = parseFloat(ph);
+          if (!isNaN(num)) ph = String(Math.round(num));
+        }
+        if (ph.length < 11 && /^\d+$/.test(ph)) ph = ph.padStart(11, "0");
+        
+        function cell(idx) { return idx >= 0 && row[idx] ? String(row[idx]).trim() : ""; }
+        function cellClean(idx) { var v = cell(idx); return (v && v !== "nan" && v !== "undefined") ? v : ""; }
+        
+        var gn = col.group_num >= 0 ? parseInt(cell(col.group_num)) : null;
+        var dn = col.dinner_table_num >= 0 ? parseInt(cell(col.dinner_table_num)) : null;
+        if (isNaN(gn)) gn = null;
+        if (isNaN(dn)) dn = null;
+        
         excelData.push({
           name: n, phone: ph,
-          center: (row[4]&&String(row[4]).trim()!=="nan")?String(row[4]).trim():"",
-          is_student: (row[6]&&String(row[6]).trim()!=="nan")?String(row[6]).trim():"",
-          company: (row[2]&&String(row[2]).trim()!=="nan")?String(row[2]).trim():""
+          center: cellClean(col.center),
+          class_name: cellClean(col.class_name),
+          company: cellClean(col.company),
+          group_num: gn,
+          dinner_table_num: dn
         });
       }
       document.getElementById("upBtn").style.display = "block";
@@ -187,14 +383,14 @@ async function uploadData() {
   try {
     var evName = ""; var fi = document.getElementById("fileInput"); if (fi&&fi.files[0]) evName = fi.files[0].name.replace(/\.(xls|xlsx)$/i,"");
     var r = await fetch(API + "/upload", {
-      method:"POST",
-      headers:{"Content-Type":"application/json"},
-      body: JSON.stringify({event_name:evName,attendees:excelData,password:"shenghe2024"})
+      method:"POST", headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({event_name:evName, attendees:excelData, password:"shenghe2024"})
     });
     var d = await r.json();
     if (d.ok) {
-      showMsg(msg, d.msg+" | "+d.event_name, "success");
-      document.getElementById("uploadArea").innerHTML = '<div class="icon">&#x1f4c1;</div><div class="text">点击上传 Excel 报名表</div><div class="hint">支持互动吧导出的 .xls / .xlsx</div>';
+      showMsg(msg, d.msg, "success");
+      document.getElementById("uploadArea").innerHTML = '<div class="icon">&#x1f4c1;</div><div class="text">点击上传 Excel 报名表</div><div class="hint">支持互动吧导出的 .xls / .xlsx（自动识别列名）</div>';
+      document.getElementById("colMapInfo").style.display = "none";
       document.getElementById("upBtn").style.display = "none"; excelData = null;
       document.getElementById("fileInput").value = "";
       loadData();
