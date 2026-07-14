@@ -28,6 +28,16 @@ body{font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;backgr
 .upload-area .icon{font-size:32px;margin-bottom:6px}
 .upload-area .text{font-size:13px;color:#94a3b8}
 .upload-area .hint{font-size:11px;color:#475569;margin-top:4px}
+.upload-preview{display:none;margin:0 0 12px;padding:14px;border-radius:12px;background:rgba(15,23,42,.72);border:1px solid rgba(96,165,250,.28)}
+.upload-preview.show{display:block}
+.upload-preview .preview-title{font-size:14px;font-weight:700;color:#e2e8f0;margin-bottom:10px}
+.preview-events{font-size:12px;color:#94a3b8;line-height:1.6;margin-bottom:10px;word-break:break-all}
+.preview-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
+.preview-item{background:rgba(255,255,255,.05);border-radius:8px;padding:9px 6px;text-align:center}
+.preview-item .value{font-size:20px;font-weight:800;color:#e2e8f0}
+.preview-item .caption{font-size:11px;color:#64748b;margin-top:2px}
+.preview-item.add .value{color:#4ade80}.preview-item.remove .value{color:#f87171}.preview-item.repeat .value{color:#fbbf24}
+.preview-warning{margin-top:10px;padding:9px 10px;border-radius:8px;background:rgba(239,68,68,.12);color:#fca5a5;font-size:12px;line-height:1.5}
 .btn{padding:10px 24px;border-radius:10px;font-size:14px;cursor:pointer;border:none;font-weight:600;transition:all .2s}
 .btn:active{transform:scale(.97)}
 .btn.primary{background:linear-gradient(135deg,#3b82f6,#2563eb);color:#fff}
@@ -106,7 +116,8 @@ input:checked+.slider:before{transform:translateX(20px)}
       </div>
       <input type="file" id="fileInput" accept=".xls,.xlsx" style="display:none" onchange="handleFile(event)">
       <div id="colMapInfo" class="col-map" style="display:none"></div>
-      <button class="btn primary full" id="upBtn" onclick="uploadData()" style="display:none">确认导入</button>
+      <div id="uploadPreview" class="upload-preview"></div>
+      <button class="btn primary full" id="upBtn" onclick="uploadData()" style="display:none">确认覆盖并导入</button>
       <div class="msg" id="uploadMsg"></div>
     </div>
 
@@ -131,21 +142,56 @@ input:checked+.slider:before{transform:translateX(20px)}
 </div>
 <script>
 var API = "https://shengheshu-d2g2zyyl99f6c6fc2-1453587887.ap-shanghai.app.tcloudbase.com/api";
-var ADMIN_PWD = "shenghe2024";
-var currentTab = "groups", currentData = null, excelData = null;
+var adminToken = "", refreshTimer = null;
+var currentTab = "groups", currentData = null, excelData = null, uploadGroupField = "", uploadPreview = null;
 
-function doLogin() {
+function authHeaders(json) {
+  var headers = {"Authorization":"Bearer "+adminToken};
+  if (json) headers["Content-Type"] = "application/json";
+  return headers;
+}
+
+function esc(value) {
+  return String(value == null ? "" : value).replace(/[&<>"']/g,function(ch){
+    return {"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[ch];
+  });
+}
+
+async function adminFetch(path, options) {
+  options = options || {};
+  options.headers = Object.assign({}, options.headers || {}, authHeaders(!!options.body));
+  var response = await fetch(API + path, options);
+  if (response.status === 401) {
+    adminToken = "";
+    if (refreshTimer) clearInterval(refreshTimer);
+    document.getElementById("mainPanel").style.display="none";
+    document.getElementById("loginCard").style.display="block";
+    throw new Error("登录已失效，请重新登录");
+  }
+  return response;
+}
+
+async function doLogin() {
   var p = document.getElementById("pwdInput").value.trim();
   var m = document.getElementById("loginMsg");
-  if (p !== ADMIN_PWD) { m.textContent="密码错误"; m.className="msg show error"; setTimeout(function(){m.classList.remove("show")},2000); return; }
-  document.getElementById("loginCard").style.display="none";
-  document.getElementById("mainPanel").style.display="block";
-  loadData();
+  if (!p) { showMsg(m,"请输入管理密码","error"); return; }
+  try {
+    var response = await fetch(API + "/admin_login", {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({password:p})});
+    var result = await response.json();
+    document.getElementById("pwdInput").value = "";
+    if (!result.ok || !result.token) { showMsg(m,result.msg||"登录失败","error"); return; }
+    adminToken = result.token;
+    document.getElementById("loginCard").style.display="none";
+    document.getElementById("mainPanel").style.display="block";
+    await loadData();
+    if (refreshTimer) clearInterval(refreshTimer);
+    refreshTimer = setInterval(loadData, 5000);
+  } catch (e) { showMsg(m,"登录失败："+e.message,"error"); }
 }
 
 async function loadData() {
   try {
-    var r = await fetch(API + "/stats");
+    var r = await adminFetch("/stats");
     currentData = await r.json();
     document.getElementById("eventTitle").textContent = currentData.event_name || "管理后台";
     document.getElementById("lastUpdate").textContent = new Date().toLocaleTimeString();
@@ -159,16 +205,16 @@ async function loadData() {
     var tabs = document.querySelectorAll("#tabBar .tab");
     if (tabs.length > 0) tabs[0].textContent = gt;
     renderTab();
-  } catch(e) { setTimeout(loadData, 3000); }
+  } catch(e) { document.getElementById("lastUpdate").textContent = e.message || "加载失败"; }
 }
 
 async function saveToggle() {
   var grp = document.getElementById("toggleGroup").checked;
   var din = document.getElementById("toggleDinner").checked;
   try {
-    var r = await fetch(API + "/settings", {
-      method:"POST", headers:{"Content-Type":"application/json"},
-      body: JSON.stringify({show_group:grp, show_dinner_table:din, password:"shenghe2024"})
+    var r = await adminFetch("/settings", {
+      method:"POST",
+      body: JSON.stringify({show_group:grp, show_dinner_table:din})
     });
     var d = await r.json();
     if(d.ok) showMsg(document.getElementById("toggleMsg"), "设置已保存", "success");
@@ -179,9 +225,9 @@ async function exportExcel() {
   var btn = event.target, msg = document.getElementById("exportMsg");
   btn.disabled = true; btn.textContent = "导出中...";
   try {
-    var r = await fetch(API + "/export", {
-      method:"POST", headers:{"Content-Type":"application/json"},
-      body: JSON.stringify({password:"shenghe2024"})
+    var r = await adminFetch("/export", {
+      method:"POST",
+      body: JSON.stringify({})
     });
     var d = await r.json();
     if (!d.ok) { showMsg(msg, d.msg, "error"); btn.disabled = false; btn.textContent = "导出签到名单（Excel）"; return; }
@@ -198,6 +244,7 @@ async function exportExcel() {
         row.company,
         row.center,
         row.class_name,
+        row.group_name,
         row.group_num,
         row.dinner_table_num,
         row.sign_status,
@@ -230,7 +277,7 @@ function renderTab() {
     var keys = Object.keys(groups).sort(function(a,b){return groups[b].total - groups[a].total;});
     keys.forEach(function(c) {
       var d = groups[c], pct = d.total > 0 ? Math.round(d.checked / d.total * 100) : 0;
-      h += '<div class="group-row"><span class="g-name" title="'+c+'">'+c+'</span>'+
+      h += '<div class="group-row"><span class="g-name" title="'+esc(c)+'">'+esc(c)+'</span>'+
         '<div class="g-bar"><div class="g-fill" style="width:'+pct+'%"></div>'+
         '<div class="g-bar-txt">'+pct+'%</div></div>'+
         '<span class="g-num">'+d.checked+'/'+d.total+'</span></div>';
@@ -239,7 +286,7 @@ function renderTab() {
   } else if (currentTab === "missing") {
     h = '<div class="section"><h3>&#x26a0; 未签到 ('+currentData.not_checked.length+'人)</h3>';
     currentData.not_checked.forEach(function(n) {
-      h += '<div class="list-item"><div><span class="li-name">'+n.name+'</span><span class="li-meta"> · '+(n.center||n.class_name||n.group_name||"")+'</span></div><span class="li-meta">'+(n.company||"")+'</span></div>';
+      h += '<div class="list-item"><div><span class="li-name">'+esc(n.name)+'</span><span class="li-meta"> · '+esc(n.center||n.class_name||n.group_name||"")+'</span></div><span class="li-meta">'+esc(n.company||"")+'</span></div>';
     });
   } else if (currentTab === "recent") {
     h = '<div class="section"><h3>&#x2705; 最近签到</h3>';
@@ -247,7 +294,7 @@ function renderTab() {
       var extra="";
       if(r.group_num) extra+=" · 组"+r.group_num;
       if(r.dinner_table_num) extra+=" · 桌"+r.dinner_table_num;
-      h += '<div class="list-item"><div><span class="li-name">'+r.name+'</span><span class="li-meta">'+extra+' · '+(r.center||r.class_name||r.group_name||"")+'</span></div><span class="li-meta">'+(r.checked_at||"")+'</span></div>';
+      h += '<div class="list-item"><div><span class="li-name">'+esc(r.name)+'</span><span class="li-meta">'+extra+' · '+esc(r.center||r.class_name||r.group_name||"")+'</span></div><span class="li-meta">'+esc(r.checked_at||"")+'</span></div>';
     });
   }
   document.getElementById("tabContent").innerHTML = h || '<div style="text-align:center;padding:40px;color:#64748b">暂无数据</div>';
@@ -290,9 +337,13 @@ function guessByPosition(headers) {
 function handleFile(e) {
   var file = e.target.files[0];
   if (!file) return;
-  document.getElementById("uploadArea").innerHTML = '<div class="icon">&#x2705;</div><div class="text">已选择：'+file.name+'</div><div class="hint">点击重新选择</div>';
+  uploadPreview = null;
+  document.getElementById("uploadPreview").className = "upload-preview";
+  document.getElementById("uploadPreview").innerHTML = "";
+  document.getElementById("upBtn").style.display = "none";
+  document.getElementById("uploadArea").innerHTML = '<div class="icon">&#x2705;</div><div class="text">已选择：'+esc(file.name)+'</div><div class="hint">点击重新选择</div>';
   var reader = new FileReader();
-  reader.onload = function(evt) {
+  reader.onload = async function(evt) {
     try {
       var wb = XLSX.read(evt.target.result, {type:"array"});
       var arr = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], {header:1, defval:""});
@@ -319,22 +370,30 @@ function handleFile(e) {
       
       var headers = headerRow >= 0 && arr[headerRow] ? arr[headerRow] : [];
       var col = detectColumns(headers);
+      // 统计维度必须来自真实识别到的表头，不能来自后面的固定位置猜测。
+      // 否则“是否学员”等普通列可能被误写成分中心，造成统计标题和分组错误。
+      uploadGroupField = col.center >= 0 ? "center" :
+        (col.class_name >= 0 ? "class_name" : (col.group_name >= 0 ? "group_name" : ""));
       var fallback = guessByPosition(headers);
       
       var mapHtml = "列识别：";
-      function colStatus(key, label) {
+      function colStatus(key, label, allowGuess) {
         var idx = col[key];
         if (idx >= 0) return '<span class="ok">'+label+'=第'+(idx+1)+'列</span>';
-        col[key] = fallback[key];
-        return '<span class="warn">'+label+'=第'+(fallback[key]+1)+'列(推测)</span>';
+        if (allowGuess) {
+          col[key] = fallback[key];
+          return '<span class="warn">'+label+'=第'+(fallback[key]+1)+'列(推测)</span>';
+        }
+        return '<span class="warn">'+label+'=未识别</span>';
       }
-      mapHtml += colStatus("name","姓名") + "　";
-      mapHtml += colStatus("phone","手机号") + "<br>";
-      mapHtml += colStatus("company","公司") + "　";
-      mapHtml += colStatus("center","分中心") + "　";
-      mapHtml += colStatus("class_name","班级") + "<br>";
-      mapHtml += colStatus("group_num","组号") + "　";
-      mapHtml += colStatus("dinner_table_num","桌号");
+      mapHtml += colStatus("name","姓名",true) + "　";
+      mapHtml += colStatus("phone","手机号",true) + "<br>";
+      mapHtml += colStatus("company","公司",false) + "　";
+      mapHtml += colStatus("center","分中心",false) + "　";
+      mapHtml += colStatus("class_name","班级",false) + "　";
+      mapHtml += colStatus("group_name","小组",false) + "<br>";
+      mapHtml += colStatus("group_num","组号",false) + "　";
+      mapHtml += colStatus("dinner_table_num","桌号",false);
       document.getElementById("colMapInfo").innerHTML = mapHtml;
       document.getElementById("colMapInfo").style.display = "block";
       
@@ -344,7 +403,7 @@ function handleFile(e) {
         var nameIdx = col.name, phoneIdx = col.phone;
         if (nameIdx < 0 || phoneIdx < 0) break;
         var n = String(row[nameIdx]||"").trim();
-        if (!n || n === "undefined" || n === "nan") break;
+        if (!n || n === "undefined" || n === "nan") continue;
         var ph = String(row[phoneIdx]||"").trim();
         ph = ph.replace(/\s/g,"").replace(/-/g,"");
         if (ph.indexOf(".") >= 0) {
@@ -365,39 +424,101 @@ function handleFile(e) {
           name: n, phone: ph,
           center: cellClean(col.center),
           class_name: cellClean(col.class_name),
+          group_name: cellClean(col.group_name),
           company: cellClean(col.company),
           group_num: gn,
           dinner_table_num: dn
         });
       }
-      document.getElementById("upBtn").style.display = "block";
-      showMsg(document.getElementById("uploadMsg"), "已解析 "+excelData.length+" 条记录，点击确认导入", "info");
+      showMsg(document.getElementById("uploadMsg"), "已解析 "+excelData.length+" 条记录，正在核对名单变化...", "info");
+      await loadUploadPreview();
     } catch(ex) { showMsg(document.getElementById("uploadMsg"), "解析失败："+ex.message, "error"); }
   };
   reader.readAsArrayBuffer(file);
 }
 
+function getUploadEventName() {
+  var fi = document.getElementById("fileInput");
+  return fi && fi.files[0] ? fi.files[0].name.replace(/\.(xls|xlsx)$/i,"") : "";
+}
+
+async function loadUploadPreview() {
+  uploadPreview = null;
+  var btn = document.getElementById("upBtn");
+  var box = document.getElementById("uploadPreview");
+  btn.style.display = "none";
+  var r = await adminFetch("/upload_preview", {
+    method:"POST",
+    body:JSON.stringify({event_name:getUploadEventName(), attendees:excelData, group_field:uploadGroupField})
+  });
+  var d = await r.json();
+  if (!d.ok) {
+    box.className = "upload-preview";
+    showMsg(document.getElementById("uploadMsg"), d.msg || "无法生成导入预览", "error");
+    return;
+  }
+  uploadPreview = d;
+  var eventHtml = d.event_changed
+    ? '活动将从“'+esc(d.old_event_name)+'”更换为“'+esc(d.new_event_name)+'”'
+    : '活动：'+esc(d.new_event_name);
+  var warning = "";
+  if (d.old_checked > 0) {
+    warning = '<div class="preview-warning">注意：当前已有 '+d.old_checked+' 个签到名额。覆盖名单后，原签到记录将被清空。</div>';
+  }
+  box.innerHTML = '<div class="preview-title">覆盖前变更核对</div>'+
+    '<div class="preview-events">'+eventHtml+'</div>'+
+    '<div class="preview-grid">'+
+      '<div class="preview-item"><div class="value">'+d.old_total+'</div><div class="caption">当前报名</div></div>'+
+      '<div class="preview-item"><div class="value">'+d.new_total+'</div><div class="caption">新文件报名</div></div>'+
+      '<div class="preview-item add"><div class="value">+'+d.added+'</div><div class="caption">新增名额</div></div>'+
+      '<div class="preview-item remove"><div class="value">-'+d.removed+'</div><div class="caption">减少名额</div></div>'+
+      '<div class="preview-item repeat"><div class="value">'+d.duplicate_groups+'</div><div class="caption">重复报名组</div></div>'+
+      '<div class="preview-item repeat"><div class="value">'+d.repeated_slots+'</div><div class="caption">重复额外名额</div></div>'+
+    '</div>'+warning;
+  box.className = "upload-preview show";
+  btn.style.display = "block";
+  btn.textContent = "确认覆盖并导入";
+  showMsg(document.getElementById("uploadMsg"), "请核对以上变化，确认无误后再导入", "info");
+}
+
 async function uploadData() {
   if (!excelData || !excelData.length) { showMsg(document.getElementById("uploadMsg"),"请先选择文件","error"); return; }
+  if (!uploadPreview) { showMsg(document.getElementById("uploadMsg"),"请先完成名单变更核对","error"); return; }
+  var confirmText = "请再次确认覆盖当前名单：\n\n当前报名："+uploadPreview.old_total+
+    "\n新文件报名："+uploadPreview.new_total+
+    "\n新增名额："+uploadPreview.added+
+    "\n减少名额："+uploadPreview.removed+
+    "\n重复报名组："+uploadPreview.duplicate_groups+
+    "（额外名额 "+uploadPreview.repeated_slots+" 个）";
+  if (uploadPreview.old_checked > 0) confirmText += "\n\n警告：现有 "+uploadPreview.old_checked+" 个签到名额将被清空。";
+  if (!confirm(confirmText)) return;
   var btn = document.getElementById("upBtn"), msg = document.getElementById("uploadMsg");
   btn.disabled = true; btn.textContent = "导入中...";
   try {
-    var evName = ""; var fi = document.getElementById("fileInput"); if (fi&&fi.files[0]) evName = fi.files[0].name.replace(/\.(xls|xlsx)$/i,"");
-    var r = await fetch(API + "/upload", {
-      method:"POST", headers:{"Content-Type":"application/json"},
-      body: JSON.stringify({event_name:evName, attendees:excelData, password:"shenghe2024"})
+    var r = await adminFetch("/upload", {
+      method:"POST",
+      body: JSON.stringify({event_name:getUploadEventName(), attendees:excelData, group_field:uploadGroupField, preview_issued_at:uploadPreview.preview_issued_at, preview_token:uploadPreview.preview_token})
     });
     var d = await r.json();
     if (d.ok) {
       showMsg(msg, d.msg, "success");
       document.getElementById("uploadArea").innerHTML = '<div class="icon">&#x1f4c1;</div><div class="text">点击上传 Excel 报名表</div><div class="hint">支持互动吧导出的 .xls / .xlsx（自动识别列名）</div>';
       document.getElementById("colMapInfo").style.display = "none";
-      document.getElementById("upBtn").style.display = "none"; excelData = null;
+      document.getElementById("uploadPreview").className = "upload-preview";
+      document.getElementById("uploadPreview").innerHTML = "";
+      document.getElementById("upBtn").style.display = "none"; excelData = null; uploadGroupField = ""; uploadPreview = null;
       document.getElementById("fileInput").value = "";
       loadData();
-    } else { showMsg(msg, d.msg, "error"); }
+    } else {
+      if (d.needs_preview) {
+        await loadUploadPreview();
+        showMsg(msg, "名单核对信息已刷新，请再次确认后导入", "info");
+      } else {
+        showMsg(msg, d.msg, "error");
+      }
+    }
   } catch(e) { showMsg(msg, "网络错误："+e.message, "error"); }
-  btn.disabled = false; btn.textContent = "确认导入";
+  btn.disabled = false; btn.textContent = "确认覆盖并导入";
 }
 
 function showMsg(el, text, type) {
@@ -407,18 +528,17 @@ function showMsg(el, text, type) {
 
 async function resetCheckins() {
   if (!confirm("确定清空所有签到记录？")) return;
-  await fetch(API+"/reset", {method:"POST"});
+  await adminFetch("/reset", {method:"POST",body:JSON.stringify({})});
   loadData();
 }
 
 async function clearAll() {
   if (!confirm("确定清空全部数据？此操作不可恢复！")) return;
-  await fetch(API+"/clear_all", {method:"POST"});
+  await adminFetch("/clear_all", {method:"POST",body:JSON.stringify({})});
   loadData();
 }
 
-loadData();
-setInterval(loadData, 5000);
+document.getElementById("pwdInput").addEventListener("keydown",function(e){if(e.key==="Enter")doLogin();});
 </script>
 </body>
 </html>
