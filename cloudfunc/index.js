@@ -555,6 +555,9 @@ exports.main = async (event, context) => {
     try {
       const delRegs = await deleteAll("registrations");
       const delCks = await deleteAll("checkins");
+      await setConfig("event_name", "盛和塾签到");
+      await setConfig("group_field", "");
+      await setConfig("active_batch_id", "");
       return { statusCode: 200, headers: h, body: JSON.stringify({ ok: true, msg: "全部数据已清空（报名" + delRegs + "条，签到" + delCks + "条）" }) };
     } catch (e) {
       return { statusCode: 200, headers: h, body: JSON.stringify({ ok: false, msg: "操作失败: " + (e.message || "") }) };

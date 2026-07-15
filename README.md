@@ -62,6 +62,11 @@ tcb fn deploy checkinApi -e {你的环境ID} --dir cloudfunc --force
 ```bash
 tcb hosting deploy public/index.html /v3/index.html -e {你的环境ID}
 tcb hosting deploy public/admin.html /v3/admin.html -e {你的环境ID}
+# 如果旧二维码或书签使用根目录、v2 地址，请同步覆盖，避免进入旧版后台：
+tcb hosting deploy public/index.html /index.html -e {你的环境ID}
+tcb hosting deploy public/admin.html /admin.html -e {你的环境ID}
+tcb hosting deploy public/index.html /v2/index.html -e {你的环境ID}
+tcb hosting deploy public/admin.html /v2/admin.html -e {你的环境ID}
 ```
 
 ### 6. 配置 HTTP 访问服务

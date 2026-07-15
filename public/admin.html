@@ -139,6 +139,7 @@ input:checked+.slider:before{transform:translateX(20px)}
       <button class="btn danger" onclick="resetCheckins()">&#x1f504; 清空签到</button>
       <button class="btn danger" onclick="clearAll()">&#x1f5d1; 清空全部</button>
     </div>
+    <div class="msg" id="clearMsg"></div>
   </div>
   <div class="footer"><a href="index.html">&larr; 返回签到页</a></div>
 </div>
@@ -535,14 +536,24 @@ function showMsg(el, text, type) {
 
 async function resetCheckins() {
   if (!confirm("确定清空所有签到记录？")) return;
-  await adminFetch("/reset", {method:"POST",body:JSON.stringify({})});
-  loadData();
+  var msg = document.getElementById("clearMsg");
+  try {
+    var r = await adminFetch("/reset", {method:"POST",body:JSON.stringify({})});
+    var d = await r.json();
+    showMsg(msg, d.msg || (d.ok ? "签到记录已清空" : "清空失败"), d.ok ? "success" : "error");
+    if (d.ok) loadData();
+  } catch(e) { showMsg(msg, "清空失败："+e.message, "error"); }
 }
 
 async function clearAll() {
   if (!confirm("确定清空全部数据？此操作不可恢复！")) return;
-  await adminFetch("/clear_all", {method:"POST",body:JSON.stringify({})});
-  loadData();
+  var msg = document.getElementById("clearMsg");
+  try {
+    var r = await adminFetch("/clear_all", {method:"POST",body:JSON.stringify({})});
+    var d = await r.json();
+    showMsg(msg, d.msg || (d.ok ? "全部数据已清空" : "清空失败"), d.ok ? "success" : "error");
+    if (d.ok) loadData();
+  } catch(e) { showMsg(msg, "清空失败："+e.message, "error"); }
 }
 
 document.getElementById("pwdInput").addEventListener("keydown",function(e){if(e.key==="Enter")doLogin();});
