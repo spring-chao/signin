@@ -13,7 +13,7 @@
 
 ### 管理后台（更换活动）
 
-1. 浏览器打开：`https://{你的域名}/v3/admin.html`
+1. 浏览器打开唯一后台入口：`https://{你的域名}/admin.html`
 2. 输入管理密码登录（默认 `shenghe2024`）
 3. 上传新的 Excel 报名表（支持互动吧导出的 `.xls` / `.xlsx`）
 4. 系统自动替换报名数据，清空签到记录
@@ -60,13 +60,11 @@ tcb fn deploy checkinApi -e {你的环境ID} --dir cloudfunc --force
 ### 5. 部署静态页面
 
 ```bash
-tcb hosting deploy public/index.html /v3/index.html -e {你的环境ID}
-tcb hosting deploy public/admin.html /v3/admin.html -e {你的环境ID}
-# 如果旧二维码或书签使用根目录、v2 地址，请同步覆盖，避免进入旧版后台：
 tcb hosting deploy public/index.html /index.html -e {你的环境ID}
 tcb hosting deploy public/admin.html /admin.html -e {你的环境ID}
-tcb hosting deploy public/index.html /v2/index.html -e {你的环境ID}
-tcb hosting deploy public/admin.html /v2/admin.html -e {你的环境ID}
+# 后台只保留 /admin.html，旧版入口应删除：
+tcb hosting delete /v2/admin.html -e {你的环境ID}
+tcb hosting delete /v3/admin.html -e {你的环境ID}
 ```
 
 ### 6. 配置 HTTP 访问服务
