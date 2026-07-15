@@ -191,7 +191,7 @@ exports.main = async (event, context) => {
 
   function normalizeUploadPayload(payload) {
     const rows = payload.attendees || [];
-    const eventName = String(payload.event_name || "").trim();
+    const eventName = String(payload.event_name || "").trim().replace(/\.(xlsx|xls|xlsm|xlsb|csv)$/i, "").trim();
     const groupField = ["center", "class_name", "group_name"].includes(payload.group_field) ? payload.group_field : "";
     if (!eventName || rows.length === 0) return { error: "活动名称和报名数据不能为空" };
     if (rows.length > 5000) return { error: "报名数据不能超过5000条" };

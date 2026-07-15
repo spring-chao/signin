@@ -23,6 +23,12 @@ body{font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;backgr
 .ov-item .label{font-size:11px;color:#64748b;margin-top:4px}
 .section{margin-bottom:16px}
 .section h3{font-size:14px;margin-bottom:10px;color:#94a3b8}
+.form-field{margin-bottom:12px}
+.form-field label{display:block;margin-bottom:6px;color:#cbd5e1;font-size:13px}
+.form-field label span{color:#64748b;font-size:11px;font-weight:400}
+.form-field input{width:100%;padding:11px 12px;border-radius:9px;border:1px solid rgba(255,255,255,.12);background:rgba(255,255,255,.05);color:#fff;font-size:14px;outline:none}
+.form-field input:focus{border-color:#3b82f6}
+.form-field input::placeholder{color:#475569}
 .upload-area{border:2px dashed rgba(255,255,255,.15);border-radius:12px;padding:20px;text-align:center;margin-bottom:12px;cursor:pointer}
 .upload-area:hover{border-color:#3b82f6;background:rgba(59,130,246,.05)}
 .upload-area .icon{font-size:32px;margin-bottom:6px}
@@ -111,6 +117,10 @@ input:checked+.slider:before{transform:translateX(20px)}
 
     <div class="section">
       <h3>&#x1f4e4; 更换活动（上传 Excel 报名表）</h3>
+      <div class="form-field">
+        <label for="eventNameInput">活动名称 <span>（选填，留空则读取上传文件名）</span></label>
+        <input id="eventNameInput" type="text" maxlength="100" placeholder="留空则自动读取文件名，并去掉 .xls / .xlsx 等后缀" oninput="scheduleUploadPreview()">
+      </div>
       <div class="upload-area" id="uploadArea" onclick="document.getElementById('fileInput').click()">
         <div class="icon">&#x1f4c1;</div>
         <div class="text" id="uploadText">点击上传 Excel 报名表</div>
@@ -146,7 +156,7 @@ input:checked+.slider:before{transform:translateX(20px)}
 <script>
 var API = "https://shengheshu-d2g2zyyl99f6c6fc2-1453587887.ap-shanghai.app.tcloudbase.com/api";
 var adminToken = "", refreshTimer = null;
-var currentTab = "groups", currentData = null, excelData = null, uploadGroupField = "", uploadPreview = null;
+var currentTab = "groups", currentData = null, excelData = null, uploadGroupField = "", uploadPreview = null, uploadPreviewTimer = null;
 
 function authHeaders(json) {
   var headers = {"Authorization":"Bearer "+adminToken};
@@ -340,6 +350,8 @@ function guessByPosition(headers) {
 function handleFile(e) {
   var file = e.target.files[0];
   if (!file) return;
+  var nameInput = document.getElementById("eventNameInput");
+  if (nameInput && !nameInput.value.trim()) nameInput.placeholder = "默认活动名称："+stripSpreadsheetExtension(file.name);
   uploadPreview = null;
   document.getElementById("uploadPreview").className = "upload-preview";
   document.getElementById("uploadPreview").innerHTML = "";
@@ -440,9 +452,29 @@ function handleFile(e) {
   reader.readAsArrayBuffer(file);
 }
 
+function stripSpreadsheetExtension(name) {
+  return String(name || "").trim().replace(/\.(xlsx|xls|xlsm|xlsb|csv)$/i, "").trim();
+}
+
 function getUploadEventName() {
+  var nameInput = document.getElementById("eventNameInput");
+  var manualName = nameInput ? stripSpreadsheetExtension(nameInput.value) : "";
+  if (manualName) return manualName;
   var fi = document.getElementById("fileInput");
-  return fi && fi.files[0] ? fi.files[0].name.replace(/\.(xls|xlsx)$/i,"") : "";
+  return fi && fi.files[0] ? stripSpreadsheetExtension(fi.files[0].name) : "";
+}
+
+function scheduleUploadPreview() {
+  uploadPreview = null;
+  clearTimeout(uploadPreviewTimer);
+  document.getElementById("upBtn").style.display = "none";
+  document.getElementById("uploadPreview").className = "upload-preview";
+  if (!excelData || !excelData.length) return;
+  uploadPreviewTimer = setTimeout(function() {
+    loadUploadPreview().catch(function(e) {
+      showMsg(document.getElementById("uploadMsg"), "活动名称预览失败："+e.message, "error");
+    });
+  }, 350);
 }
 
 async function loadUploadPreview() {
@@ -516,6 +548,8 @@ async function uploadData() {
       document.getElementById("uploadPreview").innerHTML = "";
       document.getElementById("upBtn").style.display = "none"; excelData = null; uploadGroupField = ""; uploadPreview = null;
       document.getElementById("fileInput").value = "";
+      document.getElementById("eventNameInput").value = "";
+      document.getElementById("eventNameInput").placeholder = "留空则自动读取文件名，并去掉 .xls / .xlsx 等后缀";
       loadData();
     } else {
       if (d.needs_preview) {
