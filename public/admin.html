@@ -165,7 +165,7 @@ input:checked+.slider:before{transform:translateX(20px)}
       <div class="upload-area" id="uploadArea" onclick="document.getElementById('fileInput').click()">
         <div class="icon">&#x1f4c1;</div>
         <div class="text" id="uploadText">点击上传 Excel 报名表</div>
-        <div class="hint">支持互动吧导出的 .xls / .xlsx（自动识别列名）</div>
+        <div class="hint">支持 .xls / .xlsx；自动查找前100行表头，列顺序不限</div>
       </div>
       <input type="file" id="fileInput" accept=".xls,.xlsx" style="display:none" onchange="handleFile(event)">
       <div id="colMapInfo" class="col-map" style="display:none"></div>
@@ -479,10 +479,15 @@ function switchTab(t) {
 
 function detectColumns(headers) {
   var map = { name:-1, phone:-1, company:-1, center:-1, class_name:-1, group_name:-1, group_num:-1, dinner_table_num:-1, is_student:-1 };
+  function normalizeHeader(h) {
+    return String(h||"").trim().toLowerCase()
+      .replace(/[（(][^）)]*[）)]/g, "")
+      .replace(/[\s*＊:：_\-/]+/g, "");
+  }
   function match(h) {
-    h = String(h||"").trim().toLowerCase();
-    if (/^(姓名|名字|name|学员姓名|参会人)$/i.test(h)) return "name";
-    if (/^(手机号|手机号码|电话|phone|tel|mobile|联系电话)$/i.test(h)) return "phone";
+    h = normalizeHeader(h);
+    if (/^(姓名|名字|name|学员姓名|参会人|参会人姓名|报名人|报名人姓名|嘉宾姓名)$/i.test(h)) return "name";
+    if (/^(手机号|手机号码|电话|phone|tel|mobile|联系电话|联系手机|报名手机)$/i.test(h)) return "phone";
     if (/^(公司|企业|单位|company|公司名称|工作单位)$/i.test(h)) return "company";
     if (/^(分中心|中心|center|分部|所属分中心)$/i.test(h)) return "center";
     if (/^(班级|班|class|班级名称)$/i.test(h)) return "class_name";
@@ -499,8 +504,19 @@ function detectColumns(headers) {
   return map;
 }
 
-function guessByPosition(headers) {
-  return { name:0, phone:1, company:2, center:4, class_name:3, group_name:5, group_num:7, dinner_table_num:8, is_student:6 };
+function findHeaderRow(rows) {
+  var best = null;
+  var scanLimit = Math.min(100, rows.length);
+  for (var i = 0; i < scanLimit; i++) {
+    if (!Array.isArray(rows[i])) continue;
+    var columns = detectColumns(rows[i]);
+    if (columns.name < 0 || columns.phone < 0) continue;
+    var recognized = Object.keys(columns).filter(function(key){return columns[key] >= 0;}).length;
+    if (!best || recognized > best.recognized) {
+      best = { rowIndex:i, columns:columns, recognized:recognized };
+    }
+  }
+  return best;
 }
 
 function handleFile(e) {
@@ -519,52 +535,28 @@ function handleFile(e) {
       var wb = XLSX.read(evt.target.result, {type:"array"});
       var arr = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], {header:1, defval:""});
       
-      var headerRow = 0, dataStart = 1;
-      for (var hr = 0; hr < Math.min(5, arr.length); hr++) {
-        var row = arr[hr];
-        if (!row) continue;
-        for (var ci = 0; ci < row.length; ci++) {
-          if (/^(姓名|名字|name|学员姓名)$/i.test(String(row[ci]||"").trim())) {
-            headerRow = hr; dataStart = hr + 1; break;
-          }
-        }
-        if (dataStart > 1) break;
-      }
-      if (dataStart === 1) {
-        var tryRow = arr[3];
-        if (tryRow) {
-          for (var ci2 = 0; ci2 < tryRow.length; ci2++) {
-            if (/^(姓名|名字|name)/i.test(String(tryRow[ci2]||"").trim())) { headerRow = 3; dataStart = 4; break; }
-          }
-        }
-      }
-      
-      var headers = headerRow >= 0 && arr[headerRow] ? arr[headerRow] : [];
-      var col = detectColumns(headers);
-      // 统计维度必须来自真实识别到的表头，不能来自后面的固定位置猜测。
-      // 否则“是否学员”等普通列可能被误写成分中心，造成统计标题和分组错误。
+      var header = findHeaderRow(arr);
+      if (!header) throw new Error("前100行未找到同时包含“姓名”和“手机号”的表头，请检查列名");
+      var headerRow = header.rowIndex;
+      var dataStart = headerRow + 1;
+      var col = header.columns;
       uploadGroupField = col.center >= 0 ? "center" :
         (col.class_name >= 0 ? "class_name" : (col.group_name >= 0 ? "group_name" : ""));
-      var fallback = guessByPosition(headers);
       
-      var mapHtml = "列识别：";
-      function colStatus(key, label, allowGuess) {
+      var mapHtml = "自动识别表头：第"+(headerRow+1)+"行<br>列识别：";
+      function colStatus(key, label) {
         var idx = col[key];
         if (idx >= 0) return '<span class="ok">'+label+'=第'+(idx+1)+'列</span>';
-        if (allowGuess) {
-          col[key] = fallback[key];
-          return '<span class="warn">'+label+'=第'+(fallback[key]+1)+'列(推测)</span>';
-        }
         return '<span class="warn">'+label+'=未识别</span>';
       }
-      mapHtml += colStatus("name","姓名",true) + "　";
-      mapHtml += colStatus("phone","手机号",true) + "<br>";
-      mapHtml += colStatus("company","公司",false) + "　";
-      mapHtml += colStatus("center","分中心",false) + "　";
-      mapHtml += colStatus("class_name","班级",false) + "　";
-      mapHtml += colStatus("group_name","小组",false) + "<br>";
-      mapHtml += colStatus("group_num","组号",false) + "　";
-      mapHtml += colStatus("dinner_table_num","桌号",false);
+      mapHtml += colStatus("name","姓名") + "　";
+      mapHtml += colStatus("phone","手机号") + "<br>";
+      mapHtml += colStatus("company","公司") + "　";
+      mapHtml += colStatus("center","分中心") + "　";
+      mapHtml += colStatus("class_name","班级") + "　";
+      mapHtml += colStatus("group_name","小组") + "<br>";
+      mapHtml += colStatus("group_num","组号") + "　";
+      mapHtml += colStatus("dinner_table_num","桌号");
       document.getElementById("colMapInfo").innerHTML = mapHtml;
       document.getElementById("colMapInfo").style.display = "block";
       
@@ -698,7 +690,7 @@ async function uploadData() {
     var d = await r.json();
     if (d.ok) {
       showMsg(msg, d.msg, "success");
-      document.getElementById("uploadArea").innerHTML = '<div class="icon">&#x1f4c1;</div><div class="text">点击上传 Excel 报名表</div><div class="hint">支持互动吧导出的 .xls / .xlsx（自动识别列名）</div>';
+      document.getElementById("uploadArea").innerHTML = '<div class="icon">&#x1f4c1;</div><div class="text">点击上传 Excel 报名表</div><div class="hint">支持 .xls / .xlsx；自动查找前100行表头，列顺序不限</div>';
       document.getElementById("colMapInfo").style.display = "none";
       document.getElementById("uploadPreview").className = "upload-preview";
       document.getElementById("uploadPreview").innerHTML = "";
