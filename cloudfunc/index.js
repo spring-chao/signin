@@ -146,13 +146,21 @@ exports.main = async (event, context) => {
     return { statusCode: 200, headers: h, body: JSON.stringify({ ok: true, token: await issueAdminToken(), expires_in: ADMIN_TOKEN_TTL_MS / 1000 }) };
   }
 
-  const protectedPaths = new Set(["/settings", "/export", "/stats", "/upload_preview", "/upload", "/reset", "/clear_all"]);
+  const protectedPaths = new Set(["/settings", "/registration", "/attendance_status", "/export", "/stats", "/upload_preview", "/upload", "/reset", "/clear_all"]);
   if (protectedPaths.has(p) && !(await isAdminRequest())) return unauthorized();
 
   function identityKey(person) {
     var name = String(person.name || "").trim().replace(/\s+/g, "").toLowerCase();
     var phone = String(person.phone || "").trim().replace(/\s/g, "").replace(/-/g, "");
     return name + "|" + phone;
+  }
+
+  function normalizeAttendanceStatus(value) {
+    return ["late", "leave"].includes(String(value || "")) ? String(value) : "pending";
+  }
+
+  function attendanceStatusLabel(value) {
+    return { pending: "未签到", late: "迟到", leave: "请假" }[normalizeAttendanceStatus(value)];
   }
 
   function buildAttendanceState(regs, checkins) {
@@ -249,7 +257,7 @@ exports.main = async (event, context) => {
       return (rows || []).map(row => JSON.stringify(fields.map(field => String(row[field] || "")))).sort();
     }
     return crypto.createHash("sha256").update(JSON.stringify(
-      stableRows(registrations, ["_id", "name", "phone", "center", "class_name", "group_name", "company", "group_num", "dinner_table_num", "batch_id"])
+      stableRows(registrations, ["_id", "name", "phone", "center", "class_name", "group_name", "company", "group_num", "dinner_table_num", "attendance_status", "attendance_note", "batch_id"])
     )).digest("hex");
   }
 
@@ -276,7 +284,7 @@ exports.main = async (event, context) => {
     return actual.length === expected.length && crypto.timingSafeEqual(actual, expected);
   }
 
-  function detectGroupField(regs, preferredField) {
+  function detectGroupField(regs) {
     var definitions = {
       center: { label: "分中心" },
       class_name: { label: "班级" },
@@ -288,9 +296,6 @@ exports.main = async (event, context) => {
         if (normalizeGroupValue(r[field])) fields[field]++;
       });
     });
-    if (definitions[preferredField] && fields[preferredField] > 0) {
-      return { field: preferredField, label: definitions[preferredField].label };
-    }
     if (fields.center > 0) return { field: "center", label: definitions.center.label };
     if (fields.class_name > 0) return { field: "class_name", label: definitions.class_name.label };
     if (fields.group_name > 0) return { field: "group_name", label: definitions.group_name.label };
@@ -322,8 +327,7 @@ exports.main = async (event, context) => {
       const totalSlots = matchingRegs.length;
       const checkedSlots = totalSlots - remainingIndexes.length;
       const ds = await getDisplaySettings();
-      const preferredGroupField = await getConfig("group_field", "");
-      const gf = detectGroupField(matchingRegs, preferredGroupField);
+      const gf = detectGroupField(matchingRegs);
 
       function makeDisplayData(reg) {
         return {
@@ -394,6 +398,65 @@ exports.main = async (event, context) => {
     }
   }
 
+  // ===== ADMIN MANUAL REGISTRATION =====
+  if (p === "/registration" && method === "POST") {
+    try {
+      const registration = {
+        name: String(data.name || "").trim(),
+        phone: String(data.phone || "").trim().replace(/\s/g, "").replace(/-/g, ""),
+        center: String(data.center || "").trim(),
+        class_name: String(data.class_name || "").trim(),
+        group_name: String(data.group_name || "").trim(),
+        company: String(data.company || "").trim(),
+        group_num: null,
+        dinner_table_num: null,
+        attendance_status: "pending",
+        attendance_note: "",
+        source: "manual",
+        created_at: new Date().toISOString()
+      };
+      if (!registration.name) return { statusCode: 200, headers: h, body: JSON.stringify({ ok: false, msg: "请输入姓名" }) };
+      if (!/^\d{11}$/.test(registration.phone)) return { statusCode: 200, headers: h, body: JSON.stringify({ ok: false, msg: "请输入正确的11位手机号" }) };
+
+      const activeBatchId = await getConfig("active_batch_id", "");
+      const regs = await getActiveRows("registrations", 5000);
+      if (regs.some(row => identityKey(row) === identityKey(registration))) {
+        return { statusCode: 200, headers: h, body: JSON.stringify({ ok: false, msg: "当前活动已有相同姓名和手机号的报名记录" }) };
+      }
+      const result = await db.collection("registrations").add({ ...registration, batch_id: activeBatchId || "" });
+      return { statusCode: 200, headers: h, body: JSON.stringify({ ok: true, registration_id: result.id || result._id || "", msg: "临时报名已新增，学长现在可以正常签到" }) };
+    } catch (e) {
+      return { statusCode: 200, headers: h, body: JSON.stringify({ ok: false, msg: "新增失败: " + (e.message || "") }) };
+    }
+  }
+
+  // ===== ADMIN ATTENDANCE FOLLOW-UP =====
+  if (p === "/attendance_status" && method === "POST") {
+    try {
+      const registrationId = String(data.registration_id || "").trim();
+      const status = normalizeAttendanceStatus(data.status);
+      const note = String(data.note || "").trim().slice(0, 200);
+      if (!registrationId) return { statusCode: 200, headers: h, body: JSON.stringify({ ok: false, msg: "缺少报名记录标识" }) };
+
+      const regs = await getActiveRows("registrations", 5000);
+      const index = regs.findIndex(row => String(row._id || "") === registrationId);
+      if (index < 0) return { statusCode: 200, headers: h, body: JSON.stringify({ ok: false, msg: "未找到当前活动的报名记录" }) };
+      const cks = await getActiveRows("checkins", 5000);
+      if (buildAttendanceState(regs, cks).checkedIndexes.has(index)) {
+        return { statusCode: 200, headers: h, body: JSON.stringify({ ok: false, checked: true, msg: "该学长已签到，最终状态以实际签到为准" }) };
+      }
+
+      await db.collection("registrations").doc(registrationId).update({
+        attendance_status: status,
+        attendance_note: note,
+        attendance_status_updated_at: new Date().toISOString()
+      });
+      return { statusCode: 200, headers: h, body: JSON.stringify({ ok: true, status, status_label: attendanceStatusLabel(status), msg: "状态已更新为“" + attendanceStatusLabel(status) + "”" }) };
+    } catch (e) {
+      return { statusCode: 200, headers: h, body: JSON.stringify({ ok: false, msg: "状态更新失败: " + (e.message || "") }) };
+    }
+  }
+
   // ===== EXPORT =====
   if (p === "/export" && method === "POST") {
     try {
@@ -412,8 +475,9 @@ exports.main = async (event, context) => {
           group_name: normalizeGroupValue(r.group_name),
           group_num: r.group_num || "",
           dinner_table_num: r.dinner_table_num || "",
-          sign_status: ck ? "已签到" : "未签到",
-          sign_time: ck ? (ck.checked_at || "") : ""
+          sign_status: ck ? "已签到" : attendanceStatusLabel(r.attendance_status),
+          sign_time: ck ? (ck.checked_at || "") : "",
+          attendance_note: ck ? "" : (r.attendance_note || "")
         };
       });
       return { statusCode: 200, headers: h, body: JSON.stringify({ ok: true, rows: rows }) };
@@ -433,8 +497,7 @@ exports.main = async (event, context) => {
       const total = regs.length;
       const checked = attendance.checkedIndexes.size;
       const rate = total > 0 ? Math.round(checked / total * 1000) / 10 : 0;
-      const preferredGroupField = await getConfig("group_field", "");
-      const gf = detectGroupField(regs, preferredGroupField);
+      const gf = detectGroupField(regs);
       const groups = {};
       regs.forEach((a, index) => {
         const gv = normalizeGroupValue(a[gf.field]) || "未知";
@@ -442,11 +505,26 @@ exports.main = async (event, context) => {
         groups[gv].total++;
         if (attendance.checkedIndexes.has(index)) groups[gv].checked++;
       });
-      const nc = regs.filter((a, index) => !attendance.checkedIndexes.has(index)).map(a => ({ name: a.name, center: normalizeGroupValue(a.center), class_name: normalizeGroupValue(a.class_name), group_name: normalizeGroupValue(a.group_name), company: a.company || "" }));
+      const nc = regs.filter((a, index) => !attendance.checkedIndexes.has(index)).map(a => ({
+        registration_id: a._id || "",
+        name: a.name,
+        phone: a.phone || "",
+        center: normalizeGroupValue(a.center),
+        class_name: normalizeGroupValue(a.class_name),
+        group_name: normalizeGroupValue(a.group_name),
+        company: a.company || "",
+        attendance_status: normalizeAttendanceStatus(a.attendance_status),
+        attendance_status_label: attendanceStatusLabel(a.attendance_status),
+        attendance_note: a.attendance_note || ""
+      }));
+      const followUp = nc.reduce((counts, row) => {
+        counts[row.attendance_status]++;
+        return counts;
+      }, { pending: 0, late: 0, leave: 0 });
       const rc = cks.sort((a, b) => (b.checked_at || "").localeCompare(a.checked_at || "")).slice(0, 20).map(r => ({ name: r.name, center: normalizeGroupValue(r.center), class_name: normalizeGroupValue(r.class_name), group_name: normalizeGroupValue(r.group_name), company: r.company || "", group_num: r.group_num || null, dinner_table_num: r.dinner_table_num || null, checked_at: r.checked_at }));
-      return { statusCode: 200, headers: h, body: JSON.stringify({ event_name: eventName, show_group: ds.show_group, show_dinner_table: ds.show_dinner_table, total, checked, rate, group_type: gf.label, groups, not_checked: nc, recent: rc }) };
+      return { statusCode: 200, headers: h, body: JSON.stringify({ event_name: eventName, show_group: ds.show_group, show_dinner_table: ds.show_dinner_table, total, checked, rate, pending: followUp.pending, late: followUp.late, leave: followUp.leave, group_field: gf.field, group_type: gf.label, groups, not_checked: nc, recent: rc }) };
     } catch (e) {
-      return { statusCode: 200, headers: h, body: JSON.stringify({ total: 0, checked: 0, rate: 0, group_type: "分组", groups: {}, not_checked: [], recent: [] }) };
+      return { statusCode: 200, headers: h, body: JSON.stringify({ total: 0, checked: 0, rate: 0, pending: 0, late: 0, leave: 0, group_type: "分组", groups: {}, not_checked: [], recent: [] }) };
     }
   }
 

@@ -18,6 +18,13 @@
 3. 上传新的 Excel 报名表（支持互动吧导出的 `.xls` / `.xlsx`）
 4. 系统自动替换报名数据，清空签到记录
 
+活动进行中还可以在后台：
+
+- 单独新增临时报名，填写姓名、手机号、分中心、班级、小组等信息，不覆盖现有名单；
+- 查看未签到名单。分类维度按“分中心 → 班级 → 小组”择一使用：有分中心数据时按分中心，没有时才依次改用班级、小组；
+- 电话确认后将未签到人员标记为“迟到”或“请假”，并记录选填备注；
+- 学长之后完成实际签到，最终状态自动以“已签到”为准。
+
 > **Excel 格式要求**：第一行为表头，从第5行开始读取数据，列顺序为：姓名、手机号、公司、分中心。
 
 ---
@@ -110,6 +117,8 @@ tcb hosting delete /v3/admin.html -e {你的环境ID}
 | `/api/event` | GET | 获取当前活动名称和报名人数 |
 | `/api/checkin` | POST | 签到（姓名+手机号） |
 | `/api/stats` | GET | 签到统计数据 |
+| `/api/registration` | POST | 后台新增单条临时报名 |
+| `/api/attendance_status` | POST | 后台标记未签到、迟到或请假 |
 | `/api/upload` | POST | 管理后台导入 Excel |
 | `/api/reset` | POST | 清空签到记录 |
 | `/api/clear_all` | POST | 清空全部数据 |
@@ -126,6 +135,13 @@ POST /api/checkin
 ```
 
 > 注意：`name` 字段需 URL 编码（`encodeURIComponent`），`_e: 1` 表示已编码。
+
+## 回归测试
+
+```bash
+node tests/checkin_api.test.js
+node --check cloudfunc/index.js
+```
 
 ## 技术说明
 

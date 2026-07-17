@@ -29,6 +29,8 @@ body{font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;backgr
 .form-field input{width:100%;padding:11px 12px;border-radius:9px;border:1px solid rgba(255,255,255,.12);background:rgba(255,255,255,.05);color:#fff;font-size:14px;outline:none}
 .form-field input:focus{border-color:#3b82f6}
 .form-field input::placeholder{color:#475569}
+.form-grid{display:grid;grid-template-columns:1fr 1fr;gap:0 10px}
+.form-help{font-size:11px;color:#64748b;line-height:1.6;margin:-2px 0 12px}
 .upload-area{border:2px dashed rgba(255,255,255,.15);border-radius:12px;padding:20px;text-align:center;margin-bottom:12px;cursor:pointer}
 .upload-area:hover{border-color:#3b82f6;background:rgba(59,130,246,.05)}
 .upload-area .icon{font-size:32px;margin-bottom:6px}
@@ -65,6 +67,27 @@ body{font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;backgr
 .list-item{display:flex;justify-content:space-between;align-items:center;padding:10px 0;border-bottom:1px solid rgba(255,255,255,.05);font-size:13px}
 .list-item .li-name{font-weight:500}
 .list-item .li-meta{color:#64748b;font-size:11px}
+.missing-summary{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px}
+.summary-chip{padding:5px 9px;border-radius:999px;background:rgba(255,255,255,.06);font-size:11px;color:#94a3b8}
+.summary-chip.late{color:#fbbf24;background:rgba(245,158,11,.12)}
+.summary-chip.leave{color:#c4b5fd;background:rgba(139,92,246,.12)}
+.missing-group{margin-bottom:12px;border:1px solid rgba(255,255,255,.07);border-radius:12px;overflow:hidden;background:rgba(255,255,255,.025)}
+.missing-group-title{padding:10px 12px;background:rgba(59,130,246,.1);font-size:13px;font-weight:700;color:#bfdbfe}
+.missing-group-title span{float:right;color:#64748b;font-size:11px;font-weight:400}
+.missing-person{padding:11px 12px;border-top:1px solid rgba(255,255,255,.05)}
+.missing-person:first-child{border-top:none}
+.person-line{display:flex;align-items:center;gap:7px;flex-wrap:wrap}
+.person-name{font-size:14px;font-weight:600;color:#e2e8f0}
+.status-badge{padding:2px 7px;border-radius:999px;font-size:10px;color:#94a3b8;background:rgba(148,163,184,.12)}
+.status-badge.late{color:#fbbf24;background:rgba(245,158,11,.14)}
+.status-badge.leave{color:#c4b5fd;background:rgba(139,92,246,.14)}
+.person-meta{font-size:11px;color:#64748b;line-height:1.6;margin-top:4px;word-break:break-all}
+.phone-link{color:#60a5fa;text-decoration:none;font-variant-numeric:tabular-nums}
+.status-actions{display:flex;gap:6px;margin-top:8px;flex-wrap:wrap}
+.mini-btn{padding:5px 10px;border-radius:7px;border:1px solid rgba(255,255,255,.1);background:rgba(255,255,255,.05);color:#94a3b8;font-size:11px;cursor:pointer}
+.mini-btn.late{color:#fbbf24;border-color:rgba(245,158,11,.25)}
+.mini-btn.leave{color:#c4b5fd;border-color:rgba(139,92,246,.25)}
+.mini-btn.active{background:rgba(59,130,246,.18);color:#fff;border-color:#3b82f6}
 .group-bars{margin-bottom:12px}
 .group-row{display:flex;align-items:center;padding:6px 0;font-size:13px}
 .group-row .g-name{width:80px;text-align:right;margin-right:10px;color:#94a3b8;flex-shrink:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
@@ -87,6 +110,7 @@ input:checked+.slider:before{transform:translateX(20px)}
 .col-map .warn{color:#fbbf24}
 .footer{text-align:center;padding:20px;font-size:12px;color:#475569}
 .footer a{color:#64748b;text-decoration:none}
+@media(max-width:480px){.form-grid{grid-template-columns:1fr}.overview{gap:6px}.ov-item{padding:12px 5px}.ov-item .num{font-size:26px}}
 </style>
 </head>
 <body>
@@ -113,6 +137,21 @@ input:checked+.slider:before{transform:translateX(20px)}
         <label class="switch"><input type="checkbox" id="toggleDinner" onchange="saveToggle()"><span class="slider"></span></label>
       </div>
       <div class="msg" id="toggleMsg"></div>
+    </div>
+
+    <div class="section" style="background:rgba(255,255,255,.04);border-radius:12px;padding:16px;border:1px solid rgba(255,255,255,.06)">
+      <h3>&#x2795; 新增临时报名</h3>
+      <div class="form-grid">
+        <div class="form-field"><label for="manualName">姓名 <span>（必填）</span></label><input id="manualName" type="text" maxlength="50" placeholder="学长姓名"></div>
+        <div class="form-field"><label for="manualPhone">手机号 <span>（必填）</span></label><input id="manualPhone" type="tel" inputmode="numeric" maxlength="11" placeholder="11位手机号"></div>
+        <div class="form-field"><label for="manualCenter">分中心</label><input id="manualCenter" type="text" maxlength="50" placeholder="如：东莞分中心"></div>
+        <div class="form-field"><label for="manualClass">班级</label><input id="manualClass" type="text" maxlength="50" placeholder="如：广东一班"></div>
+        <div class="form-field"><label for="manualGroup">小组</label><input id="manualGroup" type="text" maxlength="50" placeholder="如：第一组"></div>
+        <div class="form-field"><label for="manualCompany">公司 <span>（选填）</span></label><input id="manualCompany" type="text" maxlength="100" placeholder="公司名称"></div>
+      </div>
+      <div class="form-help">组织信息按实际情况填写；未签到名单会优先按分中心分类，没有分中心数据时才改按班级、小组分类。</div>
+      <button class="btn primary full" id="manualAddBtn" onclick="addManualRegistration()">确认新增报名</button>
+      <div class="msg" id="manualAddMsg"></div>
     </div>
 
     <div class="section">
@@ -234,6 +273,58 @@ async function saveToggle() {
   } catch(e) {}
 }
 
+async function addManualRegistration() {
+  var btn = document.getElementById("manualAddBtn");
+  var msg = document.getElementById("manualAddMsg");
+  var payload = {
+    name: document.getElementById("manualName").value.trim(),
+    phone: document.getElementById("manualPhone").value.trim(),
+    center: document.getElementById("manualCenter").value.trim(),
+    class_name: document.getElementById("manualClass").value.trim(),
+    group_name: document.getElementById("manualGroup").value.trim(),
+    company: document.getElementById("manualCompany").value.trim()
+  };
+  if (!payload.name) { showMsg(msg, "请输入姓名", "error"); return; }
+  if (!/^\d{11}$/.test(payload.phone)) { showMsg(msg, "请输入正确的11位手机号", "error"); return; }
+  btn.disabled = true; btn.textContent = "新增中...";
+  try {
+    var r = await adminFetch("/registration", {method:"POST",body:JSON.stringify(payload)});
+    var d = await r.json();
+    if (!d.ok) { showMsg(msg, d.msg || "新增失败", "error"); return; }
+    ["manualName","manualPhone","manualCenter","manualClass","manualGroup","manualCompany"].forEach(function(id){document.getElementById(id).value="";});
+    showMsg(msg, d.msg, "success");
+    await loadData();
+  } catch(e) {
+    showMsg(msg, "新增失败："+e.message, "error");
+  } finally {
+    btn.disabled = false; btn.textContent = "确认新增报名";
+  }
+}
+
+async function setAttendanceStatus(button) {
+  var registrationId = button.getAttribute("data-id") || "";
+  var status = button.getAttribute("data-status") || "pending";
+  var person = (currentData.not_checked || []).find(function(row){return row.registration_id === registrationId;}) || {};
+  var note = "";
+  if (status !== "pending") {
+    var promptText = status === "late" ? "可填写预计到达时间或备注（选填）" : "可填写请假原因或备注（选填）";
+    var input = prompt(promptText, person.attendance_note || "");
+    if (input === null) return;
+    note = input.trim();
+  }
+  button.disabled = true;
+  try {
+    var r = await adminFetch("/attendance_status", {method:"POST",body:JSON.stringify({registration_id:registrationId,status:status,note:note})});
+    var d = await r.json();
+    if (!d.ok) alert(d.msg || "状态更新失败");
+    await loadData();
+  } catch(e) {
+    alert("状态更新失败："+e.message);
+  } finally {
+    button.disabled = false;
+  }
+}
+
 async function exportExcel() {
   var btn = event.target, msg = document.getElementById("exportMsg");
   btn.disabled = true; btn.textContent = "导出中...";
@@ -247,7 +338,7 @@ async function exportExcel() {
     
     // Build Excel using SheetJS
     var rows = d.rows || [];
-    var headers = ["序号","姓名","手机号","公司","分中心","班级","小组","组号","桌号","签到状态","签到时间"];
+    var headers = ["序号","姓名","手机号","公司","分中心","班级","小组","组号","桌号","签到状态","签到时间","跟进备注"];
     var data = [];
     rows.forEach(function(row, idx) {
       data.push([
@@ -261,13 +352,14 @@ async function exportExcel() {
         row.group_num,
         row.dinner_table_num,
         row.sign_status,
-        row.sign_time
+        row.sign_time,
+        row.attendance_note || ""
       ]);
     });
     var ws = XLSX.utils.aoa_to_sheet([headers].concat(data));
     // Set column widths
     ws["!cols"] = [
-      {wch:6},{wch:10},{wch:15},{wch:18},{wch:14},{wch:12},{wch:10},{wch:6},{wch:6},{wch:10},{wch:20}
+      {wch:6},{wch:10},{wch:15},{wch:18},{wch:14},{wch:12},{wch:10},{wch:6},{wch:6},{wch:10},{wch:20},{wch:24}
     ];
     var wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, "签到名单");
@@ -297,10 +389,52 @@ function renderTab() {
     });
     h += '</div></div>';
   } else if (currentTab === "missing") {
-    h = '<div class="section"><h3>&#x26a0; 未签到 ('+currentData.not_checked.length+'人)</h3>';
-    currentData.not_checked.forEach(function(n) {
-      h += '<div class="list-item"><div><span class="li-name">'+esc(n.name)+'</span><span class="li-meta"> · '+esc(n.center||n.class_name||n.group_name||"")+'</span></div><span class="li-meta">'+esc(n.company||"")+'</span></div>';
+    var groupField = currentData.group_field || ({"分中心":"center","班级":"class_name","小组":"group_name"}[currentData.group_type] || "center");
+    var groupLabel = currentData.group_type || "分组";
+    var missing = currentData.not_checked || [];
+    var grouped = {};
+    missing.forEach(function(n) {
+      var key = String(n[groupField] || "").trim() || "未分组";
+      if (!grouped[key]) grouped[key] = [];
+      grouped[key].push(n);
     });
+    h = '<div class="section"><h3>&#x26a0; 未签到 ('+missing.length+'人) · 按'+esc(groupLabel)+'分类</h3>'+
+      '<div class="missing-summary">'+
+        '<span class="summary-chip">待确认 '+Number(currentData.pending||0)+'</span>'+
+        '<span class="summary-chip late">迟到 '+Number(currentData.late||0)+'</span>'+
+        '<span class="summary-chip leave">请假 '+Number(currentData.leave||0)+'</span>'+
+      '</div>';
+    var groupKeys = Object.keys(grouped).sort(function(a,b) {
+      if (a === "未分组") return 1;
+      if (b === "未分组") return -1;
+      return a.localeCompare(b, "zh-CN");
+    });
+    groupKeys.forEach(function(key) {
+      var people = grouped[key].slice().sort(function(a,b) {
+        var order = {pending:0,late:1,leave:2};
+        return (order[a.attendance_status]||0) - (order[b.attendance_status]||0) || String(a.name||"").localeCompare(String(b.name||""), "zh-CN");
+      });
+      h += '<div class="missing-group"><div class="missing-group-title">'+esc(key)+'<span>'+people.length+'人</span></div>';
+      people.forEach(function(n) {
+        var status = n.attendance_status || "pending";
+        var meta = [];
+        if (groupField !== "center" && n.center) meta.push("分中心："+n.center);
+        if (groupField !== "class_name" && n.class_name) meta.push("班级："+n.class_name);
+        if (groupField !== "group_name" && n.group_name) meta.push("小组："+n.group_name);
+        if (n.company) meta.push(n.company);
+        if (n.attendance_note) meta.push("备注："+n.attendance_note);
+        h += '<div class="missing-person">'+
+          '<div class="person-line"><span class="person-name">'+esc(n.name)+'</span><span class="status-badge '+esc(status)+'">'+esc(n.attendance_status_label||"未签到")+'</span><a class="phone-link" href="tel:'+esc(n.phone)+'">'+esc(n.phone||"无手机号")+'</a></div>'+
+          (meta.length ? '<div class="person-meta">'+esc(meta.join(" · "))+'</div>' : '')+
+          '<div class="status-actions">'+
+            '<button class="mini-btn '+(status==="pending"?'active':'')+'" data-id="'+esc(n.registration_id)+'" data-status="pending" onclick="setAttendanceStatus(this)">未签到</button>'+
+            '<button class="mini-btn late '+(status==="late"?'active':'')+'" data-id="'+esc(n.registration_id)+'" data-status="late" onclick="setAttendanceStatus(this)">迟到</button>'+
+            '<button class="mini-btn leave '+(status==="leave"?'active':'')+'" data-id="'+esc(n.registration_id)+'" data-status="leave" onclick="setAttendanceStatus(this)">请假</button>'+
+          '</div></div>';
+      });
+      h += '</div>';
+    });
+    h += '</div>';
   } else if (currentTab === "recent") {
     h = '<div class="section"><h3>&#x2705; 最近签到</h3>';
     currentData.recent.forEach(function(r) {
