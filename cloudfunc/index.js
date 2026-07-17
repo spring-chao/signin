@@ -100,6 +100,25 @@ exports.main = async (event, context) => {
     return /^(是|否|有|无|yes|no|true|false|0|1)$/i.test(value) ? "" : value;
   }
 
+  function normalizeCenterValue(value) {
+    const compact = normalizeGroupValue(value).replace(/[\s·•_\-—]+/g, "");
+    if (!compact) return "";
+    const centers = [
+      { pattern: /园区/, name: "园区分中心" },
+      { pattern: /(姑苏|相城)/, name: "姑苏相城分中心" },
+      { pattern: /吴江/, name: "吴江分中心" },
+      { pattern: /昆山/, name: "昆山分中心" },
+      { pattern: /新吴/, name: "新吴分中心" },
+      { pattern: /张家港/, name: "张家港分中心" }
+    ];
+    const matched = centers.find(center => center.pattern.test(compact));
+    return matched ? matched.name : "";
+  }
+
+  function normalizeDimensionValue(row, field) {
+    return field === "center" ? normalizeCenterValue(row.center) : normalizeGroupValue(row[field]);
+  }
+
   async function getAuthSecret() {
     var secret = await getConfig("admin_auth_secret", "");
     if (!secret) {
@@ -212,7 +231,7 @@ exports.main = async (event, context) => {
       const cleanRow = {
         name: String(row.name || "").trim(),
         phone: String(row.phone || "").trim().replace(/\s/g, "").replace(/-/g, ""),
-        center: String(row.center || "").trim(),
+        center: normalizeCenterValue(row.center),
         class_name: String(row.class_name || "").trim(),
         group_name: String(row.group_name || "").trim(),
         company: String(row.company || "").trim(),
@@ -293,7 +312,7 @@ exports.main = async (event, context) => {
     var fields = { center: 0, class_name: 0, group_name: 0 };
     regs.forEach(function(r) {
       Object.keys(fields).forEach(function(field) {
-        if (normalizeGroupValue(r[field])) fields[field]++;
+        if (normalizeDimensionValue(r, field)) fields[field]++;
       });
     });
     if (fields.center > 0) return { field: "center", label: definitions.center.label };
@@ -333,11 +352,11 @@ exports.main = async (event, context) => {
         return {
           name: regName,
           phone,
-          center: normalizeGroupValue(reg.center),
+          center: normalizeCenterValue(reg.center),
           class_name: normalizeGroupValue(reg.class_name),
           group_name: normalizeGroupValue(reg.group_name),
           group_type: gf.label,
-          group_value: normalizeGroupValue(reg[gf.field]),
+          group_value: normalizeDimensionValue(reg, gf.field),
           company: reg.company || "",
           group_num: ds.show_group === "true" ? (reg.group_num || null) : null,
           dinner_table_num: ds.show_dinner_table === "true" ? (reg.dinner_table_num || null) : null,
@@ -365,7 +384,7 @@ exports.main = async (event, context) => {
       const now = new Date().toISOString();
       for (const index of selectedIndexes) {
         const reg = matchingRegs[index];
-        await db.collection("checkins").add({ registration_id: reg._id || "", name: String(reg.name || "").trim(), phone, center: normalizeGroupValue(reg.center), class_name: normalizeGroupValue(reg.class_name), group_name: normalizeGroupValue(reg.group_name), company: reg.company || "", group_num: reg.group_num || null, dinner_table_num: reg.dinner_table_num || null, batch_id: activeBatchId || "", checked_at: now });
+        await db.collection("checkins").add({ registration_id: reg._id || "", name: String(reg.name || "").trim(), phone, center: normalizeCenterValue(reg.center), class_name: normalizeGroupValue(reg.class_name), group_name: normalizeGroupValue(reg.group_name), company: reg.company || "", group_num: reg.group_num || null, dinner_table_num: reg.dinner_table_num || null, batch_id: activeBatchId || "", checked_at: now });
       }
       const newCheckedSlots = checkedSlots + quantity;
       return { statusCode: 200, headers: h, body: JSON.stringify({ ok: true, msg: "签到成功，本次登记" + quantity + "人", checked_count: quantity, data: { ...makeDisplayData(matchingRegs[selectedIndexes[0]]), multi_checked: newCheckedSlots, checked_at: now } }) };
@@ -404,7 +423,7 @@ exports.main = async (event, context) => {
       const registration = {
         name: String(data.name || "").trim(),
         phone: String(data.phone || "").trim().replace(/\s/g, "").replace(/-/g, ""),
-        center: String(data.center || "").trim(),
+        center: normalizeCenterValue(data.center),
         class_name: String(data.class_name || "").trim(),
         group_name: String(data.group_name || "").trim(),
         company: String(data.company || "").trim(),
@@ -492,7 +511,7 @@ exports.main = async (event, context) => {
           name: r.name || "",
           phone: r.phone || "",
           company: r.company || "",
-          center: normalizeGroupValue(r.center),
+          center: normalizeCenterValue(r.center),
           class_name: normalizeGroupValue(r.class_name),
           group_name: normalizeGroupValue(r.group_name),
           group_num: r.group_num || "",
@@ -522,7 +541,7 @@ exports.main = async (event, context) => {
       const gf = detectGroupField(regs);
       const groups = {};
       regs.forEach((a, index) => {
-        const gv = normalizeGroupValue(a[gf.field]) || "未知";
+        const gv = normalizeDimensionValue(a, gf.field) || "未知";
         if (!groups[gv]) groups[gv] = { total: 0, checked: 0 };
         groups[gv].total++;
         if (attendance.checkedIndexes.has(index)) groups[gv].checked++;
@@ -531,7 +550,7 @@ exports.main = async (event, context) => {
         registration_id: a._id || "",
         name: a.name,
         phone: a.phone || "",
-        center: normalizeGroupValue(a.center),
+        center: normalizeCenterValue(a.center),
         class_name: normalizeGroupValue(a.class_name),
         group_name: normalizeGroupValue(a.group_name),
         company: a.company || "",
@@ -543,7 +562,7 @@ exports.main = async (event, context) => {
         counts[row.attendance_status]++;
         return counts;
       }, { pending: 0, late: 0, leave: 0 });
-      const rc = cks.sort((a, b) => (b.checked_at || "").localeCompare(a.checked_at || "")).slice(0, 20).map(r => ({ name: r.name, center: normalizeGroupValue(r.center), class_name: normalizeGroupValue(r.class_name), group_name: normalizeGroupValue(r.group_name), company: r.company || "", group_num: r.group_num || null, dinner_table_num: r.dinner_table_num || null, checked_at: r.checked_at }));
+      const rc = cks.sort((a, b) => (b.checked_at || "").localeCompare(a.checked_at || "")).slice(0, 20).map(r => ({ name: r.name, center: normalizeCenterValue(r.center), class_name: normalizeGroupValue(r.class_name), group_name: normalizeGroupValue(r.group_name), company: r.company || "", group_num: r.group_num || null, dinner_table_num: r.dinner_table_num || null, checked_at: r.checked_at }));
       return { statusCode: 200, headers: h, body: JSON.stringify({ event_name: eventName, show_group: ds.show_group, show_dinner_table: ds.show_dinner_table, total, checked, rate, pending: followUp.pending, late: followUp.late, leave: followUp.leave, group_field: gf.field, group_type: gf.label, groups, not_checked: nc, recent: rc }) };
     } catch (e) {
       return { statusCode: 200, headers: h, body: JSON.stringify({ total: 0, checked: 0, rate: 0, pending: 0, late: 0, leave: 0, group_type: "分组", groups: {}, not_checked: [], recent: [] }) };
@@ -612,7 +631,7 @@ exports.main = async (event, context) => {
         const result = await db.collection("registrations").add({ ...registrationData, batch_id: batchId });
         stagedDocs.push({ _id: result.id || result._id });
         if (restoreCheckedAt) {
-          const checkinResult = await db.collection("checkins").add({ registration_id: result.id || result._id || "", name: row.name, phone: row.phone, center: normalizeGroupValue(row.center), class_name: normalizeGroupValue(row.class_name), group_name: normalizeGroupValue(row.group_name), company: row.company, group_num: row.group_num, dinner_table_num: row.dinner_table_num, batch_id: batchId, checked_at: restoreCheckedAt });
+          const checkinResult = await db.collection("checkins").add({ registration_id: result.id || result._id || "", name: row.name, phone: row.phone, center: normalizeCenterValue(row.center), class_name: normalizeGroupValue(row.class_name), group_name: normalizeGroupValue(row.group_name), company: row.company, group_num: row.group_num, dinner_table_num: row.dinner_table_num, batch_id: batchId, checked_at: restoreCheckedAt });
           stagedCheckinDocs.push({ _id: checkinResult.id || checkinResult._id });
         }
       }

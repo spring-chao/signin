@@ -145,12 +145,13 @@ input:checked+.slider:before{transform:translateX(20px)}
       <div class="form-grid">
         <div class="form-field"><label for="manualName">姓名 <span>（必填）</span></label><input id="manualName" type="text" maxlength="50" placeholder="学长姓名"></div>
         <div class="form-field"><label for="manualPhone">手机号 <span>（必填）</span></label><input id="manualPhone" type="tel" inputmode="numeric" maxlength="11" placeholder="11位手机号"></div>
-        <div class="form-field"><label for="manualCenter">分中心</label><input id="manualCenter" type="text" maxlength="50" placeholder="如：东莞分中心"></div>
+        <div class="form-field"><label for="manualCenter">分中心</label><input id="manualCenter" type="text" maxlength="50" list="centerOptions" placeholder="园区/园区分中心均可"></div>
         <div class="form-field"><label for="manualClass">班级</label><input id="manualClass" type="text" maxlength="50" placeholder="如：广东一班"></div>
         <div class="form-field"><label for="manualGroup">小组</label><input id="manualGroup" type="text" maxlength="50" placeholder="如：第一组"></div>
         <div class="form-field"><label for="manualCompany">公司 <span>（选填）</span></label><input id="manualCompany" type="text" maxlength="100" placeholder="公司名称"></div>
       </div>
-      <div class="form-help">组织信息按实际情况填写；未签到名单会优先按分中心分类，没有分中心数据时才改按班级、小组分类。</div>
+      <datalist id="centerOptions"><option value="园区分中心"><option value="姑苏相城分中心"><option value="吴江分中心"><option value="昆山分中心"><option value="新吴分中心"><option value="张家港分中心"></datalist>
+      <div class="form-help">分中心支持模糊识别并统一为六个标准名称，例如“园区”会自动归为“园区分中心”；未识别内容进入未分组。</div>
       <button class="btn primary full" id="manualAddBtn" onclick="addManualRegistration()">确认新增报名</button>
       <div class="msg" id="manualAddMsg"></div>
     </div>

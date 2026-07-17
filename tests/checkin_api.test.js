@@ -110,7 +110,7 @@ async function request(path, method, body, token) {
   const added = await request("/registration", "POST", {
     name: "王三",
     phone: "13800000003",
-    center: "东莞分中心",
+    center: "园区",
     class_name: "三班",
     group_name: "三组"
   }, token);
@@ -125,14 +125,19 @@ async function request(path, method, body, token) {
   const afterAdd = await request("/stats", "GET", undefined, token);
   assert.equal(afterAdd.data.total, 3);
   assert.equal(afterAdd.data.group_field, "center", "存在分中心数据时应优先按分中心分类");
+  assert.equal(afterAdd.data.groups["园区分中心"].total, 1, "分中心简称应归一为标准名称");
+  assert(!afterAdd.data.groups["园区"]);
+  assert.equal(afterAdd.data.not_checked.find(row => row.phone === "13800000003").center, "园区分中心");
   assert(afterAdd.data.not_checked.some(row => row.phone === "13800000003"), "未签到名单应返回电话跟进所需手机号");
 
   const typo = await request("/registration", "POST", {
     name: "名字填错",
     phone: "13800000004",
-    center: "东莞分中心"
+    center: "工业园区"
   }, token);
   assert.equal(typo.data.ok, true);
+  const fuzzyCenter = await request("/stats", "GET", undefined, token);
+  assert.equal(fuzzyCenter.data.groups["园区分中心"].total, 2, "模糊分中心写法不应拆成两个分类");
   const deleted = await request("/registration_delete", "POST", {
     registration_id: typo.data.registration_id
   }, token);
