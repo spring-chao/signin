@@ -127,6 +127,20 @@ async function request(path, method, body, token) {
   assert.equal(afterAdd.data.group_field, "center", "存在分中心数据时应优先按分中心分类");
   assert(afterAdd.data.not_checked.some(row => row.phone === "13800000003"), "未签到名单应返回电话跟进所需手机号");
 
+  const typo = await request("/registration", "POST", {
+    name: "名字填错",
+    phone: "13800000004",
+    center: "东莞分中心"
+  }, token);
+  assert.equal(typo.data.ok, true);
+  const deleted = await request("/registration_delete", "POST", {
+    registration_id: typo.data.registration_id
+  }, token);
+  assert.equal(deleted.data.ok, true, "尚未签到的错误报名应允许删除");
+  const afterDelete = await request("/stats", "GET", undefined, token);
+  assert.equal(afterDelete.data.total, 3);
+  assert(!afterDelete.data.not_checked.some(row => row.phone === "13800000004"));
+
   const late = await request("/attendance_status", "POST", {
     registration_id: "reg-1",
     status: "late",
@@ -153,6 +167,12 @@ async function request(path, method, body, token) {
   }, token);
   assert.equal(overwriteChecked.data.ok, false);
   assert.equal(overwriteChecked.data.checked, true, "已签到状态不得被人工请假覆盖");
+
+  const deleteChecked = await request("/registration_delete", "POST", {
+    registration_id: "reg-1"
+  }, token);
+  assert.equal(deleteChecked.data.ok, false);
+  assert.equal(deleteChecked.data.checked, true, "已签到报名不得删除");
 
   const leave = await request("/attendance_status", "POST", {
     registration_id: "reg-2",

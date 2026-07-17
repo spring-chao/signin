@@ -87,6 +87,7 @@ body{font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;backgr
 .mini-btn{padding:5px 10px;border-radius:7px;border:1px solid rgba(255,255,255,.1);background:rgba(255,255,255,.05);color:#94a3b8;font-size:11px;cursor:pointer}
 .mini-btn.late{color:#fbbf24;border-color:rgba(245,158,11,.25)}
 .mini-btn.leave{color:#c4b5fd;border-color:rgba(139,92,246,.25)}
+.mini-btn.delete{color:#f87171;border-color:rgba(239,68,68,.3);margin-left:auto}
 .mini-btn.active{background:rgba(59,130,246,.18);color:#fff;border-color:#3b82f6}
 .group-bars{margin-bottom:12px}
 .group-row{display:flex;align-items:center;padding:6px 0;font-size:13px}
@@ -325,6 +326,25 @@ async function setAttendanceStatus(button) {
   }
 }
 
+async function deleteRegistration(button) {
+  var registrationId = button.getAttribute("data-id") || "";
+  var person = (currentData.not_checked || []).find(function(row){return row.registration_id === registrationId;}) || {};
+  if (!registrationId) { alert("缺少报名记录标识，请刷新页面后重试"); return; }
+  var confirmed = confirm("确定删除这条报名记录吗？\n\n姓名："+(person.name||"")+"\n手机号："+(person.phone||"")+"\n\n删除后，该学长将无法使用这条记录签到。");
+  if (!confirmed) return;
+  button.disabled = true;
+  try {
+    var r = await adminFetch("/registration_delete", {method:"POST",body:JSON.stringify({registration_id:registrationId})});
+    var d = await r.json();
+    if (!d.ok) { alert(d.msg || "删除失败"); return; }
+    await loadData();
+  } catch(e) {
+    alert("删除失败："+e.message);
+  } finally {
+    button.disabled = false;
+  }
+}
+
 async function exportExcel() {
   var btn = event.target, msg = document.getElementById("exportMsg");
   btn.disabled = true; btn.textContent = "导出中...";
@@ -430,6 +450,7 @@ function renderTab() {
             '<button class="mini-btn '+(status==="pending"?'active':'')+'" data-id="'+esc(n.registration_id)+'" data-status="pending" onclick="setAttendanceStatus(this)">未签到</button>'+
             '<button class="mini-btn late '+(status==="late"?'active':'')+'" data-id="'+esc(n.registration_id)+'" data-status="late" onclick="setAttendanceStatus(this)">迟到</button>'+
             '<button class="mini-btn leave '+(status==="leave"?'active':'')+'" data-id="'+esc(n.registration_id)+'" data-status="leave" onclick="setAttendanceStatus(this)">请假</button>'+
+            '<button class="mini-btn delete" data-id="'+esc(n.registration_id)+'" onclick="deleteRegistration(this)">删除报名</button>'+
           '</div></div>';
       });
       h += '</div>';

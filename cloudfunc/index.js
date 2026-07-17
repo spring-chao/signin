@@ -146,7 +146,7 @@ exports.main = async (event, context) => {
     return { statusCode: 200, headers: h, body: JSON.stringify({ ok: true, token: await issueAdminToken(), expires_in: ADMIN_TOKEN_TTL_MS / 1000 }) };
   }
 
-  const protectedPaths = new Set(["/settings", "/registration", "/attendance_status", "/export", "/stats", "/upload_preview", "/upload", "/reset", "/clear_all"]);
+  const protectedPaths = new Set(["/settings", "/registration", "/registration_delete", "/attendance_status", "/export", "/stats", "/upload_preview", "/upload", "/reset", "/clear_all"]);
   if (protectedPaths.has(p) && !(await isAdminRequest())) return unauthorized();
 
   function identityKey(person) {
@@ -427,6 +427,28 @@ exports.main = async (event, context) => {
       return { statusCode: 200, headers: h, body: JSON.stringify({ ok: true, registration_id: result.id || result._id || "", msg: "临时报名已新增，学长现在可以正常签到" }) };
     } catch (e) {
       return { statusCode: 200, headers: h, body: JSON.stringify({ ok: false, msg: "新增失败: " + (e.message || "") }) };
+    }
+  }
+
+  // ===== ADMIN DELETE REGISTRATION =====
+  if (p === "/registration_delete" && method === "POST") {
+    try {
+      const registrationId = String(data.registration_id || "").trim();
+      if (!registrationId) return { statusCode: 200, headers: h, body: JSON.stringify({ ok: false, msg: "缺少报名记录标识" }) };
+
+      const regs = await getActiveRows("registrations", 5000);
+      const index = regs.findIndex(row => String(row._id || "") === registrationId);
+      if (index < 0) return { statusCode: 200, headers: h, body: JSON.stringify({ ok: false, msg: "未找到当前活动的报名记录" }) };
+      const cks = await getActiveRows("checkins", 5000);
+      if (buildAttendanceState(regs, cks).checkedIndexes.has(index)) {
+        return { statusCode: 200, headers: h, body: JSON.stringify({ ok: false, checked: true, msg: "该学长已经签到，不能删除报名记录" }) };
+      }
+
+      const registration = regs[index];
+      await db.collection("registrations").doc(registrationId).remove();
+      return { statusCode: 200, headers: h, body: JSON.stringify({ ok: true, msg: "已删除“" + String(registration.name || "") + "”的报名记录" }) };
+    } catch (e) {
+      return { statusCode: 200, headers: h, body: JSON.stringify({ ok: false, msg: "删除失败: " + (e.message || "") }) };
     }
   }
 
