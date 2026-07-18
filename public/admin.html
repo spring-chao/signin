@@ -151,6 +151,7 @@ input:checked+.slider:before{transform:translateX(20px)}
     <div class="section" style="background:rgba(255,255,255,.04);border-radius:12px;padding:16px;border:1px solid rgba(255,255,255,.06)">
       <h3>&#x2795; 新增临时报名</h3>
       <div class="form-grid">
+        <div class="form-field"><label for="manualEventSelect">归属活动 <span>（仅显示签到开放中的活动，必选）</span></label><select id="manualEventSelect"></select></div>
         <div class="form-field"><label for="manualName">姓名 <span>（必填）</span></label><input id="manualName" type="text" maxlength="50" placeholder="学长姓名"></div>
         <div class="form-field"><label for="manualPhone">手机号 <span>（必填）</span></label><input id="manualPhone" type="tel" inputmode="numeric" maxlength="11" placeholder="11位手机号"></div>
         <div class="form-field"><label for="manualCenter">分中心</label><input id="manualCenter" type="text" maxlength="50" list="centerOptions" placeholder="园区/园区分中心均可"></div>
@@ -289,6 +290,10 @@ function renderEventSelector() {
   document.getElementById("eventMeta").textContent=item ? item.event_date+" · "+item.activity_type_name+" · "+item.total+"人报名 · "+item.checked+"人签到" : "暂无活动";
   var btn=document.getElementById("eventStatusBtn");
   btn.textContent=item && item.status==="active" ? "签到开放中（点击关闭）" : "签到已关闭（点击开放）";
+  var manualSelect=document.getElementById("manualEventSelect");
+  var activeEvents=currentEvents.filter(function(row){return row.status==="active";});
+  manualSelect.innerHTML=activeEvents.length ? activeEvents.map(function(row){return '<option value="'+esc(row.event_id)+'"'+(row.event_id===currentEventId?' selected':'')+'>'+esc(row.event_date+' · '+row.activity_type_name+' · '+row.name)+'</option>';}).join("") : '<option value="">暂无开放签到的活动</option>';
+  document.getElementById("manualAddBtn").disabled=activeEvents.length===0;
 }
 
 async function selectAdminEvent(){
@@ -322,7 +327,7 @@ async function addManualRegistration() {
   var btn = document.getElementById("manualAddBtn");
   var msg = document.getElementById("manualAddMsg");
   var payload = {
-    event_id: currentEventId,
+    event_id: document.getElementById("manualEventSelect").value,
     name: document.getElementById("manualName").value.trim(),
     phone: document.getElementById("manualPhone").value.trim(),
     center: document.getElementById("manualCenter").value.trim(),
@@ -330,6 +335,7 @@ async function addManualRegistration() {
     group_name: document.getElementById("manualGroup").value.trim(),
     company: document.getElementById("manualCompany").value.trim()
   };
+  if (!payload.event_id) { showMsg(msg, "请先选择一个开放签到的活动", "error"); return; }
   if (!payload.name) { showMsg(msg, "请输入姓名", "error"); return; }
   if (!/^\d{11}$/.test(payload.phone)) { showMsg(msg, "请输入正确的11位手机号", "error"); return; }
   btn.disabled = true; btn.textContent = "新增中...";

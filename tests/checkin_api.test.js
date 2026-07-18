@@ -210,6 +210,12 @@ async function request(path, method, body, token) {
   assert.equal(secondStats.data.total, 1);
   assert.equal(secondStats.data.checked, 1);
 
+  db.collections.events.find(row => row.event_id === "batch-2").status = "closed";
+  const addToClosedEvent = await request("/registration", "POST", {
+    event_id: "batch-2", name: "关闭活动测试", phone: "13800000009"
+  }, token);
+  assert.equal(addToClosedEvent.data.ok, false, "临时报名不得加入已关闭签到的活动");
+
   console.log("checkin API regression tests passed");
 })().catch(error => {
   console.error(error);

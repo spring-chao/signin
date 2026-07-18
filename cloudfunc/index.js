@@ -601,6 +601,7 @@ exports.main = async (event, context) => {
 
       const selectedEvent = await getRequestedEvent(data.event_id);
       if (!selectedEvent) return { statusCode: 200, headers: h, body: JSON.stringify({ ok: false, msg: "请先选择活动" }) };
+      if (selectedEvent.status === "closed") return { statusCode: 200, headers: h, body: JSON.stringify({ ok: false, msg: "该活动已关闭签到，请选择正在签到的活动" }) };
       const activeBatchId = String(selectedEvent.event_id || selectedEvent._id || "");
       const regs = await rowsForBatch("registrations", activeBatchId, 5000);
       if (regs.some(row => identityKey(row) === identityKey(registration))) {
