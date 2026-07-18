@@ -223,6 +223,14 @@ async function request(path, method, body, token) {
   const earlyRegistration = await request("/registration", "POST", { event_id: "batch-3", name: "临时学员", phone: "13800000007" }, token);
   assert.equal(earlyRegistration.data.ok, false, "未到签到开始时间不得新增临时报名");
 
+  const deleteCurrentEvent = await request("/clear_all", "POST", { event_id: "batch-2" }, token);
+  assert.equal(deleteCurrentEvent.data.ok, true);
+  assert(!db.collections.events.some(row => row.event_id === "batch-2"), "只应删除指定的当前活动");
+  assert(!db.collections.registrations.some(row => row.batch_id === "batch-2"));
+  assert(!db.collections.checkins.some(row => row.batch_id === "batch-2"));
+  assert(db.collections.events.some(row => row.event_id === "batch-1"), "其他活动必须保留");
+  assert(db.collections.registrations.some(row => row.batch_id === "batch-1"), "其他活动报名必须保留");
+
   console.log("checkin API regression tests passed");
 })().catch(error => {
   console.error(error);

@@ -202,7 +202,7 @@ input:checked+.slider:before{transform:translateX(20px)}
     <div id="tabContent"></div>
     <div class="btn-group">
       <button class="btn danger" onclick="resetCheckins()">&#x1f504; 清空签到</button>
-      <button class="btn danger" onclick="clearAll()">&#x1f5d1; 清空全部</button>
+      <button class="btn danger" onclick="clearAll()">&#x1f5d1; 删除当前活动全部数据</button>
     </div>
     <div class="msg" id="clearMsg"></div>
   </div>
@@ -778,12 +778,16 @@ async function resetCheckins() {
 }
 
 async function clearAll() {
-  if (!confirm("确定清空全部数据？此操作不可恢复！")) return;
+  var item=currentEvents.find(function(row){return row.event_id===currentEventId;});
+  if(!item){showMsg(document.getElementById("clearMsg"),"请先选择当前活动","error");return;}
+  if (!confirm("第一次确认：将删除当前活动“"+item.name+"”的全部报名和签到记录。\n\n其他活动不会受到影响。是否继续？")) return;
+  if (!confirm("第二次确认：活动“"+item.name+"”及其报名、签到数据删除后不可恢复。\n\n确定永久删除吗？")) return;
   var msg = document.getElementById("clearMsg");
   try {
-    var r = await adminFetch("/clear_all", {method:"POST",body:JSON.stringify({})});
+    var r = await adminFetch("/clear_all", {method:"POST",body:JSON.stringify({event_id:currentEventId})});
     var d = await r.json();
-    showMsg(msg, d.msg || (d.ok ? "全部数据已清空" : "清空失败"), d.ok ? "success" : "error");
+    if(d.ok) currentEventId="";
+    showMsg(msg, d.msg || (d.ok ? "当前活动已删除" : "删除失败"), d.ok ? "success" : "error");
     if (d.ok) loadData();
   } catch(e) { showMsg(msg, "清空失败："+e.message, "error"); }
 }

@@ -881,16 +881,21 @@ exports.main = async (event, context) => {
     }
   }
 
-  // ===== CLEAR ALL =====
+  // ===== DELETE CURRENT EVENT =====
   if (p === "/clear_all" && method === "POST") {
     try {
-      const delRegs = await deleteAll("registrations");
-      const delCks = await deleteAll("checkins");
-      const delEvents = await deleteAll("events");
-      await setConfig("event_name", "盛和塾签到");
-      await setConfig("group_field", "");
-      await setConfig("active_batch_id", "");
-      return { statusCode: 200, headers: h, body: JSON.stringify({ ok: true, msg: "全部数据已清空（活动" + delEvents + "个，报名" + delRegs + "条，签到" + delCks + "条）" }) };
+      const selectedEvent = await getRequestedEvent(data.event_id);
+      if (!selectedEvent) return { statusCode: 200, headers: h, body: JSON.stringify({ ok: false, msg: "请先选择要删除的当前活动" }) };
+      const eventId = String(selectedEvent.event_id || selectedEvent._id || "");
+      const delRegs = await deleteDocs("registrations", await rowsForBatch("registrations", eventId, 5000));
+      const delCks = await deleteDocs("checkins", await rowsForBatch("checkins", eventId, 5000));
+      await db.collection("events").doc(selectedEvent._id).remove();
+      const remainingEvents = (await getAll("events", 500)).sort((a, b) => String(b.event_date || "").localeCompare(String(a.event_date || "")));
+      const nextEvent = remainingEvents[0] || null;
+      await setConfig("event_name", nextEvent ? nextEvent.name : "盛和塾签到");
+      await setConfig("group_field", nextEvent ? (nextEvent.group_field || "") : "");
+      await setConfig("active_batch_id", nextEvent ? String(nextEvent.event_id || nextEvent._id || "") : "");
+      return { statusCode: 200, headers: h, body: JSON.stringify({ ok: true, deleted_event_id: eventId, msg: "当前活动“" + String(selectedEvent.name || "") + "”已删除（报名" + delRegs + "条，签到" + delCks + "条）；其他活动未受影响" }) };
     } catch (e) {
       return { statusCode: 200, headers: h, body: JSON.stringify({ ok: false, msg: "操作失败: " + (e.message || "") }) };
     }
