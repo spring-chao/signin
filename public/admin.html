@@ -125,6 +125,14 @@ input:checked+.slider:before{transform:translateX(20px)}
     <div class="msg" id="loginMsg"></div>
   </div>
   <div id="mainPanel" style="display:none">
+    <div class="section" style="background:rgba(255,255,255,.04);border-radius:12px;padding:16px;border:1px solid rgba(255,255,255,.06)">
+      <h3>📅 当前管理活动</h3>
+      <div class="form-grid">
+        <div class="form-field"><label for="eventSelect">选择活动</label><select id="eventSelect" onchange="selectAdminEvent()"></select></div>
+        <div class="form-field"><label>活动状态</label><button class="btn" id="eventStatusBtn" onclick="toggleEventStatus()">切换状态</button></div>
+      </div>
+      <div class="form-help" id="eventMeta"></div>
+    </div>
     <div class="overview" id="overview"></div>
 
     <div class="section" style="background:rgba(255,255,255,.04);border-radius:12px;padding:16px;border:1px solid rgba(255,255,255,.06)">
@@ -157,10 +165,14 @@ input:checked+.slider:before{transform:translateX(20px)}
     </div>
 
     <div class="section">
-      <h3>&#x1f4e4; 更换活动（上传 Excel 报名表）</h3>
+      <h3>&#x1f4e4; 新增活动（上传 Excel 报名表）</h3>
       <div class="form-field">
         <label for="eventNameInput">活动名称 <span>（选填，留空则读取上传文件名）</span></label>
         <input id="eventNameInput" type="text" maxlength="100" placeholder="留空则自动读取文件名，并去掉 .xls / .xlsx 等后缀" oninput="scheduleUploadPreview()">
+      </div>
+      <div class="form-grid">
+        <div class="form-field"><label for="eventDateInput">活动日期 <span>（必填）</span></label><input id="eventDateInput" type="date" onchange="scheduleUploadPreview()"></div>
+        <div class="form-field"><label for="activityTypeInput">活动类型 <span>（必填）</span></label><select id="activityTypeInput" onchange="scheduleUploadPreview()"><option value="course">课程</option><option value="class_meeting">班会/班级学习会</option><option value="group_meeting">小组学习会</option><option value="national_report">全国报告会</option><option value="center_quarterly_report">分中心季度报告会</option><option value="staff_training">班主任辅导员培训会</option><option value="board_meeting">理事会</option><option value="study_tour">游学</option><option value="other">其他</option></select></div>
       </div>
       <div class="upload-area" id="uploadArea" onclick="document.getElementById('fileInput').click()">
         <div class="icon">&#x1f4c1;</div>
@@ -170,7 +182,7 @@ input:checked+.slider:before{transform:translateX(20px)}
       <input type="file" id="fileInput" accept=".xls,.xlsx" style="display:none" onchange="handleFile(event)">
       <div id="colMapInfo" class="col-map" style="display:none"></div>
       <div id="uploadPreview" class="upload-preview"></div>
-      <button class="btn primary full" id="upBtn" onclick="uploadData()" style="display:none">确认覆盖并导入</button>
+      <button class="btn primary full" id="upBtn" onclick="uploadData()" style="display:none">确认新增活动并导入</button>
       <div class="msg" id="uploadMsg"></div>
     </div>
 
@@ -197,7 +209,8 @@ input:checked+.slider:before{transform:translateX(20px)}
 <script>
 var API = "https://shengheshu-d2g2zyyl99f6c6fc2-1453587887.ap-shanghai.app.tcloudbase.com/api";
 var adminToken = "", refreshTimer = null;
-var currentTab = "groups", currentData = null, excelData = null, uploadGroupField = "", uploadPreview = null, uploadPreviewTimer = null;
+var currentTab = "groups", currentData = null, currentEvents = [], currentEventId = "", excelData = null, uploadGroupField = "", uploadPreview = null, uploadPreviewTimer = null;
+document.getElementById("eventDateInput").value = new Date().toLocaleDateString("en-CA", {timeZone:"Asia/Shanghai"});
 
 function authHeaders(json) {
   var headers = {"Authorization":"Bearer "+adminToken};
@@ -245,7 +258,14 @@ async function doLogin() {
 
 async function loadData() {
   try {
-    var r = await adminFetch("/stats");
+    var er = await adminFetch("/admin_events");
+    var ed = await er.json();
+    if (!ed.ok) throw new Error(ed.msg || "活动列表加载失败");
+    currentEvents = ed.events || [];
+    if (!currentEventId || !currentEvents.some(function(item){return item.event_id===currentEventId;})) currentEventId = ed.selected_event_id || (currentEvents[0] && currentEvents[0].event_id) || "";
+    renderEventSelector();
+    if (!currentEventId) { document.getElementById("eventTitle").textContent="请先新增活动"; return; }
+    var r = await adminFetch("/stats?event_id="+encodeURIComponent(currentEventId));
     currentData = await r.json();
     document.getElementById("eventTitle").textContent = currentData.event_name || "管理后台";
     document.getElementById("lastUpdate").textContent = new Date().toLocaleTimeString();
@@ -260,6 +280,29 @@ async function loadData() {
     if (tabs.length > 0) tabs[0].textContent = gt;
     renderTab();
   } catch(e) { document.getElementById("lastUpdate").textContent = e.message || "加载失败"; }
+}
+
+function renderEventSelector() {
+  var select=document.getElementById("eventSelect");
+  select.innerHTML=currentEvents.map(function(item){return '<option value="'+esc(item.event_id)+'"'+(item.event_id===currentEventId?' selected':'')+'>'+esc(item.event_date+' · '+item.name)+'</option>';}).join("");
+  var item=currentEvents.find(function(row){return row.event_id===currentEventId;});
+  document.getElementById("eventMeta").textContent=item ? item.event_date+" · "+item.activity_type_name+" · "+item.total+"人报名 · "+item.checked+"人签到" : "暂无活动";
+  var btn=document.getElementById("eventStatusBtn");
+  btn.textContent=item && item.status==="active" ? "签到开放中（点击关闭）" : "签到已关闭（点击开放）";
+}
+
+async function selectAdminEvent(){
+  currentEventId=document.getElementById("eventSelect").value;
+  await adminFetch("/event_update",{method:"POST",body:JSON.stringify({event_id:currentEventId,select:true})});
+  await loadData();
+}
+
+async function toggleEventStatus(){
+  var item=currentEvents.find(function(row){return row.event_id===currentEventId;}); if(!item)return;
+  var next=item.status==="active"?"closed":"active";
+  if(!confirm(next==="closed"?"关闭后，该活动将不能继续签到，确定关闭吗？":"确定重新开放该活动签到吗？"))return;
+  await adminFetch("/event_update",{method:"POST",body:JSON.stringify({event_id:currentEventId,status:next})});
+  await loadData();
 }
 
 async function saveToggle() {
@@ -279,6 +322,7 @@ async function addManualRegistration() {
   var btn = document.getElementById("manualAddBtn");
   var msg = document.getElementById("manualAddMsg");
   var payload = {
+    event_id: currentEventId,
     name: document.getElementById("manualName").value.trim(),
     phone: document.getElementById("manualPhone").value.trim(),
     center: document.getElementById("manualCenter").value.trim(),
@@ -352,7 +396,7 @@ async function exportExcel() {
   try {
     var r = await adminFetch("/export", {
       method:"POST",
-      body: JSON.stringify({})
+      body: JSON.stringify({event_id:currentEventId})
     });
     var d = await r.json();
     if (!d.ok) { showMsg(msg, d.msg, "error"); btn.disabled = false; btn.textContent = "导出签到名单（Excel）"; return; }
@@ -612,6 +656,10 @@ function getUploadEventName() {
   return fi && fi.files[0] ? stripSpreadsheetExtension(fi.files[0].name) : "";
 }
 
+function getUploadMetadata() {
+  return {event_date:document.getElementById("eventDateInput").value, activity_type:document.getElementById("activityTypeInput").value};
+}
+
 function scheduleUploadPreview() {
   uploadPreview = null;
   clearTimeout(uploadPreviewTimer);
@@ -632,7 +680,7 @@ async function loadUploadPreview() {
   btn.style.display = "none";
   var r = await adminFetch("/upload_preview", {
     method:"POST",
-    body:JSON.stringify({event_name:getUploadEventName(), attendees:excelData, group_field:uploadGroupField})
+    body:JSON.stringify(Object.assign({event_name:getUploadEventName(), attendees:excelData, group_field:uploadGroupField},getUploadMetadata()))
   });
   var d = await r.json();
   if (!d.ok) {
@@ -641,51 +689,37 @@ async function loadUploadPreview() {
     return;
   }
   uploadPreview = d;
-  var eventHtml = d.event_changed
-    ? '活动将从“'+esc(d.old_event_name)+'”更换为“'+esc(d.new_event_name)+'”'
-    : '活动：'+esc(d.new_event_name);
-  var warning = "";
-  if (d.old_checked > 0) {
-    warning = '<div class="preview-warning">注意：当前已有 '+d.old_checked+' 个签到名额。覆盖名单后，原签到记录将被清空。</div>';
-  }
-  var unchangedNotice = d.added === 0 && d.removed === 0
-    ? '<div class="preview-events">新文件与当前名单人数及人员一致；“新增0”不代表导入0人。</div>'
-    : '';
-  box.innerHTML = '<div class="preview-title">覆盖前变更核对</div>'+
+  var eventHtml = '新活动：'+esc(d.event_date+' · '+d.activity_type_name+' · '+d.new_event_name);
+  box.innerHTML = '<div class="preview-title">新增活动核对</div>'+
     '<div class="preview-summary">本次将导入 <strong>'+d.new_total+'</strong> 人</div>'+
     '<div class="preview-events">'+eventHtml+'</div>'+
-    unchangedNotice+
     '<div class="preview-grid">'+
-      '<div class="preview-item"><div class="value">'+d.old_total+'</div><div class="caption">当前报名</div></div>'+
-      '<div class="preview-item"><div class="value">'+d.new_total+'</div><div class="caption">新文件报名</div></div>'+
-      '<div class="preview-item add"><div class="value">+'+d.added+'</div><div class="caption">较当前新增</div></div>'+
-      '<div class="preview-item remove"><div class="value">-'+d.removed+'</div><div class="caption">较当前减少</div></div>'+
+      '<div class="preview-item"><div class="value">'+d.new_total+'</div><div class="caption">活动报名</div></div>'+
       '<div class="preview-item repeat"><div class="value">'+d.duplicate_groups+'</div><div class="caption">重复报名组</div></div>'+
       '<div class="preview-item repeat"><div class="value">'+d.repeated_slots+'</div><div class="caption">重复额外名额</div></div>'+
-    '</div>'+warning;
+    '</div>';
   box.className = "upload-preview show";
   btn.style.display = "block";
-  btn.textContent = "确认覆盖并导入";
+  btn.textContent = "确认新增活动并导入";
   showMsg(document.getElementById("uploadMsg"), "请核对以上变化，确认无误后再导入", "info");
 }
 
 async function uploadData() {
   if (!excelData || !excelData.length) { showMsg(document.getElementById("uploadMsg"),"请先选择文件","error"); return; }
   if (!uploadPreview) { showMsg(document.getElementById("uploadMsg"),"请先完成名单变更核对","error"); return; }
-  var confirmText = "请再次确认覆盖当前名单：\n\n当前报名："+uploadPreview.old_total+
-    "\n新文件报名："+uploadPreview.new_total+
-    "\n新增名额："+uploadPreview.added+
-    "\n减少名额："+uploadPreview.removed+
+  var confirmText = "请确认新增活动：\n\n活动："+uploadPreview.new_event_name+
+    "\n日期："+uploadPreview.event_date+
+    "\n类型："+uploadPreview.activity_type_name+
+    "\n报名人数："+uploadPreview.new_total+
     "\n重复报名组："+uploadPreview.duplicate_groups+
     "（额外名额 "+uploadPreview.repeated_slots+" 个）";
-  if (uploadPreview.old_checked > 0) confirmText += "\n\n警告：现有 "+uploadPreview.old_checked+" 个签到名额将被清空。";
   if (!confirm(confirmText)) return;
   var btn = document.getElementById("upBtn"), msg = document.getElementById("uploadMsg");
   btn.disabled = true; btn.textContent = "导入中...";
   try {
     var r = await adminFetch("/upload", {
       method:"POST",
-      body: JSON.stringify({event_name:getUploadEventName(), attendees:excelData, group_field:uploadGroupField, preview_issued_at:uploadPreview.preview_issued_at, preview_token:uploadPreview.preview_token})
+      body: JSON.stringify(Object.assign({event_name:getUploadEventName(), attendees:excelData, group_field:uploadGroupField, preview_issued_at:uploadPreview.preview_issued_at, preview_token:uploadPreview.preview_token},getUploadMetadata()))
     });
     var d = await r.json();
     if (d.ok) {
@@ -708,7 +742,7 @@ async function uploadData() {
       }
     }
   } catch(e) { showMsg(msg, "网络错误："+e.message, "error"); }
-  btn.disabled = false; btn.textContent = "确认覆盖并导入";
+  btn.disabled = false; btn.textContent = "确认新增活动并导入";
 }
 
 function showMsg(el, text, type) {
@@ -717,10 +751,10 @@ function showMsg(el, text, type) {
 }
 
 async function resetCheckins() {
-  if (!confirm("确定清空所有签到记录？")) return;
+  if (!confirm("确定清空当前活动的签到记录？")) return;
   var msg = document.getElementById("clearMsg");
   try {
-    var r = await adminFetch("/reset", {method:"POST",body:JSON.stringify({})});
+    var r = await adminFetch("/reset", {method:"POST",body:JSON.stringify({event_id:currentEventId})});
     var d = await r.json();
     showMsg(msg, d.msg || (d.ok ? "签到记录已清空" : "清空失败"), d.ok ? "success" : "error");
     if (d.ok) loadData();

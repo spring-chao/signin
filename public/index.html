@@ -60,6 +60,11 @@ body{font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;backgr
       <div class="input-group"><label>姓名</label><input type="text" id="nameInput" placeholder="请输入报名时的姓名"></div>
       <div class="input-group"><label>手机号</label><input type="tel" id="phoneInput" placeholder="请输入11位手机号" maxlength="11"></div>
       <button class="btn" id="submitBtn" onclick="doCheckin()">&#x2713; 确认签到</button>
+      <div class="multi-panel" id="eventPanel">
+        <div class="tip">您报名了多个开放活动，请选择本次签到活动：</div>
+        <select id="eventSelect"></select>
+        <button class="btn" id="eventBtn" onclick="confirmEventCheckin()">确认活动</button>
+      </div>
       <div class="multi-panel" id="multiPanel">
         <div class="tip" id="multiText"></div>
         <select id="quantitySelect"></select>
@@ -78,7 +83,7 @@ body{font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;backgr
 </div>
 <script>
 var API="https://shengheshu-d2g2zyyl99f6c6fc2-1453587887.ap-shanghai.app.tcloudbase.com/api";
-var pendingName="",pendingPhone="";
+var pendingName="",pendingPhone="",pendingEventId="";
 
 async function init(){
   try{
@@ -98,6 +103,8 @@ async function doCheckin(){
   if(!name||!phone){m("请输入姓名和手机号","error");return}
   if(phone.length!==11||!/^\d+$/.test(phone)){m("请输入正确的11位手机号","error");return}
   pendingName=name;pendingPhone=phone;
+  pendingEventId="";
+  document.getElementById("eventPanel").classList.remove("show");
   document.getElementById("multiPanel").classList.remove("show");
   await submitCheckin(null);
 }
@@ -108,16 +115,29 @@ async function confirmMultiCheckin(){
   await submitCheckin(quantity);
 }
 
+async function confirmEventCheckin(){
+  pendingEventId=document.getElementById("eventSelect").value;
+  if(!pendingEventId){m("请选择本次签到活动","error");return}
+  document.getElementById("eventPanel").classList.remove("show");
+  await submitCheckin(null);
+}
+
 async function submitCheckin(quantity){
-  var btn=quantity?document.getElementById("multiBtn"):document.getElementById("submitBtn");
+  var btn=quantity?document.getElementById("multiBtn"):(pendingEventId?document.getElementById("eventBtn"):document.getElementById("submitBtn"));
   var originalText=btn.textContent;
   btn.disabled=true;btn.textContent=quantity?"签到中...":"验证中...";
   try{
     var payload={name:encodeURIComponent(pendingName),phone:pendingPhone,_e:1};
+    if(pendingEventId)payload.event_id=pendingEventId;
     if(quantity)payload.quantity=quantity;
     var r=await fetch(API+"/checkin",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)});
     var d=await r.json();
-    if(d.needs_quantity){
+    if(d.needs_event){
+      var eventSelect=document.getElementById("eventSelect");eventSelect.innerHTML="";
+      (d.events||[]).forEach(function(item){var option=document.createElement("option");option.value=item.event_id;option.textContent=item.event_date+" · "+item.activity_type_name+" · "+item.name;eventSelect.appendChild(option)});
+      document.getElementById("eventPanel").classList.add("show");
+      m(d.msg||"请选择活动","success");
+    }else if(d.needs_quantity){
       var info=d.data||{},remaining=Number(info.remaining_slots||0);
       document.getElementById("multiText").textContent="该姓名共报名 "+info.total_slots+" 人，已签到 "+info.checked_slots+" 人。请选择本次实际到场人数：";
       var select=document.getElementById("quantitySelect");select.innerHTML="";
@@ -127,6 +147,7 @@ async function submitCheckin(quantity){
     }else if(d.ok){
       document.getElementById("formCard").style.display="none";
       document.getElementById("multiPanel").classList.remove("show");
+      document.getElementById("eventPanel").classList.remove("show");
       document.getElementById("resultCard").classList.add("show");
       document.getElementById("welcomeText").textContent="欢迎 "+d.data.name+"学长！";
       var shGrp=d.data.show_group!=="false",shDin=d.data.show_dinner_table!=="false";
@@ -135,6 +156,7 @@ async function submitCheckin(quantity){
       if(shDin && d.data.dinner_table_num) seatHtml+='<div class="seat-item">空巴晚宴：第 '+d.data.dinner_table_num+' 桌</div>';
       document.getElementById("seatArea").innerHTML=seatHtml;
       var info="";
+      if(d.data.event) info+="活动："+esc(d.data.event.event_date+" · "+d.data.event.activity_type_name+" · "+d.data.event.name)+"<br>";
       if(d.data.group_value) info+=esc(d.data.group_type||"分组")+"："+esc(d.data.group_value)+"<br>";
       else if(d.data.class_name) info+="班级："+esc(d.data.class_name)+"<br>";
       else if(d.data.center) info+="分中心："+esc(d.data.center)+"<br>";

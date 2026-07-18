@@ -88,8 +88,11 @@ const api = require("../cloudfunc/index.js");
 Module._load = originalLoad;
 
 async function request(path, method, body, token) {
+  const [pathname, search = ""] = path.split("?");
+  const queryStringParameters = Object.fromEntries(new URLSearchParams(search));
   const response = await api.main({
-    path,
+    path: pathname,
+    queryStringParameters,
     httpMethod: method || "GET",
     headers: token ? { Authorization: `Bearer ${token}` } : {},
     body: body === undefined ? "" : JSON.stringify(body)
@@ -190,6 +193,22 @@ async function request(path, method, body, token) {
   assert.equal(exported.data.rows.find(row => row.phone === "13800000001").sign_status, "已签到");
   assert.equal(exported.data.rows.find(row => row.phone === "13800000002").sign_status, "请假");
   assert.equal(exported.data.rows.find(row => row.phone === "13800000002").attendance_note, "临时有事");
+
+  db.collections.events.push({ _id: "event-2", event_id: "batch-2", name: "同日班会", event_date: "2026-07-18", activity_type: "class_meeting", status: "active" });
+  db.collections.registrations.push({ _id: "reg-5", batch_id: "batch-2", name: "陈一", phone: "13800000001", center: "", class_name: "一班", group_name: "一组" });
+  const multiEvent = await request("/checkin", "POST", { name: "陈一", phone: "13800000001" });
+  assert.equal(multiEvent.data.needs_event, true, "同一人命中多个开放活动时应要求选择活动");
+  assert.equal(multiEvent.data.events.length, 2);
+  const selectedEvent = await request("/checkin", "POST", { name: "陈一", phone: "13800000001", event_id: "batch-2" });
+  assert.equal(selectedEvent.data.ok, true);
+  assert.equal(selectedEvent.data.data.event.activity_type, "class_meeting");
+  assert(db.collections.checkins.some(row => row.batch_id === "batch-2"), "签到记录必须写入选中的活动");
+
+  const eventList = await request("/admin_events", "GET", undefined, token);
+  assert.equal(eventList.data.events.length, 2);
+  const secondStats = await request("/stats?event_id=batch-2", "GET", undefined, token);
+  assert.equal(secondStats.data.total, 1);
+  assert.equal(secondStats.data.checked, 1);
 
   console.log("checkin API regression tests passed");
 })().catch(error => {
