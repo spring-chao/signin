@@ -13,6 +13,8 @@ body{font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;backgr
 .header .motto{font-size:12px;color:#64748b;letter-spacing:3px}
 .header .icon-line{font-size:36px;margin:12px 0 6px}
 .header h1{font-size:18px;font-weight:600;margin-bottom:4px}
+.active-events{display:none;margin-top:12px;padding:10px 12px;border-radius:10px;background:rgba(59,130,246,.1);color:#bfdbfe;font-size:13px;line-height:1.8;text-align:left}
+.active-events.show{display:block}
 .card{background:rgba(255,255,255,.06);border-radius:16px;padding:24px;margin-bottom:16px;border:1px solid rgba(255,255,255,.08)}
 .card h3{font-size:15px;margin-bottom:16px;color:#e2e8f0}
 .input-group{margin-bottom:14px}
@@ -54,6 +56,7 @@ body{font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;backgr
       <div class="motto">提高心性 拓展经营</div>
       <div class="icon-line">&#x1f4cb;</div>
       <h1 id="eventName"></h1>
+      <div class="active-events" id="activeEvents"></div>
     </div>
     <div class="card" id="formCard">
       <h3>&#x270d;&#xfe0f; 签到</h3>
@@ -89,6 +92,10 @@ async function init(){
   try{
     var r=await fetch(API+"/event");var d=await r.json();
     document.getElementById("eventName").textContent=d.event_name||"盛和塾签到";
+    var activeEvents=d.active_events||[],eventsBox=document.getElementById("activeEvents");
+    if(activeEvents.length>1){eventsBox.innerHTML='<strong>当前可签到活动：</strong><br>'+activeEvents.map(function(item){return '• '+esc(item.event_date+' · '+item.activity_type_name+' · '+item.name)}).join('<br>');eventsBox.classList.add('show')}
+    else eventsBox.classList.remove('show');
+    if(Number(d.active_event_count||0)===0){document.getElementById("submitBtn").disabled=true;document.getElementById("submitBtn").textContent="当前暂无开放签到的活动";document.getElementById("nameInput").disabled=true;document.getElementById("phoneInput").disabled=true;}
     document.getElementById("loadingArea").style.display="none";
     document.getElementById("mainArea").style.display="block";
   }catch(e){document.getElementById("loadingArea").innerHTML='<div style="color:#f87171">⚠️ 加载失败</div><div style="font-size:12px">请刷新重试</div>'}

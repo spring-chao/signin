@@ -109,6 +109,8 @@ async function request(path, method, body, token) {
   const initial = await request("/stats", "GET", undefined, token);
   assert.equal(initial.data.group_field, "class_name", "没有分中心数据时应按班级分类");
   assert.equal(initial.data.pending, 2);
+  const singlePublicEvent = await request("/event", "GET");
+  assert.equal(singlePublicEvent.data.event_name, "测试活动", "只有一个开放活动时扫码页应显示活动名称");
 
   const added = await request("/registration", "POST", {
     name: "王三",
@@ -196,6 +198,9 @@ async function request(path, method, body, token) {
 
   db.collections.events.push({ _id: "event-2", event_id: "batch-2", name: "同日班会", event_date: "2026-07-18", activity_type: "class_meeting", status: "active" });
   db.collections.registrations.push({ _id: "reg-5", batch_id: "batch-2", name: "陈一", phone: "13800000001", center: "", class_name: "一班", group_name: "一组" });
+  const multiplePublicEvents = await request("/event", "GET");
+  assert.equal(multiplePublicEvents.data.event_name, "请选择签到活动");
+  assert.equal(multiplePublicEvents.data.active_events.length, 2, "多个开放活动时扫码页应返回活动名称列表");
   const multiEvent = await request("/checkin", "POST", { name: "陈一", phone: "13800000001" });
   assert.equal(multiEvent.data.needs_event, true, "同一人命中多个开放活动时应要求选择活动");
   assert.equal(multiEvent.data.events.length, 2);

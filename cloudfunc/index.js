@@ -547,10 +547,10 @@ exports.main = async (event, context) => {
       const ds = await getDisplaySettings();
       const activeIds = new Set(activeEvents.map(item => String(item.event_id || item._id || "")));
       const total = (await getAll("registrations", 5000)).filter(row => activeIds.has(String(row.batch_id || ""))).length;
-      const eventName = activeEvents.length === 1 ? (activeEvents[0].name || "盛和塾活动签到") : "盛和塾活动签到";
-      return { statusCode: 200, headers: h, body: JSON.stringify({ event_name: eventName, active_event_count: activeEvents.length, show_group: ds.show_group, show_dinner_table: ds.show_dinner_table, total }) };
+      const eventName = activeEvents.length === 0 ? "当前暂无可签到活动" : (activeEvents.length === 1 ? (activeEvents[0].name || "盛和塾活动签到") : "请选择签到活动");
+      return { statusCode: 200, headers: h, body: JSON.stringify({ event_name: eventName, active_event_count: activeEvents.length, active_events: activeEvents.map(publicEvent), show_group: ds.show_group, show_dinner_table: ds.show_dinner_table, total }) };
     } catch (e) {
-      return { statusCode: 200, headers: h, body: JSON.stringify({ event_name: "盛和塾签到", show_group: "true", show_dinner_table: "true", total: 0 }) };
+      return { statusCode: 200, headers: h, body: JSON.stringify({ event_name: "签到活动加载失败", active_event_count: 0, active_events: [], show_group: "true", show_dinner_table: "true", total: 0 }) };
     }
   }
 
