@@ -216,6 +216,13 @@ async function request(path, method, body, token) {
   }, token);
   assert.equal(addToClosedEvent.data.ok, false, "临时报名不得加入已关闭签到的活动");
 
+  db.collections.events.push({ _id: "event-3", event_id: "batch-3", name: "未来课程", event_date: "2099-01-01", activity_type: "course", status: "active", checkin_start_at: "2099-01-01T00:00:00.000Z", checkin_end_at: "2099-01-01T12:00:00.000Z" });
+  db.collections.registrations.push({ _id: "reg-6", batch_id: "batch-3", name: "未来学员", phone: "13800000008" });
+  const earlyCheckin = await request("/checkin", "POST", { name: "未来学员", phone: "13800000008" });
+  assert.equal(earlyCheckin.data.ok, false, "未到签到开始时间不得签到");
+  const earlyRegistration = await request("/registration", "POST", { event_id: "batch-3", name: "临时学员", phone: "13800000007" }, token);
+  assert.equal(earlyRegistration.data.ok, false, "未到签到开始时间不得新增临时报名");
+
   console.log("checkin API regression tests passed");
 })().catch(error => {
   console.error(error);

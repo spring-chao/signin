@@ -151,7 +151,6 @@ input:checked+.slider:before{transform:translateX(20px)}
     <div class="section" style="background:rgba(255,255,255,.04);border-radius:12px;padding:16px;border:1px solid rgba(255,255,255,.06)">
       <h3>&#x2795; 新增临时报名</h3>
       <div class="form-grid">
-        <div class="form-field"><label for="manualEventSelect">归属活动 <span>（仅显示签到开放中的活动，必选）</span></label><select id="manualEventSelect"></select></div>
         <div class="form-field"><label for="manualName">姓名 <span>（必填）</span></label><input id="manualName" type="text" maxlength="50" placeholder="学长姓名"></div>
         <div class="form-field"><label for="manualPhone">手机号 <span>（必填）</span></label><input id="manualPhone" type="tel" inputmode="numeric" maxlength="11" placeholder="11位手机号"></div>
         <div class="form-field"><label for="manualCenter">分中心</label><input id="manualCenter" type="text" maxlength="50" list="centerOptions" placeholder="园区/园区分中心均可"></div>
@@ -172,8 +171,10 @@ input:checked+.slider:before{transform:translateX(20px)}
         <input id="eventNameInput" type="text" maxlength="100" placeholder="留空则自动读取文件名，并去掉 .xls / .xlsx 等后缀" oninput="scheduleUploadPreview()">
       </div>
       <div class="form-grid">
-        <div class="form-field"><label for="eventDateInput">活动日期 <span>（必填）</span></label><input id="eventDateInput" type="date" onchange="scheduleUploadPreview()"></div>
+        <div class="form-field"><label for="eventDateInput">活动日期 <span>（必填）</span></label><input id="eventDateInput" type="date" onchange="syncDefaultCheckinTimes();scheduleUploadPreview()"></div>
         <div class="form-field"><label for="activityTypeInput">活动类型 <span>（必填）</span></label><select id="activityTypeInput" onchange="scheduleUploadPreview()"><option value="course">课程</option><option value="class_meeting">班会/班级学习会</option><option value="group_meeting">小组学习会</option><option value="national_report">全国报告会</option><option value="center_quarterly_report">分中心季度报告会</option><option value="staff_training">班主任辅导员培训会</option><option value="board_meeting">理事会</option><option value="study_tour">游学</option><option value="other">其他</option></select></div>
+        <div class="form-field"><label for="checkinStartInput">签到开始时间 <span>（必填）</span></label><input id="checkinStartInput" type="datetime-local" onchange="scheduleUploadPreview()"></div>
+        <div class="form-field"><label for="checkinEndInput">签到截止时间 <span>（必填）</span></label><input id="checkinEndInput" type="datetime-local" onchange="scheduleUploadPreview()"></div>
       </div>
       <div class="upload-area" id="uploadArea" onclick="document.getElementById('fileInput').click()">
         <div class="icon">&#x1f4c1;</div>
@@ -212,6 +213,7 @@ var API = "https://shengheshu-d2g2zyyl99f6c6fc2-1453587887.ap-shanghai.app.tclou
 var adminToken = "", refreshTimer = null;
 var currentTab = "groups", currentData = null, currentEvents = [], currentEventId = "", excelData = null, uploadGroupField = "", uploadPreview = null, uploadPreviewTimer = null;
 document.getElementById("eventDateInput").value = new Date().toLocaleDateString("en-CA", {timeZone:"Asia/Shanghai"});
+syncDefaultCheckinTimes();
 
 function authHeaders(json) {
   var headers = {"Authorization":"Bearer "+adminToken};
@@ -287,13 +289,11 @@ function renderEventSelector() {
   var select=document.getElementById("eventSelect");
   select.innerHTML=currentEvents.map(function(item){return '<option value="'+esc(item.event_id)+'"'+(item.event_id===currentEventId?' selected':'')+'>'+esc(item.event_date+' · '+item.name)+'</option>';}).join("");
   var item=currentEvents.find(function(row){return row.event_id===currentEventId;});
-  document.getElementById("eventMeta").textContent=item ? item.event_date+" · "+item.activity_type_name+" · "+item.total+"人报名 · "+item.checked+"人签到" : "暂无活动";
+  var stateNames={open:"签到中",upcoming:"未开始",ended:"已结束",closed:"已手动关闭"};
+  document.getElementById("eventMeta").textContent=item ? item.event_date+" · "+item.activity_type_name+" · "+(stateNames[item.checkin_status]||"")+" · "+item.total+"人报名 · "+item.checked+"人签到" : "暂无活动";
   var btn=document.getElementById("eventStatusBtn");
-  btn.textContent=item && item.status==="active" ? "签到开放中（点击关闭）" : "签到已关闭（点击开放）";
-  var manualSelect=document.getElementById("manualEventSelect");
-  var activeEvents=currentEvents.filter(function(row){return row.status==="active";});
-  manualSelect.innerHTML=activeEvents.length ? activeEvents.map(function(row){return '<option value="'+esc(row.event_id)+'"'+(row.event_id===currentEventId?' selected':'')+'>'+esc(row.event_date+' · '+row.activity_type_name+' · '+row.name)+'</option>';}).join("") : '<option value="">暂无开放签到的活动</option>';
-  document.getElementById("manualAddBtn").disabled=activeEvents.length===0;
+  btn.textContent=item && item.manual_status==="active" ? "手动关闭签到" : "恢复按时间开放";
+  document.getElementById("manualAddBtn").disabled=!item || item.checkin_status!=="open";
 }
 
 async function selectAdminEvent(){
@@ -304,7 +304,7 @@ async function selectAdminEvent(){
 
 async function toggleEventStatus(){
   var item=currentEvents.find(function(row){return row.event_id===currentEventId;}); if(!item)return;
-  var next=item.status==="active"?"closed":"active";
+  var next=item.manual_status==="active"?"closed":"active";
   if(!confirm(next==="closed"?"关闭后，该活动将不能继续签到，确定关闭吗？":"确定重新开放该活动签到吗？"))return;
   await adminFetch("/event_update",{method:"POST",body:JSON.stringify({event_id:currentEventId,status:next})});
   await loadData();
@@ -327,7 +327,7 @@ async function addManualRegistration() {
   var btn = document.getElementById("manualAddBtn");
   var msg = document.getElementById("manualAddMsg");
   var payload = {
-    event_id: document.getElementById("manualEventSelect").value,
+    event_id: currentEventId,
     name: document.getElementById("manualName").value.trim(),
     phone: document.getElementById("manualPhone").value.trim(),
     center: document.getElementById("manualCenter").value.trim(),
@@ -335,7 +335,9 @@ async function addManualRegistration() {
     group_name: document.getElementById("manualGroup").value.trim(),
     company: document.getElementById("manualCompany").value.trim()
   };
-  if (!payload.event_id) { showMsg(msg, "请先选择一个开放签到的活动", "error"); return; }
+  if (!payload.event_id) { showMsg(msg, "请先选择当前管理活动", "error"); return; }
+  var currentEvent=currentEvents.find(function(row){return row.event_id===currentEventId;});
+  if (!currentEvent || currentEvent.checkin_status!=="open") { showMsg(msg, "当前管理活动不在签到时间内，不能新增临时报名", "error"); return; }
   if (!payload.name) { showMsg(msg, "请输入姓名", "error"); return; }
   if (!/^\d{11}$/.test(payload.phone)) { showMsg(msg, "请输入正确的11位手机号", "error"); return; }
   btn.disabled = true; btn.textContent = "新增中...";
@@ -663,7 +665,14 @@ function getUploadEventName() {
 }
 
 function getUploadMetadata() {
-  return {event_date:document.getElementById("eventDateInput").value, activity_type:document.getElementById("activityTypeInput").value};
+  return {event_date:document.getElementById("eventDateInput").value, activity_type:document.getElementById("activityTypeInput").value, checkin_start_at:document.getElementById("checkinStartInput").value, checkin_end_at:document.getElementById("checkinEndInput").value};
+}
+
+function syncDefaultCheckinTimes() {
+  var date=document.getElementById("eventDateInput").value;
+  if(!date)return;
+  document.getElementById("checkinStartInput").value=date+"T00:00";
+  document.getElementById("checkinEndInput").value=date+"T23:59";
 }
 
 function scheduleUploadPreview() {
@@ -695,7 +704,7 @@ async function loadUploadPreview() {
     return;
   }
   uploadPreview = d;
-  var eventHtml = '新活动：'+esc(d.event_date+' · '+d.activity_type_name+' · '+d.new_event_name);
+  var eventHtml = '新活动：'+esc(d.event_date+' · '+d.activity_type_name+' · '+d.new_event_name)+'<br>签到时间：'+esc(new Date(d.checkin_start_at).toLocaleString('zh-CN'))+' 至 '+esc(new Date(d.checkin_end_at).toLocaleString('zh-CN'));
   box.innerHTML = '<div class="preview-title">新增活动核对</div>'+
     '<div class="preview-summary">本次将导入 <strong>'+d.new_total+'</strong> 人</div>'+
     '<div class="preview-events">'+eventHtml+'</div>'+
@@ -716,6 +725,7 @@ async function uploadData() {
   var confirmText = "请确认新增活动：\n\n活动："+uploadPreview.new_event_name+
     "\n日期："+uploadPreview.event_date+
     "\n类型："+uploadPreview.activity_type_name+
+    "\n签到时间："+new Date(uploadPreview.checkin_start_at).toLocaleString("zh-CN")+" 至 "+new Date(uploadPreview.checkin_end_at).toLocaleString("zh-CN")+
     "\n报名人数："+uploadPreview.new_total+
     "\n重复报名组："+uploadPreview.duplicate_groups+
     "（额外名额 "+uploadPreview.repeated_slots+" 个）";

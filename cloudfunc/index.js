@@ -114,6 +114,27 @@ exports.main = async (event, context) => {
     return ACTIVITY_TYPES[type] ? type : "other";
   }
 
+  function parseChinaDateTime(value) {
+    const text = String(value || "").trim();
+    if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(text)) return "";
+    const timestamp = Date.parse(text + ":00+08:00");
+    return Number.isFinite(timestamp) ? new Date(timestamp).toISOString() : "";
+  }
+
+  function eventTimeState(item, now) {
+    if (item.status === "closed") return "closed";
+    const timestamp = (now || new Date()).getTime();
+    const startsAt = item.checkin_start_at ? Date.parse(item.checkin_start_at) : NaN;
+    const endsAt = item.checkin_end_at ? Date.parse(item.checkin_end_at) : NaN;
+    if (Number.isFinite(startsAt) && timestamp < startsAt) return "upcoming";
+    if (Number.isFinite(endsAt) && timestamp > endsAt) return "ended";
+    return "open";
+  }
+
+  function isEventOpen(item) {
+    return eventTimeState(item) === "open";
+  }
+
   async function rowsForBatch(collectionName, batchId, maxTotal) {
     const rows = await getAll(collectionName, maxTotal || 5000);
     return rows.filter(row => String(row.batch_id || "") === String(batchId || ""));
@@ -155,13 +176,18 @@ exports.main = async (event, context) => {
   }
 
   function publicEvent(item) {
+    const timeState = eventTimeState(item);
     return {
       event_id: item.event_id || item._id || "",
       name: item.name || "盛和塾活动",
       event_date: item.event_date || "",
       activity_type: normalizeActivityType(item.activity_type),
       activity_type_name: ACTIVITY_TYPES[normalizeActivityType(item.activity_type)],
-      status: item.status === "closed" ? "closed" : "active",
+      status: ["closed", "ended"].includes(timeState) ? "closed" : "active",
+      manual_status: item.status === "closed" ? "closed" : "active",
+      checkin_status: timeState,
+      checkin_start_at: item.checkin_start_at || "",
+      checkin_end_at: item.checkin_end_at || "",
       group_field: item.group_field || ""
     };
   }
@@ -309,10 +335,14 @@ exports.main = async (event, context) => {
     const rows = payload.attendees || [];
     const eventName = String(payload.event_name || "").trim().replace(/\.(xlsx|xls|xlsm|xlsb|csv)$/i, "").trim();
     const eventDate = String(payload.event_date || "").trim();
+    const checkinStartAt = parseChinaDateTime(payload.checkin_start_at);
+    const checkinEndAt = parseChinaDateTime(payload.checkin_end_at);
     const activityType = normalizeActivityType(payload.activity_type);
     const groupField = ["center", "class_name", "group_name"].includes(payload.group_field) ? payload.group_field : "";
     if (!eventName || rows.length === 0) return { error: "活动名称和报名数据不能为空" };
     if (!/^\d{4}-\d{2}-\d{2}$/.test(eventDate)) return { error: "请选择正确的活动日期" };
+    if (!checkinStartAt || !checkinEndAt) return { error: "请选择完整的签到开始时间和截止时间" };
+    if (Date.parse(checkinEndAt) <= Date.parse(checkinStartAt)) return { error: "签到截止时间必须晚于开始时间" };
     if (!ACTIVITY_TYPES[String(payload.activity_type || "")]) return { error: "请选择活动类型" };
     if (rows.length > 5000) return { error: "报名数据不能超过5000条" };
 
@@ -340,7 +370,7 @@ exports.main = async (event, context) => {
       normalizedRows.push(cleanRow);
     }
     if (normalizedRows.length === 0) return { error: "没有可导入的有效报名数据" };
-    return { eventName, eventDate, activityType, groupField, normalizedRows, identityCounts, restoreCheckins };
+    return { eventName, eventDate, checkinStartAt, checkinEndAt, activityType, groupField, normalizedRows, identityCounts, restoreCheckins };
   }
 
   function countIdentities(rows) {
@@ -379,6 +409,8 @@ exports.main = async (event, context) => {
       active_registration_hash: activeRegistrationHash,
       event_name: upload.eventName,
       event_date: upload.eventDate,
+      checkin_start_at: upload.checkinStartAt,
+      checkin_end_at: upload.checkinEndAt,
       activity_type: upload.activityType,
       group_field: upload.groupField,
       restore_checkins: upload.restoreCheckins,
@@ -423,7 +455,7 @@ exports.main = async (event, context) => {
     if (!name || !phone) return { statusCode: 200, headers: h, body: JSON.stringify({ ok: false, msg: "请输入姓名和手机号" }) };
     if (phone.length !== 11 || !/^\d+$/.test(phone)) return { statusCode: 200, headers: h, body: JSON.stringify({ ok: false, msg: "请输入正确的11位手机号" }) };
     try {
-      const activeEvents = (await getEvents()).filter(item => item.status !== "closed");
+      const activeEvents = (await getEvents()).filter(isEventOpen);
       if (!activeEvents.length) return { statusCode: 200, headers: h, body: JSON.stringify({ ok: false, msg: "当前没有开放签到的活动" }) };
       const activeIds = new Set(activeEvents.map(item => String(item.event_id || item._id || "")));
       const allRegistrations = await getAll("registrations", 5000);
@@ -511,7 +543,7 @@ exports.main = async (event, context) => {
   // ===== EVENT INFO =====
   if (p === "/event" && method === "GET") {
     try {
-      const activeEvents = (await getEvents()).filter(item => item.status !== "closed");
+      const activeEvents = (await getEvents()).filter(isEventOpen);
       const ds = await getDisplaySettings();
       const activeIds = new Set(activeEvents.map(item => String(item.event_id || item._id || "")));
       const total = (await getAll("registrations", 5000)).filter(row => activeIds.has(String(row.batch_id || ""))).length;
@@ -601,7 +633,7 @@ exports.main = async (event, context) => {
 
       const selectedEvent = await getRequestedEvent(data.event_id);
       if (!selectedEvent) return { statusCode: 200, headers: h, body: JSON.stringify({ ok: false, msg: "请先选择活动" }) };
-      if (selectedEvent.status === "closed") return { statusCode: 200, headers: h, body: JSON.stringify({ ok: false, msg: "该活动已关闭签到，请选择正在签到的活动" }) };
+      if (!isEventOpen(selectedEvent)) return { statusCode: 200, headers: h, body: JSON.stringify({ ok: false, msg: "当前活动不在签到时间内，不能新增临时报名" }) };
       const activeBatchId = String(selectedEvent.event_id || selectedEvent._id || "");
       const regs = await rowsForBatch("registrations", activeBatchId, 5000);
       if (regs.some(row => identityKey(row) === identityKey(registration))) {
@@ -762,6 +794,8 @@ exports.main = async (event, context) => {
         ok: true,
         new_event_name: upload.eventName,
         event_date: upload.eventDate,
+        checkin_start_at: upload.checkinStartAt,
+        checkin_end_at: upload.checkinEndAt,
         activity_type: upload.activityType,
         activity_type_name: ACTIVITY_TYPES[upload.activityType],
         old_total: 0,
@@ -784,7 +818,7 @@ exports.main = async (event, context) => {
   if (p === "/upload" && method === "POST") {
     const upload = normalizeUploadPayload(data);
     if (upload.error) return { statusCode: 200, headers: h, body: JSON.stringify({ ok: false, msg: upload.error }) };
-    const { eventName, eventDate, activityType, groupField, normalizedRows, identityCounts } = upload;
+    const { eventName, eventDate, checkinStartAt, checkinEndAt, activityType, groupField, normalizedRows, identityCounts } = upload;
     const eventsAtConfirmation = await getEvents();
     if (eventsAtConfirmation.some(item => String(item.name || "").trim() === eventName && String(item.event_date || "") === eventDate)) {
       return { statusCode: 200, headers: h, body: JSON.stringify({ ok: false, msg: "同一天已存在同名活动，请勿重复导入" }) };
@@ -814,7 +848,7 @@ exports.main = async (event, context) => {
       await setConfig("event_name", eventName);
       await setConfig("group_field", groupField);
       await setConfig("active_batch_id", batchId);
-      const eventResult = await db.collection("events").add({ event_id: batchId, name: eventName, event_date: eventDate, activity_type: activityType, status: "active", group_field: groupField, created_at: new Date().toISOString() });
+      const eventResult = await db.collection("events").add({ event_id: batchId, name: eventName, event_date: eventDate, checkin_start_at: checkinStartAt, checkin_end_at: checkinEndAt, activity_type: activityType, status: "active", group_field: groupField, created_at: new Date().toISOString() });
       stagedEventDoc = { _id: eventResult.id || eventResult._id };
       const repeatedSlots = Object.values(identityCounts).reduce((sum, count) => sum + Math.max(0, count - 1), 0);
       const repeatMessage = repeatedSlots ? "，其中多人共用姓名和手机号的额外名额 " + repeatedSlots + " 个" : "";
