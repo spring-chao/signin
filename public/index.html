@@ -92,10 +92,11 @@ async function init(){
   try{
     var r=await fetch(API+"/event");var d=await r.json();
     document.getElementById("eventName").textContent=d.event_name||"盛和塾签到";
-    var activeEvents=d.active_events||[],eventsBox=document.getElementById("activeEvents");
-    if(activeEvents.length>1){eventsBox.innerHTML='<strong>当前可签到活动：</strong><br>'+activeEvents.map(function(item){return '• '+esc(item.event_date+' · '+item.activity_type_name+' · '+item.name)}).join('<br>');eventsBox.classList.add('show')}
+    var activeEvents=d.active_events||[],displayEvents=d.display_events||activeEvents,eventsBox=document.getElementById("activeEvents");
+    if(displayEvents.length>1){eventsBox.innerHTML='<strong>当前活动：</strong><br>'+displayEvents.map(function(item){var state=item.checkin_status==="upcoming"?'（未开始）':'';return '• '+esc(item.event_date+' · '+item.activity_type_name+' · '+item.name+state)}).join('<br>');eventsBox.classList.add('show')}
+    else if(displayEvents.length===1 && displayEvents[0].checkin_status==="upcoming"){var start=new Date(displayEvents[0].checkin_start_at);eventsBox.innerHTML='<strong>活动尚未开始签到</strong><br>签到将于 '+esc(start.toLocaleString('zh-CN',{timeZone:'Asia/Shanghai',month:'long',day:'numeric',hour:'2-digit',minute:'2-digit',hour12:false}))+' 开始';eventsBox.classList.add('show')}
     else eventsBox.classList.remove('show');
-    if(Number(d.active_event_count||0)===0){document.getElementById("submitBtn").disabled=true;document.getElementById("submitBtn").textContent="当前暂无开放签到的活动";document.getElementById("nameInput").disabled=true;document.getElementById("phoneInput").disabled=true;}
+    if(Number(d.active_event_count||0)===0){document.getElementById("submitBtn").disabled=true;document.getElementById("submitBtn").textContent=displayEvents.length?"尚未到签到时间":"当前暂无开放签到的活动";document.getElementById("nameInput").disabled=true;document.getElementById("phoneInput").disabled=true;}
     document.getElementById("loadingArea").style.display="none";
     document.getElementById("mainArea").style.display="block";
   }catch(e){document.getElementById("loadingArea").innerHTML='<div style="color:#f87171">⚠️ 加载失败</div><div style="font-size:12px">请刷新重试</div>'}
