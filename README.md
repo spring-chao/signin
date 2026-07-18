@@ -72,6 +72,8 @@ tcb fn deploy checkinApi -e {你的环境ID} --dir cloudfunc --force
 
 ```bash
 tcb hosting deploy public/index.html /index.html -e {你的环境ID}
+tcb hosting deploy public/index.html /v2/index.html -e {你的环境ID} # 兼容已印刷的旧二维码
+tcb hosting deploy public/index.html /v3/index.html -e {你的环境ID} # 兼容已印刷的旧二维码
 tcb hosting deploy public/admin.html /admin.html -e {你的环境ID}
 # 后台只保留 /admin.html，旧版入口应删除：
 tcb hosting delete /v2/admin.html -e {你的环境ID}
@@ -96,7 +98,7 @@ tcb hosting delete /v3/admin.html -e {你的环境ID}
 
 ### 8. 生成二维码
 
-访问 `https://{你的环境ID}.tcloudbaseapp.com/v3/index.html`，用任何二维码生成器生成二维码打印即可。
+新制作二维码统一使用 `https://{你的环境ID}.tcloudbaseapp.com/index.html`；已经印刷并指向 `/v2/index.html` 或 `/v3/index.html` 的旧二维码继续兼容。
 
 ---
 
