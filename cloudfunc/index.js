@@ -1,5 +1,6 @@
 const cloudbase = require("@cloudbase/node-sdk");
 const crypto = require("crypto");
+const https = require("https");
 
 const ADMIN_PASSWORD_HASH = "da40d101ff0a0f2d9aadf5ff9c2e7b1ec0f58896497f9ee518218bd910abc0af";
 const ADMIN_TOKEN_TTL_MS = 12 * 60 * 60 * 1000;
@@ -39,6 +40,50 @@ exports.main = async (event, context) => {
   };
   
   if (method === "OPTIONS") return { statusCode: 200, headers: h, body: "" };
+
+  function requestJson(urlText, headers) {
+    const url = new URL(urlText);
+    return new Promise((resolve, reject) => {
+      const req = https.request({
+        method: "GET",
+        hostname: url.hostname,
+        port: url.port || 443,
+        path: url.pathname + url.search,
+        headers: { Accept: "application/json", ...(headers || {}) },
+        timeout: 10000
+      }, response => {
+        const chunks = [];
+        response.on("data", chunk => chunks.push(chunk));
+        response.on("end", () => {
+          const text = Buffer.concat(chunks).toString("utf8");
+          let payload = {};
+          try { payload = text ? JSON.parse(text) : {}; } catch (e) {
+            return reject(new Error("运营系统返回了无法识别的数据"));
+          }
+          if (response.statusCode < 200 || response.statusCode >= 300) {
+            return reject(new Error(payload.detail || payload.msg || "运营系统请求失败"));
+          }
+          resolve(payload);
+        });
+      });
+      req.on("timeout", () => req.destroy(new Error("连接运营系统超时")));
+      req.on("error", reject);
+      req.end();
+    });
+  }
+
+  async function requestOps(pathname, params) {
+    const base = String(process.env.OPS_API_BASE || "").replace(/\/$/, "");
+    const apiKey = String(process.env.OPS_API_KEY || "");
+    if (!base || !apiKey) throw new Error("签到系统尚未配置运营名册连接");
+    const url = new URL(base + pathname);
+    Object.entries(params || {}).forEach(([key, value]) => {
+      if (value !== undefined && value !== null && String(value).trim()) {
+        url.searchParams.set(key, String(value).trim());
+      }
+    });
+    return await requestJson(url.toString(), { "X-API-Key": apiKey });
+  }
 
   async function getConfig(key, def) {
     const r = await db.collection("config").where({ key }).get();
@@ -280,7 +325,7 @@ exports.main = async (event, context) => {
     return { statusCode: 200, headers: h, body: JSON.stringify({ ok: true, token: await issueAdminToken(), expires_in: ADMIN_TOKEN_TTL_MS / 1000 }) };
   }
 
-  const protectedPaths = new Set(["/settings", "/admin_events", "/event_update", "/registration", "/registration_delete", "/attendance_status", "/export", "/stats", "/upload_preview", "/upload", "/reset", "/clear_all"]);
+  const protectedPaths = new Set(["/settings", "/admin_events", "/event_update", "/registration", "/registration_delete", "/attendance_status", "/export", "/stats", "/ops_roster_options", "/ops_roster_members", "/upload_preview", "/upload", "/reset", "/clear_all"]);
   if (protectedPaths.has(p) && !(await isAdminRequest())) return unauthorized();
 
   function identityKey(person) {
@@ -600,6 +645,58 @@ exports.main = async (event, context) => {
       return { statusCode: 200, headers: h, body: JSON.stringify({ ok: true, event: publicEvent({ ...eventItem, ...changes }), msg: "活动已更新" }) };
     } catch (e) {
       return { statusCode: 200, headers: h, body: JSON.stringify({ ok: false, msg: "更新活动失败: " + (e.message || "") }) };
+    }
+  }
+
+  if (p === "/ops_roster_options" && method === "GET") {
+    try {
+      const result = await requestOps("/api/v1/checkin-rosters/options");
+      return { statusCode: 200, headers: h, body: JSON.stringify({ ok: true, ...(result.data || {}) }) };
+    } catch (e) {
+      return { statusCode: 200, headers: h, body: JSON.stringify({ ok: false, msg: "读取运营名单选项失败: " + (e.message || "") }) };
+    }
+  }
+
+  if (p === "/ops_roster_members" && method === "POST") {
+    try {
+      const scope = data.scope === "group" ? "group" : "class";
+      const result = await requestOps("/api/v1/checkin-rosters/members", {
+        center: data.center,
+        class_name: data.class_name,
+        group_name: scope === "group" ? data.group_name : ""
+      });
+      const roster = result.data || {};
+      const invalidMembers = Array.isArray(roster.invalid_members) ? roster.invalid_members : [];
+      if (invalidMembers.length) {
+        const names = invalidMembers.slice(0, 5).map(item => item.name).join("、");
+        return { statusCode: 200, headers: h, body: JSON.stringify({
+          ok: false,
+          invalid_count: invalidMembers.length,
+          msg: "运营名单中有 " + invalidMembers.length + " 人手机号不完整（" + names + (invalidMembers.length > 5 ? "等" : "") + "），请先在运营系统修正后再导入"
+        }) };
+      }
+      const attendees = (roster.members || []).map(item => ({
+        name: item.name || "",
+        phone: item.phone || "",
+        company: item.company || "",
+        center: item.center || "",
+        class_name: item.class_name || "",
+        group_name: item.group_name || "",
+        group_num: null,
+        dinner_table_num: null
+      }));
+      return { statusCode: 200, headers: h, body: JSON.stringify({
+        ok: true,
+        scope,
+        center: roster.center || "",
+        class_name: roster.class_name || "",
+        group_name: roster.group_name || "",
+        member_count: attendees.length,
+        version: roster.version || null,
+        attendees
+      }) };
+    } catch (e) {
+      return { statusCode: 200, headers: h, body: JSON.stringify({ ok: false, msg: "读取运营名单失败: " + (e.message || "") }) };
     }
   }
 

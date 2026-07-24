@@ -165,16 +165,25 @@ input:checked+.slider:before{transform:translateX(20px)}
     </div>
 
     <div class="section">
-      <h3>&#x1f4e4; 新增活动（上传 Excel 报名表）</h3>
+      <h3>&#x1f4e4; 新增活动（Excel 或运营名单）</h3>
       <div class="form-field">
         <label for="eventNameInput">活动名称 <span>（选填，留空则读取上传文件名）</span></label>
         <input id="eventNameInput" type="text" maxlength="100" placeholder="留空则自动读取文件名，并去掉 .xls / .xlsx 等后缀" oninput="scheduleUploadPreview()">
       </div>
       <div class="form-grid">
         <div class="form-field"><label for="eventDateInput">活动日期 <span>（必填）</span></label><input id="eventDateInput" type="date" onchange="syncDefaultCheckinTimes();scheduleUploadPreview()"></div>
-        <div class="form-field"><label for="activityTypeInput">活动类型 <span>（必填）</span></label><select id="activityTypeInput" onchange="scheduleUploadPreview()"><option value="course">课程</option><option value="class_meeting">班会/班级学习会</option><option value="group_meeting">小组学习会</option><option value="national_report">全国报告会</option><option value="center_quarterly_report">分中心季度报告会</option><option value="staff_training">班主任辅导员培训会</option><option value="board_meeting">理事会</option><option value="study_tour">游学</option><option value="other">其他</option></select></div>
+        <div class="form-field"><label for="activityTypeInput">活动类型 <span>（必填）</span></label><select id="activityTypeInput" onchange="handleActivityTypeChange()"><option value="course">课程</option><option value="class_meeting">班会/班级学习会</option><option value="group_meeting">小组学习会</option><option value="national_report">全国报告会</option><option value="center_quarterly_report">分中心季度报告会</option><option value="staff_training">班主任辅导员培训会</option><option value="board_meeting">理事会</option><option value="study_tour">游学</option><option value="other">其他</option></select></div>
         <div class="form-field"><label for="checkinStartInput">签到开始时间 <span>（必填）</span></label><input id="checkinStartInput" type="datetime-local" onchange="scheduleUploadPreview()"></div>
         <div class="form-field"><label for="checkinEndInput">签到截止时间 <span>（必填）</span></label><input id="checkinEndInput" type="datetime-local" onchange="scheduleUploadPreview()"></div>
+      </div>
+      <div id="opsRosterPanel" style="display:none;margin:4px 0 14px;padding:14px;border:1px solid rgba(34,197,94,.3);border-radius:12px;background:rgba(34,197,94,.06)">
+        <div style="font-size:14px;font-weight:700;margin-bottom:8px" id="opsRosterTitle">从运营系统添加班级名单</div>
+        <div class="form-help" style="margin-bottom:10px">读取运营系统当前有效主归属名单。观摩人员可在活动创建后通过“新增临时报名”追加。</div>
+        <div class="form-grid">
+          <div class="form-field"><label for="opsRosterSelect" id="opsRosterLabel">选择班级</label><select id="opsRosterSelect"></select></div>
+          <div class="form-field"><label>&nbsp;</label><button type="button" class="btn success full" id="opsRosterBtn" onclick="loadOpsRosterMembers()">添加运营名单</button></div>
+        </div>
+        <div class="msg" id="opsRosterMsg"></div>
       </div>
       <div class="upload-area" id="uploadArea" onclick="document.getElementById('fileInput').click()">
         <div class="icon">&#x1f4c1;</div>
@@ -211,7 +220,7 @@ input:checked+.slider:before{transform:translateX(20px)}
 <script>
 var API = "https://shengheshu-d2g2zyyl99f6c6fc2-1453587887.ap-shanghai.app.tcloudbase.com/api";
 var adminToken = "", refreshTimer = null;
-var currentTab = "groups", currentData = null, currentEvents = [], currentEventId = "", excelData = null, uploadGroupField = "", uploadPreview = null, uploadPreviewTimer = null;
+var currentTab = "groups", currentData = null, currentEvents = [], currentEventId = "", excelData = null, uploadGroupField = "", uploadPreview = null, uploadPreviewTimer = null, opsRosterOptions = [];
 document.getElementById("eventDateInput").value = new Date().toLocaleDateString("en-CA", {timeZone:"Asia/Shanghai"});
 syncDefaultCheckinTimes();
 
@@ -661,7 +670,12 @@ function getUploadEventName() {
   var manualName = nameInput ? stripSpreadsheetExtension(nameInput.value) : "";
   if (manualName) return manualName;
   var fi = document.getElementById("fileInput");
-  return fi && fi.files[0] ? stripSpreadsheetExtension(fi.files[0].name) : "";
+  if (fi && fi.files[0]) return stripSpreadsheetExtension(fi.files[0].name);
+  var selected = opsRosterOptions[Number(document.getElementById("opsRosterSelect").value)];
+  if (!selected) return "";
+  return document.getElementById("activityTypeInput").value === "group_meeting"
+    ? selected.class_name + selected.group_name + "小组学习会"
+    : selected.class_name + "班会";
 }
 
 function getUploadMetadata() {
@@ -673,6 +687,71 @@ function syncDefaultCheckinTimes() {
   if(!date)return;
   document.getElementById("checkinStartInput").value=date+"T00:00";
   document.getElementById("checkinEndInput").value=date+"T23:59";
+}
+
+async function handleActivityTypeChange() {
+  scheduleUploadPreview();
+  var type=document.getElementById("activityTypeInput").value;
+  var panel=document.getElementById("opsRosterPanel");
+  if(type!=="class_meeting" && type!=="group_meeting"){panel.style.display="none";return;}
+  panel.style.display="block";
+  var isGroup=type==="group_meeting";
+  document.getElementById("opsRosterTitle").textContent=isGroup?"从运营系统添加小组名单":"从运营系统添加班级名单";
+  document.getElementById("opsRosterLabel").textContent=isGroup?"选择小组":"选择班级";
+  await loadOpsRosterOptions();
+}
+
+async function loadOpsRosterOptions() {
+  var type=document.getElementById("activityTypeInput").value;
+  var select=document.getElementById("opsRosterSelect");
+  var msg=document.getElementById("opsRosterMsg");
+  select.innerHTML='<option value="">正在读取运营名单...</option>';
+  document.getElementById("opsRosterBtn").disabled=true;
+  try{
+    var r=await adminFetch("/ops_roster_options");
+    var d=await r.json();
+    if(!d.ok)throw new Error(d.msg||"读取失败");
+    opsRosterOptions=type==="group_meeting"?(d.groups||[]):(d.classes||[]);
+    select.innerHTML=opsRosterOptions.length?opsRosterOptions.map(function(item,index){
+      var path=item.center+" / "+item.class_name+(item.group_name?" / "+item.group_name:"");
+      return '<option value="'+index+'">'+esc(path+"（"+item.member_count+"人）")+'</option>';
+    }).join(""):'<option value="">没有可用名单</option>';
+    document.getElementById("opsRosterBtn").disabled=opsRosterOptions.length===0;
+    if(!opsRosterOptions.length)showMsg(msg,"运营系统暂无有效名单","error");
+  }catch(e){
+    opsRosterOptions=[];
+    select.innerHTML='<option value="">读取失败</option>';
+    showMsg(msg,e.message||"读取运营名单失败","error");
+  }
+}
+
+async function loadOpsRosterMembers() {
+  var index=Number(document.getElementById("opsRosterSelect").value);
+  var selected=opsRosterOptions[index];
+  var btn=document.getElementById("opsRosterBtn"),msg=document.getElementById("opsRosterMsg");
+  if(!selected){showMsg(msg,"请先选择名单","error");return;}
+  btn.disabled=true;btn.textContent="读取中...";
+  try{
+    var scope=document.getElementById("activityTypeInput").value==="group_meeting"?"group":"class";
+    var r=await adminFetch("/ops_roster_members",{method:"POST",body:JSON.stringify({
+      scope:scope,center:selected.center,class_name:selected.class_name,group_name:selected.group_name||""
+    })});
+    var d=await r.json();
+    if(!d.ok)throw new Error(d.msg||"读取名单失败");
+    excelData=d.attendees||[];
+    uploadGroupField=scope==="group"?"group_name":"class_name";
+    document.getElementById("fileInput").value="";
+    if(!document.getElementById("eventNameInput").value.trim()){
+      document.getElementById("eventNameInput").placeholder="默认活动名称："+getUploadEventName();
+    }
+    document.getElementById("uploadArea").innerHTML='<div class="icon">&#x2705;</div><div class="text">已加载运营名单：'+esc(selected.class_name+(selected.group_name?" / "+selected.group_name:""))+'</div><div class="hint">'+excelData.length+'人；仍可点击此处改用 Excel</div>';
+    var version=d.version;
+    document.getElementById("colMapInfo").innerHTML="名单来源：盛和塾运营管理系统当前有效主归属<br>"+(version?"最近组织版本："+esc(version.file_name||version.source_version||"已应用"):"");
+    document.getElementById("colMapInfo").style.display="block";
+    showMsg(msg,"已加载 "+excelData.length+" 人，正在生成活动预览","success");
+    await loadUploadPreview();
+  }catch(e){showMsg(msg,e.message||"读取名单失败","error");}
+  finally{btn.disabled=false;btn.textContent="添加运营名单";}
 }
 
 function scheduleUploadPreview() {
