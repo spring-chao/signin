@@ -493,6 +493,13 @@ exports.main = async (event, context) => {
     return { field: "center", label: "分组" };
   }
 
+  function groupFieldForEvent(eventItem, regs) {
+    if (normalizeActivityType(eventItem && eventItem.activity_type) === "class_meeting") {
+      return { field: "group_name", label: "小组" };
+    }
+    return detectGroupField(regs);
+  }
+
   // ===== CHECKIN =====
   if (p === "/checkin" && method === "POST") {
     const name = (data.name || "").trim();
@@ -537,7 +544,7 @@ exports.main = async (event, context) => {
       const totalSlots = matchingRegs.length;
       const checkedSlots = totalSlots - remainingIndexes.length;
       const ds = await getDisplaySettings();
-      const gf = detectGroupField(matchingRegs);
+      const gf = groupFieldForEvent(selectedEvent, matchingRegs);
 
       function makeDisplayData(reg) {
         return {
@@ -842,10 +849,10 @@ exports.main = async (event, context) => {
       const total = regs.length;
       const checked = attendance.checkedIndexes.size;
       const rate = total > 0 ? Math.round(checked / total * 1000) / 10 : 0;
-      const gf = detectGroupField(regs);
+      const gf = groupFieldForEvent(selectedEvent, regs);
       const groups = {};
       regs.forEach((a, index) => {
-        const gv = normalizeDimensionValue(a, gf.field) || "未知";
+        const gv = normalizeDimensionValue(a, gf.field) || "未分组";
         if (!groups[gv]) groups[gv] = { total: 0, checked: 0 };
         groups[gv].total++;
         if (attendance.checkedIndexes.has(index)) groups[gv].checked++;

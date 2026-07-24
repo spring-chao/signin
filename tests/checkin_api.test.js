@@ -214,6 +214,9 @@ async function request(path, method, body, token) {
   const secondStats = await request("/stats?event_id=batch-2", "GET", undefined, token);
   assert.equal(secondStats.data.total, 1);
   assert.equal(secondStats.data.checked, 1);
+  assert.equal(secondStats.data.group_field, "group_name", "班会活动应按小组分类");
+  assert.equal(secondStats.data.group_type, "小组");
+  assert.equal(secondStats.data.groups["一组"].total, 1);
 
   db.collections.events.find(row => row.event_id === "batch-2").status = "closed";
   const addToClosedEvent = await request("/registration", "POST", {
