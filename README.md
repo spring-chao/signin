@@ -100,7 +100,7 @@ tcb hosting delete /v3/admin.html -e {你的环境ID}
 
 ### 8. 生成二维码
 
-新制作二维码统一使用 `https://{你的环境ID}.tcloudbaseapp.com/index.html`；已经印刷并指向 `/v2/index.html` 或 `/v3/index.html` 的旧二维码继续兼容。
+新制作二维码统一使用 CloudBase 静态托管详情中显示的完整域名，例如 `https://{环境ID}-{AppID}.tcloudbaseapp.com/index.html`；已经印刷并指向 `/v2/index.html` 或 `/v3/index.html` 的旧二维码继续兼容。不要省略域名中的 `-{AppID}` 后缀，否则该地址无法访问。
 
 ---
 

@@ -180,9 +180,33 @@ exports.main = async (event, context) => {
     return eventTimeState(item) === "open";
   }
 
+  function chinaDateKey(now) {
+    const parts = new Intl.DateTimeFormat("en-CA", {
+      timeZone: "Asia/Shanghai", year: "numeric", month: "2-digit", day: "2-digit"
+    }).formatToParts(now || new Date());
+    const value = {};
+    parts.forEach(part => { if (part.type !== "literal") value[part.type] = part.value; });
+    return value.year + "-" + value.month + "-" + value.day;
+  }
+
+  function isEventToday(item, now) {
+    function dateKey(value) {
+      const raw = typeof value === "string" ? value : JSON.stringify(value || "");
+      const match = String(raw || "").match(/(\d{4})\D+(\d{1,2})\D+(\d{1,2})/);
+      return match ? match[1] + "-" + match[2].padStart(2, "0") + "-" + match[3].padStart(2, "0") : "";
+    }
+    const eventDate = dateKey(item && item.event_date);
+    // Check-in time is a fallback for older records whose activity-date field
+    // was stored in a non-standard format.
+    const startDate = dateKey(item && item.checkin_start_at);
+    const today = chinaDateKey(now);
+    return eventDate === today || startDate === today;
+  }
+
   async function rowsForBatch(collectionName, batchId, maxTotal) {
-    const rows = await getAll(collectionName, maxTotal || 5000);
-    return rows.filter(row => String(row.batch_id || "") === String(batchId || ""));
+    // batch_id is written with every registration and check-in. Query it in the
+    // database instead of reading the entire historical collection first.
+    return getAll(collectionName, maxTotal || 5000, { batch_id: String(batchId || "") });
   }
 
   async function ensureLegacyEvent() {
@@ -507,11 +531,13 @@ exports.main = async (event, context) => {
     if (!name || !phone) return { statusCode: 200, headers: h, body: JSON.stringify({ ok: false, msg: "请输入姓名和手机号" }) };
     if (phone.length !== 11 || !/^\d+$/.test(phone)) return { statusCode: 200, headers: h, body: JSON.stringify({ ok: false, msg: "请输入正确的11位手机号" }) };
     try {
-      const activeEvents = (await getEvents()).filter(isEventOpen);
+      const activeEvents = (await getEvents()).filter(item => isEventToday(item)).filter(isEventOpen);
       if (!activeEvents.length) return { statusCode: 200, headers: h, body: JSON.stringify({ ok: false, msg: "当前没有开放签到的活动" }) };
       const activeIds = new Set(activeEvents.map(item => String(item.event_id || item._id || "")));
-      const allRegistrations = await getAll("registrations", 5000);
-      const phoneRegistrations = allRegistrations.filter(reg => activeIds.has(String(reg.batch_id || "")) && String(reg.phone || "").trim().replace(/\s/g, "").replace(/-/g, "") === phone);
+      // Phones are normalized when importing or adding registrations. Limiting
+      // this lookup to one phone prevents each QR scan from scanning all events.
+      const phoneRows = await getAll("registrations", 5000, { phone });
+      const phoneRegistrations = phoneRows.filter(reg => activeIds.has(String(reg.batch_id || "")) && String(reg.phone || "").trim().replace(/\s/g, "").replace(/-/g, "") === phone);
       if (phoneRegistrations.length === 0) return { statusCode: 200, headers: h, body: JSON.stringify({ ok: false, msg: "未找到报名记录，请先确认是否已报名，或检查手机号是否正确" }) };
       const n1 = name.replace(/\s+/g, "").toLowerCase();
       let matchingRegs = phoneRegistrations.filter(function(reg) {
@@ -596,12 +622,16 @@ exports.main = async (event, context) => {
   if (p === "/event" && method === "GET") {
     try {
       const allEvents = await getEvents();
-      const activeEvents = allEvents.filter(isEventOpen);
-      const displayEvents = allEvents.filter(item => ["open", "upcoming"].includes(eventTimeState(item)));
+      // The public QR page only shows activities dated today in China Standard
+      // Time. Future activities remain available in the admin console.
+      const todayEvents = allEvents.filter(item => isEventToday(item));
+      const activeEvents = todayEvents.filter(isEventOpen);
+      const displayEvents = todayEvents.filter(item => ["open", "upcoming"].includes(eventTimeState(item)));
       const ds = await getDisplaySettings();
-      const activeIds = new Set(activeEvents.map(item => String(item.event_id || item._id || "")));
-      const total = (await getAll("registrations", 5000)).filter(row => activeIds.has(String(row.batch_id || ""))).length;
-      const eventName = displayEvents.length === 0 ? "当前暂无可签到活动" : (displayEvents.length === 1 ? (displayEvents[0].name || "盛和塾活动签到") : "请选择签到活动");
+      const activeIds = activeEvents.map(item => String(item.event_id || item._id || ""));
+      const activeRegistrationRows = await Promise.all(activeIds.map(eventId => rowsForBatch("registrations", eventId, 5000)));
+      const total = activeRegistrationRows.reduce((sum, rows) => sum + rows.length, 0);
+      const eventName = displayEvents.length === 0 ? "当前暂无可签到活动" : (displayEvents.length === 1 ? (displayEvents[0].name || "盛和塾活动签到") : "盛和塾活动签到");
       return { statusCode: 200, headers: h, body: JSON.stringify({ event_name: eventName, active_event_count: activeEvents.length, active_events: activeEvents.map(publicEvent), display_events: displayEvents.map(publicEvent), show_group: ds.show_group, show_dinner_table: ds.show_dinner_table, total }) };
     } catch (e) {
       return { statusCode: 200, headers: h, body: JSON.stringify({ event_name: "签到活动加载失败", active_event_count: 0, active_events: [], show_group: "true", show_dinner_table: "true", total: 0 }) };
