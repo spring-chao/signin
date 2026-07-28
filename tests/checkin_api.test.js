@@ -133,6 +133,20 @@ assert.equal(
   "center：Field required；class_name：Field required",
   "结构化校验错误不应显示成 [object Object]"
 );
+assert.equal(
+  api._test.normalizeOpsRosterData({
+    data: { members: [{ name: "测试学员" }], version: { source_version: "v1" } }
+  }).members.length,
+  1,
+  "旧运营接口的 data.members 名单应被正确读取"
+);
+assert.equal(
+  api._test.normalizeOpsRosterData({
+    data: [{ name: "测试学员" }]
+  }).members.length,
+  1,
+  "新运营接口的 data 数组名单应保持兼容"
+);
 
 async function request(path, method, body, token, extraHeaders) {
   const [pathname, search = ""] = path.split("?");

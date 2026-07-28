@@ -53,7 +53,23 @@ function buildOpsRosterParams(data, scope) {
   };
 }
 
-exports._test = { readableOpsError, buildOpsRosterParams };
+function normalizeOpsRosterData(result) {
+  const data = result && result.data;
+  if (Array.isArray(data)) return { members: data, version: null };
+  if (data && Array.isArray(data.members)) {
+    return { members: data.members, version: data.version || null };
+  }
+  if (result && Array.isArray(result.members)) {
+    return { members: result.members, version: result.version || null };
+  }
+  return { members: [], version: data && data.version ? data.version : null };
+}
+
+exports._test = {
+  readableOpsError,
+  buildOpsRosterParams,
+  normalizeOpsRosterData
+};
 
 exports.main = async (event, context) => {
   const app = cloudbase.init({ env: "shengheshu-d2g2zyyl99f6c6fc2" });
@@ -790,8 +806,8 @@ exports.main = async (event, context) => {
         "/api/v1/checkin-rosters/members",
         buildOpsRosterParams(data, scope)
       );
-      const roster = result.data || [];
-      const attendees = (Array.isArray(roster) ? roster : []).map(item => ({
+      const normalized = normalizeOpsRosterData(result);
+      const attendees = normalized.members.map(item => ({
         name: item.name || "",
         phone: item.phone || "",
         member_code: item.member_code || "",
@@ -806,7 +822,8 @@ exports.main = async (event, context) => {
         ok: true,
         scope,
         member_count: attendees.length,
-        attendees
+        attendees,
+        version: normalized.version
       }) };
     } catch (e) {
       return { statusCode: 200, headers: h, body: JSON.stringify({ ok: false, msg: "读取运营名单失败: " + (e.message || "") }) };
