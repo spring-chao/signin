@@ -1125,6 +1125,30 @@ exports.main = async (event, context) => {
           checkin_end: data.konpa_checkin_end || (eventDate + "T19:30") }
       ];
 
+      let previousScheduledEnd = null;
+      for (const session of sessions) {
+        session.checkin_start_at = parseChinaDateTime(session.checkin_start);
+        session.scheduled_start_at = parseChinaDateTime(session.scheduled_start);
+        session.checkin_end_at = parseChinaDateTime(session.checkin_end);
+        session.scheduled_end_at = parseChinaDateTime(session.scheduled_end);
+        const timestamps = [
+          session.checkin_start_at,
+          session.scheduled_start_at,
+          session.checkin_end_at,
+          session.scheduled_end_at
+        ].map(value => Date.parse(value));
+        if (timestamps.some(value => !Number.isFinite(value))) {
+          return { statusCode: 200, headers: h, body: JSON.stringify({ ok: false, msg: session.name + "时间填写不完整" }) };
+        }
+        if (!(timestamps[0] <= timestamps[1] && timestamps[1] <= timestamps[2] && timestamps[2] <= timestamps[3])) {
+          return { statusCode: 200, headers: h, body: JSON.stringify({ ok: false, msg: session.name + "时间顺序必须是：签到开放 ≤ 正式开始 ≤ 签到截止 ≤ 正式结束" }) };
+        }
+        if (previousScheduledEnd !== null && previousScheduledEnd > timestamps[0]) {
+          return { statusCode: 200, headers: h, body: JSON.stringify({ ok: false, msg: "上午、下午和空巴的时间不能重叠" }) };
+        }
+        previousScheduledEnd = timestamps[3];
+      }
+
       // Generate a shared event_group_id
       const eventGroupId = Date.now().toString(36) + "_" + crypto.randomBytes(6).toString("hex");
 
@@ -1140,10 +1164,10 @@ exports.main = async (event, context) => {
           session_order: session.order,
           name: eventName + " - " + session.name,
           event_date: eventDate,
-          checkin_start_at: parseChinaDateTime(session.checkin_start),
-          checkin_end_at: parseChinaDateTime(session.checkin_end),
-          scheduled_start_at: parseChinaDateTime(session.scheduled_start),
-          scheduled_end_at: parseChinaDateTime(session.scheduled_end),
+          checkin_start_at: session.checkin_start_at,
+          checkin_end_at: session.checkin_end_at,
+          scheduled_start_at: session.scheduled_start_at,
+          scheduled_end_at: session.scheduled_end_at,
           activity_type: "class_meeting",
           status: "active",
           group_field: groupField,

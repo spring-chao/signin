@@ -291,6 +291,18 @@ async function request(path, method, body, token, extraHeaders) {
     3,
     "同一份名单必须复制到三个签到场次"
   );
+  const invalidSessionTimes = await request("/create_class_meeting_sessions", "POST", {
+    token,
+    event_date: today,
+    event_name: "错误时间测试",
+    org_unit_id: "center-1",
+    class_org_unit_id: "class-1",
+    morning_checkin_start: `${today}T10:00`,
+    morning_scheduled_start: `${today}T09:00`,
+    morning_checkin_end: `${today}T09:30`,
+    morning_scheduled_end: `${today}T12:00`
+  });
+  assert.equal(invalidSessionTimes.data.ok, false, "三场次时间顺序错误时必须拒绝创建");
 
   const authorizedSessions = await request(
     "/ops/v1/attendance/sessions?limit=2",

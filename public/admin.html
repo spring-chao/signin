@@ -173,8 +173,8 @@ input:checked+.slider:before{transform:translateX(20px)}
       <div class="form-grid">
         <div class="form-field"><label for="eventDateInput">活动日期 <span>（必填）</span></label><input id="eventDateInput" type="date" onchange="syncDefaultCheckinTimes();scheduleUploadPreview()"></div>
         <div class="form-field"><label for="activityTypeInput">活动类型 <span>（必填）</span></label><select id="activityTypeInput" onchange="handleActivityTypeChange()"><option value="course">课程</option><option value="class_meeting">班会/班级学习会</option><option value="group_meeting">小组学习会</option><option value="national_report">全国报告会</option><option value="center_quarterly_report">分中心季度报告会</option><option value="staff_training">班主任辅导员培训会</option><option value="board_meeting">理事会</option><option value="study_tour">游学</option><option value="other">其他</option></select></div>
-        <div class="form-field"><label for="checkinStartInput">签到开始时间 <span>（必填）</span></label><input id="checkinStartInput" type="datetime-local" onchange="scheduleUploadPreview()"></div>
-        <div class="form-field"><label for="checkinEndInput">签到截止时间 <span>（必填）</span></label><input id="checkinEndInput" type="datetime-local" onchange="scheduleUploadPreview()"></div>
+        <div class="form-field" id="singleCheckinStartField"><label for="checkinStartInput">签到开始时间 <span>（必填）</span></label><input id="checkinStartInput" type="datetime-local" onchange="scheduleUploadPreview()"></div>
+        <div class="form-field" id="singleCheckinEndField"><label for="checkinEndInput">签到截止时间 <span>（必填）</span></label><input id="checkinEndInput" type="datetime-local" onchange="scheduleUploadPreview()"></div>
       </div>
       <div id="opsRosterPanel" style="display:none;margin:4px 0 14px;padding:14px;border:1px solid rgba(34,197,94,.3);border-radius:12px;background:rgba(34,197,94,.06)">
         <div style="font-size:14px;font-weight:700;margin-bottom:8px" id="opsRosterTitle">从运营系统添加班级名单</div>
@@ -184,6 +184,33 @@ input:checked+.slider:before{transform:translateX(20px)}
           <div class="form-field"><label>&nbsp;</label><button type="button" class="btn success full" id="opsRosterBtn" onclick="loadOpsRosterMembers()">添加运营名单</button></div>
         </div>
         <div class="msg" id="opsRosterMsg"></div>
+      </div>
+      <div id="threeSessionPanel" style="display:none;margin:4px 0 14px;padding:14px;border:1px solid rgba(59,130,246,.35);border-radius:12px;background:rgba(59,130,246,.08)">
+        <div style="font-size:15px;font-weight:700;margin-bottom:6px">⏱ 班级学习会三次签到时间</div>
+        <div class="form-help" style="margin-bottom:12px">依次设置上午、下午、晚上空巴的签到开放、正式开始、签到截止和正式结束时间。创建后会生成三个独立二维码签到场次，并共用同一份班级名单。</div>
+        <div style="font-weight:700;margin:10px 0 6px">上午签到（7 分）</div>
+        <div class="form-grid">
+          <div class="form-field"><label for="morningCheckinStart">签到开放</label><input id="morningCheckinStart" type="datetime-local"></div>
+          <div class="form-field"><label for="morningScheduledStart">正式开始</label><input id="morningScheduledStart" type="datetime-local"></div>
+          <div class="form-field"><label for="morningCheckinEnd">签到截止</label><input id="morningCheckinEnd" type="datetime-local"></div>
+          <div class="form-field"><label for="morningScheduledEnd">正式结束</label><input id="morningScheduledEnd" type="datetime-local"></div>
+        </div>
+        <div style="font-weight:700;margin:10px 0 6px">下午签到（7 分）</div>
+        <div class="form-grid">
+          <div class="form-field"><label for="afternoonCheckinStart">签到开放</label><input id="afternoonCheckinStart" type="datetime-local"></div>
+          <div class="form-field"><label for="afternoonScheduledStart">正式开始</label><input id="afternoonScheduledStart" type="datetime-local"></div>
+          <div class="form-field"><label for="afternoonCheckinEnd">签到截止</label><input id="afternoonCheckinEnd" type="datetime-local"></div>
+          <div class="form-field"><label for="afternoonScheduledEnd">正式结束</label><input id="afternoonScheduledEnd" type="datetime-local"></div>
+        </div>
+        <div style="font-weight:700;margin:10px 0 6px">晚上空巴签到（4 分）</div>
+        <div class="form-grid">
+          <div class="form-field"><label for="konpaCheckinStart">签到开放</label><input id="konpaCheckinStart" type="datetime-local"></div>
+          <div class="form-field"><label for="konpaScheduledStart">正式开始</label><input id="konpaScheduledStart" type="datetime-local"></div>
+          <div class="form-field"><label for="konpaCheckinEnd">签到截止</label><input id="konpaCheckinEnd" type="datetime-local"></div>
+          <div class="form-field"><label for="konpaScheduledEnd">正式结束</label><input id="konpaScheduledEnd" type="datetime-local"></div>
+        </div>
+        <button type="button" class="btn primary full" id="createThreeSessionBtn" onclick="createThreeSessionMeeting()">确认创建上午、下午、空巴三次签到</button>
+        <div class="msg" id="threeSessionMsg"></div>
       </div>
       <div class="upload-area" id="uploadArea" onclick="document.getElementById('fileInput').click()">
         <div class="icon">&#x1f4c1;</div>
@@ -674,8 +701,8 @@ function getUploadEventName() {
   var selected = opsRosterOptions[Number(document.getElementById("opsRosterSelect").value)];
   if (!selected) return "";
   return document.getElementById("activityTypeInput").value === "group_meeting"
-    ? selected.class_name + selected.group_name + "小组学习会"
-    : selected.class_name + "班会";
+    ? (selected.class_name || "") + (selected.name || selected.group_name || "") + "小组学习会"
+    : (selected.name || selected.class_name || "") + "班级学习会";
 }
 
 function getUploadMetadata() {
@@ -687,12 +714,25 @@ function syncDefaultCheckinTimes() {
   if(!date)return;
   document.getElementById("checkinStartInput").value=date+"T00:00";
   document.getElementById("checkinEndInput").value=date+"T23:59";
+  var defaults={
+    morningCheckinStart:"08:00",morningScheduledStart:"09:00",morningCheckinEnd:"09:30",morningScheduledEnd:"12:00",
+    afternoonCheckinStart:"13:00",afternoonScheduledStart:"14:00",afternoonCheckinEnd:"14:30",afternoonScheduledEnd:"17:00",
+    konpaCheckinStart:"18:00",konpaScheduledStart:"19:00",konpaCheckinEnd:"19:30",konpaScheduledEnd:"21:00"
+  };
+  Object.keys(defaults).forEach(function(id){
+    document.getElementById(id).value=date+"T"+defaults[id];
+  });
 }
 
 async function handleActivityTypeChange() {
   scheduleUploadPreview();
   var type=document.getElementById("activityTypeInput").value;
   var panel=document.getElementById("opsRosterPanel");
+  var isClass=type==="class_meeting";
+  document.getElementById("threeSessionPanel").style.display=isClass?"block":"none";
+  document.getElementById("singleCheckinStartField").style.display=isClass?"none":"";
+  document.getElementById("singleCheckinEndField").style.display=isClass?"none":"";
+  document.getElementById("upBtn").style.display="none";
   if(type!=="class_meeting" && type!=="group_meeting"){panel.style.display="none";return;}
   panel.style.display="block";
   var isGroup=type==="group_meeting";
@@ -713,8 +753,9 @@ async function loadOpsRosterOptions() {
     if(!d.ok)throw new Error(d.msg||"读取失败");
     opsRosterOptions=type==="group_meeting"?(d.groups||[]):(d.classes||[]);
     select.innerHTML=opsRosterOptions.length?opsRosterOptions.map(function(item,index){
-      var path=item.center+" / "+item.class_name+(item.group_name?" / "+item.group_name:"");
-      return '<option value="'+index+'">'+esc(path+"（"+item.member_count+"人）")+'</option>';
+      var path=item.path || item.name || item.class_name || item.group_name || item.id;
+      var countText=item.member_count===undefined||item.member_count===null?"":"（"+item.member_count+"人）";
+      return '<option value="'+index+'">'+esc(path+countText)+'</option>';
     }).join(""):'<option value="">没有可用名单</option>';
     document.getElementById("opsRosterBtn").disabled=opsRosterOptions.length===0;
     if(!opsRosterOptions.length)showMsg(msg,"运营系统暂无有效名单","error");
@@ -734,7 +775,9 @@ async function loadOpsRosterMembers() {
   try{
     var scope=document.getElementById("activityTypeInput").value==="group_meeting"?"group":"class";
     var r=await adminFetch("/ops_roster_members",{method:"POST",body:JSON.stringify({
-      scope:scope,center:selected.center,class_name:selected.class_name,group_name:selected.group_name||""
+      scope:scope,
+      class_org_unit_id:scope==="class"?selected.id:(selected.parent_id||selected.class_org_unit_id||""),
+      group_org_unit_id:scope==="group"?selected.id:""
     })});
     var d=await r.json();
     if(!d.ok)throw new Error(d.msg||"读取名单失败");
@@ -744,12 +787,20 @@ async function loadOpsRosterMembers() {
     if(!document.getElementById("eventNameInput").value.trim()){
       document.getElementById("eventNameInput").placeholder="默认活动名称："+getUploadEventName();
     }
-    document.getElementById("uploadArea").innerHTML='<div class="icon">&#x2705;</div><div class="text">已加载运营名单：'+esc(selected.class_name+(selected.group_name?" / "+selected.group_name:""))+'</div><div class="hint">'+excelData.length+'人；仍可点击此处改用 Excel</div>';
+    var selectedName=selected.path||selected.name||selected.class_name||selected.group_name||selected.id;
+    document.getElementById("uploadArea").innerHTML='<div class="icon">&#x2705;</div><div class="text">已加载运营名单：'+esc(selectedName)+'</div><div class="hint">'+excelData.length+'人；仍可点击此处改用 Excel</div>';
     var version=d.version;
     document.getElementById("colMapInfo").innerHTML="名单来源：盛和塾运营管理系统当前有效主归属<br>"+(version?"最近组织版本："+esc(version.file_name||version.source_version||"已应用"):"");
     document.getElementById("colMapInfo").style.display="block";
-    showMsg(msg,"已加载 "+excelData.length+" 人，正在生成活动预览","success");
-    await loadUploadPreview();
+    if(scope==="class"){
+      uploadPreview=null;
+      document.getElementById("uploadPreview").className="upload-preview";
+      document.getElementById("upBtn").style.display="none";
+      showMsg(msg,"已加载 "+excelData.length+" 人，请核对三场签到时间后创建","success");
+    }else{
+      showMsg(msg,"已加载 "+excelData.length+" 人，正在生成活动预览","success");
+      await loadUploadPreview();
+    }
   }catch(e){showMsg(msg,e.message||"读取名单失败","error");}
   finally{btn.disabled=false;btn.textContent="添加运营名单";}
 }
@@ -759,12 +810,90 @@ function scheduleUploadPreview() {
   clearTimeout(uploadPreviewTimer);
   document.getElementById("upBtn").style.display = "none";
   document.getElementById("uploadPreview").className = "upload-preview";
-  if (!excelData || !excelData.length) return;
+  if (!excelData || !excelData.length || document.getElementById("activityTypeInput").value==="class_meeting") return;
   uploadPreviewTimer = setTimeout(function() {
     loadUploadPreview().catch(function(e) {
       showMsg(document.getElementById("uploadMsg"), "活动名称预览失败："+e.message, "error");
     });
   }, 350);
+}
+
+function threeSessionValues() {
+  function value(id){return document.getElementById(id).value;}
+  return {
+    morning_checkin_start:value("morningCheckinStart"),
+    morning_scheduled_start:value("morningScheduledStart"),
+    morning_checkin_end:value("morningCheckinEnd"),
+    morning_scheduled_end:value("morningScheduledEnd"),
+    afternoon_checkin_start:value("afternoonCheckinStart"),
+    afternoon_scheduled_start:value("afternoonScheduledStart"),
+    afternoon_checkin_end:value("afternoonCheckinEnd"),
+    afternoon_scheduled_end:value("afternoonScheduledEnd"),
+    konpa_checkin_start:value("konpaCheckinStart"),
+    konpa_scheduled_start:value("konpaScheduledStart"),
+    konpa_checkin_end:value("konpaCheckinEnd"),
+    konpa_scheduled_end:value("konpaScheduledEnd")
+  };
+}
+
+function validateThreeSessionValues(values) {
+  var sessions=[
+    ["上午",values.morning_checkin_start,values.morning_scheduled_start,values.morning_checkin_end,values.morning_scheduled_end],
+    ["下午",values.afternoon_checkin_start,values.afternoon_scheduled_start,values.afternoon_checkin_end,values.afternoon_scheduled_end],
+    ["晚上空巴",values.konpa_checkin_start,values.konpa_scheduled_start,values.konpa_checkin_end,values.konpa_scheduled_end]
+  ];
+  for(var i=0;i<sessions.length;i++){
+    var row=sessions[i],times=row.slice(1).map(function(value){return Date.parse(value);});
+    if(times.some(function(value){return !Number.isFinite(value);}))return row[0]+"时间填写不完整";
+    if(!(times[0]<=times[1] && times[1]<=times[2] && times[2]<=times[3])){
+      return row[0]+"时间顺序必须是：签到开放 ≤ 正式开始 ≤ 签到截止 ≤ 正式结束";
+    }
+    if(i>0){
+      var previousEnd=Date.parse(sessions[i-1][4]);
+      if(previousEnd>times[0])return sessions[i-1][0]+"与"+row[0]+"时间不能重叠";
+    }
+  }
+  return "";
+}
+
+async function createThreeSessionMeeting() {
+  var msg=document.getElementById("threeSessionMsg");
+  var selected=opsRosterOptions[Number(document.getElementById("opsRosterSelect").value)];
+  if(!selected){showMsg(msg,"请先选择班级","error");return;}
+  if(!excelData){showMsg(msg,"请先点击“添加运营名单”读取班级名单","error");return;}
+  var eventDate=document.getElementById("eventDateInput").value;
+  if(!eventDate){showMsg(msg,"请先选择活动日期","error");return;}
+  var values=threeSessionValues(),validation=validateThreeSessionValues(values);
+  if(validation){showMsg(msg,validation,"error");return;}
+  var eventName=getUploadEventName()||eventDate+" 班级学习会";
+  var selectedName=selected.path||selected.name||selected.class_name||selected.id;
+  var confirmText="请确认创建三次签到：\n\n班级："+selectedName+
+    "\n活动："+eventName+"\n日期："+eventDate+"\n名单："+excelData.length+"人"+
+    "\n\n上午："+values.morning_checkin_start.slice(11)+" - "+values.morning_checkin_end.slice(11)+
+    "\n下午："+values.afternoon_checkin_start.slice(11)+" - "+values.afternoon_checkin_end.slice(11)+
+    "\n空巴："+values.konpa_checkin_start.slice(11)+" - "+values.konpa_checkin_end.slice(11);
+  if(!confirm(confirmText))return;
+  var btn=document.getElementById("createThreeSessionBtn");
+  btn.disabled=true;btn.textContent="正在创建三次签到...";
+  try{
+    var payload=Object.assign({
+      event_date:eventDate,
+      event_name:eventName,
+      group_field:"class_name",
+      org_unit_id:selected.parent_id||selected.org_unit_id||"",
+      class_org_unit_id:selected.id||selected.class_org_unit_id||"",
+      roster_members:excelData
+    },values);
+    var r=await adminFetch("/create_class_meeting_sessions",{method:"POST",body:JSON.stringify(payload)});
+    var d=await r.json();
+    if(!d.ok)throw new Error(d.msg||"创建失败");
+    showMsg(msg,"创建成功：上午、下午、空巴三个签到场次已生成","success");
+    excelData=null;uploadGroupField="";uploadPreview=null;
+    document.getElementById("eventNameInput").value="";
+    document.getElementById("uploadArea").innerHTML='<div class="icon">&#x1f4c1;</div><div class="text">点击上传 Excel 报名表</div><div class="hint">支持 .xls / .xlsx；自动查找前100行表头，列顺序不限</div>';
+    await loadData();
+  }catch(e){showMsg(msg,e.message||"创建三次签到失败","error");}
+  finally{btn.disabled=false;btn.textContent="确认创建上午、下午、空巴三次签到";}
 }
 
 async function loadUploadPreview() {
