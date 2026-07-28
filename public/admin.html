@@ -777,7 +777,10 @@ async function loadOpsRosterMembers() {
     var r=await adminFetch("/ops_roster_members",{method:"POST",body:JSON.stringify({
       scope:scope,
       class_org_unit_id:scope==="class"?selected.id:(selected.parent_id||selected.class_org_unit_id||""),
-      group_org_unit_id:scope==="group"?selected.id:""
+      group_org_unit_id:scope==="group"?selected.id:"",
+      center:selected.center||"",
+      class_name:selected.class_name||selected.name||"",
+      group_name:scope==="group"?(selected.group_name||selected.name||""):""
     })});
     var d=await r.json();
     if(!d.ok)throw new Error(d.msg||"读取名单失败");

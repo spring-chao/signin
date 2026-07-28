@@ -18,6 +18,43 @@ const ACTIVITY_TYPES = {
   other: "其他"
 };
 
+function readableOpsError(payload, fallback) {
+  const detail = payload && (payload.detail || payload.msg || payload.message);
+  if (Array.isArray(detail)) {
+    const messages = detail.map(item => {
+      if (!item || typeof item !== "object") return String(item || "");
+      const location = Array.isArray(item.loc)
+        ? item.loc.filter(part => part !== "query" && part !== "body").join(".")
+        : "";
+      return (location ? location + "：" : "") + (item.msg || item.message || JSON.stringify(item));
+    }).filter(Boolean);
+    return messages.length ? messages.join("；") : fallback;
+  }
+  if (detail && typeof detail === "object") {
+    return detail.msg || detail.message || JSON.stringify(detail);
+  }
+  return String(detail || fallback);
+}
+
+function buildOpsRosterParams(data, scope) {
+  const legacyClassName = String(data.class_name || "").trim();
+  const legacyCenter = String(data.center || "").trim();
+  const legacyGroupName = String(data.group_name || "").trim();
+  if (legacyClassName || legacyCenter || legacyGroupName) {
+    return {
+      center: legacyCenter,
+      class_name: legacyClassName,
+      group_name: scope === "group" ? legacyGroupName : ""
+    };
+  }
+  return {
+    class_org_unit_id: data.class_org_unit_id || "",
+    group_org_unit_id: scope === "group" ? (data.group_org_unit_id || "") : ""
+  };
+}
+
+exports._test = { readableOpsError, buildOpsRosterParams };
+
 exports.main = async (event, context) => {
   const app = cloudbase.init({ env: "shengheshu-d2g2zyyl99f6c6fc2" });
   const db = app.database();
@@ -63,7 +100,7 @@ exports.main = async (event, context) => {
             return reject(new Error("运营系统返回了无法识别的数据"));
           }
           if (response.statusCode < 200 || response.statusCode >= 300) {
-            return reject(new Error(payload.detail || payload.msg || "运营系统请求失败"));
+            return reject(new Error(readableOpsError(payload, "运营系统请求失败")));
           }
           resolve(payload);
         });
@@ -749,10 +786,10 @@ exports.main = async (event, context) => {
   if (p === "/ops_roster_members" && method === "POST") {
     try {
       const scope = data.scope === "group" ? "group" : "class";
-      const result = await requestOps("/api/v1/checkin-rosters/members", {
-        class_org_unit_id: data.class_org_unit_id || "",
-        group_org_unit_id: scope === "group" ? (data.group_org_unit_id || "") : ""
-      });
+      const result = await requestOps(
+        "/api/v1/checkin-rosters/members",
+        buildOpsRosterParams(data, scope)
+      );
       const roster = result.data || [];
       const attendees = (Array.isArray(roster) ? roster : []).map(item => ({
         name: item.name || "",

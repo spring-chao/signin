@@ -104,6 +104,36 @@ Module._load = function(request, parent, isMain) {
 const api = require("../cloudfunc/index.js");
 Module._load = originalLoad;
 
+assert.deepEqual(
+  api._test.buildOpsRosterParams(
+    { center: "总中心直属", class_name: "先锋班" },
+    "class"
+  ),
+  { center: "总中心直属", class_name: "先锋班", group_name: "" },
+  "旧运营接口应按分中心和班级名称读取名单"
+);
+assert.deepEqual(
+  api._test.buildOpsRosterParams(
+    { class_org_unit_id: "class-1", group_org_unit_id: "group-1" },
+    "group"
+  ),
+  { class_org_unit_id: "class-1", group_org_unit_id: "group-1" },
+  "新运营接口仍应支持组织 ID 参数"
+);
+assert.equal(
+  api._test.readableOpsError(
+    {
+      detail: [
+        { loc: ["query", "center"], msg: "Field required" },
+        { loc: ["query", "class_name"], msg: "Field required" }
+      ]
+    },
+    "读取失败"
+  ),
+  "center：Field required；class_name：Field required",
+  "结构化校验错误不应显示成 [object Object]"
+);
+
 async function request(path, method, body, token, extraHeaders) {
   const [pathname, search = ""] = path.split("?");
   const queryStringParameters = Object.fromEntries(new URLSearchParams(search));
