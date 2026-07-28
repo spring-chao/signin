@@ -1214,7 +1214,9 @@ exports.main = async (event, context) => {
           session_id: item.event_id,
           external_session_id: item.event_id,
           event_group: {
-            external_group_id: item.event_group_id,
+            // Legacy single-session events predate event_group_id. Their event_id
+            // is stable and unique, so use it as a safe group identity.
+            external_group_id: item.event_group_id || item.event_id,
             title: item.name,
             event_date: item.event_date,
             activity_type: item.activity_type,
