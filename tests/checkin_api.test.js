@@ -17,6 +17,8 @@ function createDatabase(seed) {
     let filter = null;
     let offset = 0;
     let pageSize = Infinity;
+    let sortField = null;
+    let sortDirection = "asc";
     const query = {
       where(criteria) {
         filter = criteria;
@@ -30,9 +32,20 @@ function createDatabase(seed) {
         pageSize = value;
         return query;
       },
+      orderBy(field, direction) {
+        sortField = field;
+        sortDirection = direction === "desc" ? "desc" : "asc";
+        return query;
+      },
       async get() {
         let rows = rowsFor(name);
         if (filter) rows = rows.filter(row => Object.keys(filter).every(key => row[key] === filter[key]));
+        if (sortField) {
+          rows = [...rows].sort((a, b) => {
+            const result = String(a[sortField] || "").localeCompare(String(b[sortField] || ""));
+            return sortDirection === "desc" ? -result : result;
+          });
+        }
         return { data: rows.slice(offset, offset + pageSize) };
       },
       async add(value) {
@@ -87,14 +100,17 @@ Module._load = function(request, parent, isMain) {
 const api = require("../cloudfunc/index.js");
 Module._load = originalLoad;
 
-async function request(path, method, body, token) {
+async function request(path, method, body, token, extraHeaders) {
   const [pathname, search = ""] = path.split("?");
   const queryStringParameters = Object.fromEntries(new URLSearchParams(search));
   const response = await api.main({
     path: pathname,
     queryStringParameters,
     httpMethod: method || "GET",
-    headers: token ? { Authorization: `Bearer ${token}` } : {},
+    headers: {
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      ...(extraHeaders || {})
+    },
     body: body === undefined ? "" : JSON.stringify(body)
   });
   return { status: response.statusCode, data: response.body ? JSON.parse(response.body) : {} };
@@ -196,10 +212,16 @@ async function request(path, method, body, token) {
   assert.equal(exported.data.rows.find(row => row.phone === "13800000002").sign_status, "请假");
   assert.equal(exported.data.rows.find(row => row.phone === "13800000002").attendance_note, "临时有事");
 
-  db.collections.events.push({ _id: "event-2", event_id: "batch-2", name: "同日班会", event_date: "2026-07-18", activity_type: "class_meeting", status: "active" });
+  const today = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Shanghai",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit"
+  }).format(new Date());
+  db.collections.events.push({ _id: "event-2", event_id: "batch-2", name: "同日班会", event_date: today, activity_type: "class_meeting", status: "active" });
   db.collections.registrations.push({ _id: "reg-5", batch_id: "batch-2", name: "陈一", phone: "13800000001", center: "", class_name: "一班", group_name: "一组" });
   const multiplePublicEvents = await request("/event", "GET");
-  assert.equal(multiplePublicEvents.data.event_name, "请选择签到活动");
+  assert.equal(multiplePublicEvents.data.event_name, "盛和塾活动签到");
   assert.equal(multiplePublicEvents.data.active_events.length, 2, "多个开放活动时扫码页应返回活动名称列表");
   const multiEvent = await request("/checkin", "POST", { name: "陈一", phone: "13800000001" });
   assert.equal(multiEvent.data.needs_event, true, "同一人命中多个开放活动时应要求选择活动");
@@ -238,6 +260,60 @@ async function request(path, method, body, token) {
   assert(!db.collections.checkins.some(row => row.batch_id === "batch-2"));
   assert(db.collections.events.some(row => row.event_id === "batch-1"), "其他活动必须保留");
   assert(db.collections.registrations.some(row => row.batch_id === "batch-1"), "其他活动报名必须保留");
+
+  const previousApiKey = process.env.SIGNIN_SERVICE_API_KEY;
+  process.env.SIGNIN_SERVICE_API_KEY = "test-ops-api-key";
+  const unauthorizedSessions = await request("/api/ops/v1/attendance/sessions", "GET");
+  assert.equal(unauthorizedSessions.status, 401, "运营拉取接口必须在缺少 API Key 时拒绝访问");
+
+  const createdSessions = await request("/create_class_meeting_sessions", "POST", {
+    token,
+    event_date: today,
+    event_name: "三场次测试班会",
+    org_unit_id: "center-1",
+    class_org_unit_id: "class-1",
+    roster_members: [{
+      member_code: "M0001",
+      name: "测试学员",
+      phone: "13800000010",
+      class_name: "测试班",
+      group_name: "测试组"
+    }]
+  });
+  assert.equal(createdSessions.data.ok, true);
+  assert.equal(createdSessions.data.events.length, 3, "班会必须创建上午、下午和空巴三个场次");
+  assert.equal(
+    db.collections.registrations.filter(row => row.event_group_id === createdSessions.data.event_group_id).length,
+    3,
+    "同一份名单必须复制到三个签到场次"
+  );
+
+  const authorizedSessions = await request(
+    "/api/ops/v1/attendance/sessions?limit=2",
+    "GET",
+    undefined,
+    undefined,
+    { "x-api-key": "test-ops-api-key" }
+  );
+  assert.equal(authorizedSessions.status, 200);
+  assert.equal(authorizedSessions.data.items.length, 2);
+  assert.equal(authorizedSessions.data.has_more, true);
+  assert(authorizedSessions.data.next_cursor, "达到分页上限时必须返回下一页游标");
+
+  const firstCreatedSession = createdSessions.data.events[0];
+  const authorizedRecords = await request(
+    `/api/ops/v1/attendance/records?session_id=${firstCreatedSession.event_id}`,
+    "GET",
+    undefined,
+    undefined,
+    { "x-api-key": "test-ops-api-key" }
+  );
+  assert.equal(authorizedRecords.status, 200);
+  assert.equal(authorizedRecords.data.items.length, 1);
+  assert.equal(authorizedRecords.data.items[0].member_code, "M0001");
+  assert.equal(authorizedRecords.data.items[0].attendance_status, "ABSENT");
+  if (previousApiKey === undefined) delete process.env.SIGNIN_SERVICE_API_KEY;
+  else process.env.SIGNIN_SERVICE_API_KEY = previousApiKey;
 
   console.log("checkin API regression tests passed");
 })().catch(error => {

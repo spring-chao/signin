@@ -35,7 +35,7 @@ exports.main = async (event, context) => {
   const h = {
     "Access-Control-Allow-Origin": "*",
     "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
-    "Access-Control-Allow-Headers": "Content-Type, Authorization",
+    "Access-Control-Allow-Headers": "Content-Type, Authorization, X-API-Key",
     "Content-Type": "application/json; charset=utf-8"
   };
   
@@ -248,6 +248,10 @@ exports.main = async (event, context) => {
     const timeState = eventTimeState(item);
     return {
       event_id: item.event_id || item._id || "",
+      event_group_id: item.event_group_id || "",
+      session_code: item.session_code || "",
+      session_name: item.session_name || "",
+      session_order: item.session_order || 0,
       name: item.name || "盛和塾活动",
       event_date: item.event_date || "",
       activity_type: normalizeActivityType(item.activity_type),
@@ -257,7 +261,11 @@ exports.main = async (event, context) => {
       checkin_status: timeState,
       checkin_start_at: item.checkin_start_at || "",
       checkin_end_at: item.checkin_end_at || "",
-      group_field: item.group_field || ""
+      scheduled_start_at: item.scheduled_start_at || "",
+      scheduled_end_at: item.scheduled_end_at || "",
+      group_field: item.group_field || "",
+      org_unit_id: item.org_unit_id || "",
+      class_org_unit_id: item.class_org_unit_id || ""
     };
   }
 
@@ -349,7 +357,7 @@ exports.main = async (event, context) => {
     return { statusCode: 200, headers: h, body: JSON.stringify({ ok: true, token: await issueAdminToken(), expires_in: ADMIN_TOKEN_TTL_MS / 1000 }) };
   }
 
-  const protectedPaths = new Set(["/settings", "/admin_events", "/event_update", "/registration", "/registration_delete", "/attendance_status", "/export", "/stats", "/ops_roster_options", "/ops_roster_members", "/upload_preview", "/upload", "/reset", "/clear_all"]);
+  const protectedPaths = new Set(["/settings", "/admin_events", "/event_update", "/registration", "/registration_delete", "/attendance_status", "/export", "/stats", "/ops_roster_options", "/ops_roster_members", "/upload_preview", "/upload", "/reset", "/clear_all", "/create_class_meeting_sessions"]);
   if (protectedPaths.has(p) && !(await isAdminRequest())) return unauthorized();
 
   function identityKey(person) {
@@ -698,25 +706,16 @@ exports.main = async (event, context) => {
     try {
       const scope = data.scope === "group" ? "group" : "class";
       const result = await requestOps("/api/v1/checkin-rosters/members", {
-        center: data.center,
-        class_name: data.class_name,
-        group_name: scope === "group" ? data.group_name : ""
+        class_org_unit_id: data.class_org_unit_id || "",
+        group_org_unit_id: scope === "group" ? (data.group_org_unit_id || "") : ""
       });
-      const roster = result.data || {};
-      const invalidMembers = Array.isArray(roster.invalid_members) ? roster.invalid_members : [];
-      if (invalidMembers.length) {
-        const names = invalidMembers.slice(0, 5).map(item => item.name).join("、");
-        return { statusCode: 200, headers: h, body: JSON.stringify({
-          ok: false,
-          invalid_count: invalidMembers.length,
-          msg: "运营名单中有 " + invalidMembers.length + " 人手机号不完整（" + names + (invalidMembers.length > 5 ? "等" : "") + "），请先在运营系统修正后再导入"
-        }) };
-      }
-      const attendees = (roster.members || []).map(item => ({
+      const roster = result.data || [];
+      const attendees = (Array.isArray(roster) ? roster : []).map(item => ({
         name: item.name || "",
         phone: item.phone || "",
-        company: item.company || "",
-        center: item.center || "",
+        member_code: item.member_code || "",
+        company: item.company_name || item.company || "",
+        center: item.primary_org_name || item.center || "",
         class_name: item.class_name || "",
         group_name: item.group_name || "",
         group_num: null,
@@ -725,11 +724,7 @@ exports.main = async (event, context) => {
       return { statusCode: 200, headers: h, body: JSON.stringify({
         ok: true,
         scope,
-        center: roster.center || "",
-        class_name: roster.class_name || "",
-        group_name: roster.group_name || "",
         member_count: attendees.length,
-        version: roster.version || null,
         attendees
       }) };
     } catch (e) {
@@ -1034,6 +1029,240 @@ exports.main = async (event, context) => {
       return { statusCode: 200, headers: h, body: JSON.stringify({ ok: true, deleted_event_id: eventId, msg: "当前活动“" + String(selectedEvent.name || "") + "”已删除（报名" + delRegs + "条，签到" + delCks + "条）；其他活动未受影响" }) };
     } catch (e) {
       return { statusCode: 200, headers: h, body: JSON.stringify({ ok: false, msg: "操作失败: " + (e.message || "") }) };
+    }
+  }
+
+  // ===== API KEY VERIFICATION FOR OPS ENDPOINTS =====
+  function verifyOpsApiKey() {
+    const expected = String(process.env.SIGNIN_SERVICE_API_KEY || process.env.OPS_API_KEY || "");
+    const apiKeyHeader = Object.entries(event.headers || {}).find(([name]) => String(name).toLowerCase() === "x-api-key");
+    const provided = String(apiKeyHeader ? apiKeyHeader[1] : "");
+    if (!expected || !provided) return false;
+    const expectedBuffer = Buffer.from(expected);
+    const providedBuffer = Buffer.from(provided);
+    if (expectedBuffer.length !== providedBuffer.length) return false;
+    return crypto.timingSafeEqual(expectedBuffer, providedBuffer);
+  }
+
+  // ===== CREATE THREE-SESSION CLASS MEETING =====
+  // Creates one logical activity group with three checkin sessions:
+  // MORNING (7pts), AFTERNOON (7pts), KONPA (4pts)
+  if (p === "/create_class_meeting_sessions" && method === "POST") {
+    try {
+      const eventDate = String(data.event_date || "").trim();
+      const eventName = String(data.event_name || "").trim() || (eventDate + " 班级学习会");
+      const groupField = String(data.group_field || "class_name").trim();
+      const orgUnitId = String(data.org_unit_id || "").trim();
+      const classOrgUnitId = String(data.class_org_unit_id || "").trim();
+
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(eventDate)) {
+        return { statusCode: 200, headers: h, body: JSON.stringify({ ok: false, msg: "活动日期格式必须为 YYYY-MM-DD" }) };
+      }
+      if (!orgUnitId || !classOrgUnitId) {
+        return { statusCode: 200, headers: h, body: JSON.stringify({ ok: false, msg: "分中心和班级组织 ID 不能为空" }) };
+      }
+
+      // Session definitions
+      const sessions = [
+        { code: "MORNING", name: "上午", order: 1,
+          checkin_start: data.morning_checkin_start || (eventDate + "T08:00"),
+          scheduled_start: data.morning_scheduled_start || (eventDate + "T09:00"),
+          scheduled_end: data.morning_scheduled_end || (eventDate + "T12:00"),
+          checkin_end: data.morning_checkin_end || (eventDate + "T09:30") },
+        { code: "AFTERNOON", name: "下午", order: 2,
+          checkin_start: data.afternoon_checkin_start || (eventDate + "T13:00"),
+          scheduled_start: data.afternoon_scheduled_start || (eventDate + "T14:00"),
+          scheduled_end: data.afternoon_scheduled_end || (eventDate + "T17:00"),
+          checkin_end: data.afternoon_checkin_end || (eventDate + "T14:30") },
+        { code: "KONPA", name: "晚上空巴", order: 3,
+          checkin_start: data.konpa_checkin_start || (eventDate + "T18:00"),
+          scheduled_start: data.konpa_scheduled_start || (eventDate + "T19:00"),
+          scheduled_end: data.konpa_scheduled_end || (eventDate + "T21:00"),
+          checkin_end: data.konpa_checkin_end || (eventDate + "T19:30") }
+      ];
+
+      // Generate a shared event_group_id
+      const eventGroupId = Date.now().toString(36) + "_" + crypto.randomBytes(6).toString("hex");
+
+      // Create three events
+      const createdEvents = [];
+      for (const session of sessions) {
+        const batchId = Date.now().toString(36) + "_" + crypto.randomBytes(6).toString("hex");
+        await db.collection("events").add({
+          event_id: batchId,
+          event_group_id: eventGroupId,
+          session_code: session.code,
+          session_name: session.name,
+          session_order: session.order,
+          name: eventName + " - " + session.name,
+          event_date: eventDate,
+          checkin_start_at: parseChinaDateTime(session.checkin_start),
+          checkin_end_at: parseChinaDateTime(session.checkin_end),
+          scheduled_start_at: parseChinaDateTime(session.scheduled_start),
+          scheduled_end_at: parseChinaDateTime(session.scheduled_end),
+          activity_type: "class_meeting",
+          status: "active",
+          group_field: groupField,
+          org_unit_id: orgUnitId,
+          class_org_unit_id: classOrgUnitId,
+          created_at: new Date().toISOString()
+        });
+        createdEvents.push({ event_id: batchId, session_code: session.code, session_name: session.name });
+      }
+
+      // If roster data is provided, copy to all three sessions
+      if (data.roster_members && Array.isArray(data.roster_members) && data.roster_members.length > 0) {
+        for (const ev of createdEvents) {
+          for (const member of data.roster_members) {
+            await db.collection("registrations").add({
+              name: String(member.name || "").trim(),
+              phone: String(member.phone || "").trim().replace(/\s/g, "").replace(/-/g, ""),
+              center: normalizeCenterValue(member.center || member.primary_org_name || ""),
+              class_name: normalizeGroupValue(member.class_name || ""),
+              group_name: normalizeGroupValue(member.group_name || ""),
+              company: String(member.company_name || "").trim(),
+              member_code: String(member.member_code || "").trim(),
+              group_num: null,
+              dinner_table_num: null,
+              attendance_status: "pending",
+              attendance_note: "",
+              source: "ops_roster",
+              batch_id: ev.event_id,
+              event_group_id: eventGroupId,
+              session_code: ev.session_code,
+              created_at: new Date().toISOString()
+            });
+          }
+        }
+      }
+
+      return { statusCode: 200, headers: h, body: JSON.stringify({
+        ok: true,
+        event_group_id: eventGroupId,
+        events: createdEvents,
+        msg: "三场次班级学习会创建成功" + (data.roster_members ? "，名单已复制到三个场次" : "")
+      }) };
+    } catch (e) {
+      return { statusCode: 200, headers: h, body: JSON.stringify({ ok: false, msg: "创建失败: " + (e.message || "") }) };
+    }
+  }
+
+  // ===== OPS API: INCREMENTAL SESSIONS PULL =====
+  if (p === "/api/ops/v1/attendance/sessions" && method === "GET") {
+    if (!verifyOpsApiKey()) {
+      return { statusCode: 401, headers: h, body: JSON.stringify({ detail: "API Key 无效" }) };
+    }
+    try {
+      const cursor = String(query.cursor || "");
+      const limit = Math.min(parseInt(query.limit || "200", 10), 500);
+      // Stable ordering prevents offset pagination from skipping or duplicating
+      // events while new events are appended.
+      let q = db.collection("events").orderBy("created_at", "asc");
+
+      let skip = 0;
+      if (cursor) {
+        try { skip = parseInt(Buffer.from(cursor, "base64").toString("utf8"), 10) || 0; } catch(e) { skip = 0; }
+      }
+
+      const result = await q.skip(skip).limit(limit).get();
+      const items = (result.data || []).map(function(item) {
+        return {
+          session_id: item.event_id,
+          external_session_id: item.event_id,
+          event_group: {
+            external_group_id: item.event_group_id,
+            title: item.name,
+            event_date: item.event_date,
+            activity_type: item.activity_type,
+            org_unit_id: item.org_unit_id || "",
+            study_org_unit_id: item.class_org_unit_id || null
+          },
+          session_code: item.session_code || "MORNING",
+          session_name: item.session_name || "",
+          session_order: item.session_order || 0,
+          checkin_start_at: item.checkin_start_at || "",
+          scheduled_start_at: item.scheduled_start_at || "",
+          scheduled_end_at: item.scheduled_end_at || "",
+          checkin_end_at: item.checkin_end_at || "",
+          status: item.status || "active",
+          revision: 1,
+          updated_at: item.created_at || ""
+        };
+      });
+
+      const nextCursor = items.length === limit ? Buffer.from(String(skip + limit)).toString("base64") : null;
+      return { statusCode: 200, headers: h, body: JSON.stringify({
+        items: items,
+        next_cursor: nextCursor,
+        has_more: items.length === limit
+      }) };
+    } catch (e) {
+      return { statusCode: 500, headers: h, body: JSON.stringify({ detail: "查询失败: " + (e.message || "") }) };
+    }
+  }
+
+  // ===== OPS API: INCREMENTAL RECORDS PULL =====
+  if (p === "/api/ops/v1/attendance/records" && method === "GET") {
+    if (!verifyOpsApiKey()) {
+      return { statusCode: 401, headers: h, body: JSON.stringify({ detail: "API Key 无效" }) };
+    }
+    try {
+      const session_id = String(query.session_id || "");
+      const cursor = String(query.cursor || "");
+      const limit = Math.min(parseInt(query.limit || "500", 10), 1000);
+
+      if (!session_id) {
+        return { statusCode: 400, headers: h, body: JSON.stringify({ detail: "session_id is required" }) };
+      }
+
+      let q = db.collection("registrations")
+        .where({ batch_id: session_id })
+        .orderBy("created_at", "asc");
+
+      let skip = 0;
+      if (cursor) {
+        try { skip = parseInt(Buffer.from(cursor, "base64").toString("utf8"), 10) || 0; } catch(e) { skip = 0; }
+      }
+
+      const regResult = await q.skip(skip).limit(limit).get();
+      const registrations = regResult.data || [];
+
+      // Get checkins for these registrations
+      const checkinMap = {};
+      if (registrations.length > 0) {
+        const checkins = await getAll("checkins", 5000, { batch_id: session_id });
+        for (const ck of checkins) {
+          const regId = String(ck.registration_id || "");
+          if (regId) checkinMap[regId] = ck;
+        }
+      }
+
+      const items = registrations.map(function(reg) {
+        const ck = checkinMap[String(reg._id)] || null;
+        const checkedIn = !!ck;
+        return {
+          external_record_id: String(reg._id),
+          external_registration_id: String(reg._id),
+          member_code: reg.member_code || "",
+          name: reg.name || "",
+          participant_type: "MEMBER",
+          score_eligible: true,
+          attendance_status: checkedIn ? "PRESENT" : (reg.attendance_status === "leave" ? "LEAVE" : "ABSENT"),
+          checked_at: ck ? (ck.checked_at || "") : null,
+          checkin_source: ck ? "QR" : null,
+          revision: 1,
+          updated_at: reg.created_at || ""
+        };
+      });
+
+      const nextCursor = items.length === limit ? Buffer.from(String(skip + limit)).toString("base64") : null;
+      return { statusCode: 200, headers: h, body: JSON.stringify({
+        items: items,
+        next_cursor: nextCursor,
+        has_more: items.length === limit
+      }) };
+    } catch (e) {
+      return { statusCode: 500, headers: h, body: JSON.stringify({ detail: "查询失败: " + (e.message || "") }) };
     }
   }
 
