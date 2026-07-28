@@ -2,8 +2,10 @@ const cloudbase = require("@cloudbase/node-sdk");
 const crypto = require("crypto");
 const https = require("https");
 
-const ADMIN_PASSWORD_HASH = "da40d101ff0a0f2d9aadf5ff9c2e7b1ec0f58896497f9ee518218bd910abc0af";
 const ADMIN_TOKEN_TTL_MS = 12 * 60 * 60 * 1000;
+const LOGIN_RATE_LIMIT_WINDOW_MS = 15 * 60 * 1000;
+const LOGIN_RATE_LIMIT_MAX_FAILURES = 5;
+const loginFailures = new Map();
 const ACTIVITY_TYPES = {
   national_report: "全国报告会",
   center_quarterly_report: "分中心季度报告会",
@@ -74,7 +76,7 @@ exports.main = async (event, context) => {
 
   async function requestOps(pathname, params) {
     const base = String(process.env.OPS_API_BASE || "").replace(/\/$/, "");
-    const apiKey = String(process.env.OPS_API_KEY || "");
+    const apiKey = String(process.env.OPS_ROSTER_API_KEY || "");
     if (!base || !apiKey) throw new Error("签到系统尚未配置运营名册连接");
     const url = new URL(base + pathname);
     Object.entries(params || {}).forEach(([key, value]) => {
@@ -317,7 +319,35 @@ exports.main = async (event, context) => {
       secret = crypto.randomBytes(32).toString("hex");
       await setConfig("admin_auth_secret", secret);
     }
-    return secret;
+    return crypto.createHmac("sha256", secret).update(configuredAdminPasswordHash()).digest("hex");
+  }
+
+  function configuredAdminPasswordHash() {
+    const passwordHash = String(process.env.ADMIN_PASSWORD_HASH || "").trim().toLowerCase();
+    if (!/^[a-f0-9]{64}$/.test(passwordHash)) {
+      throw new Error("ADMIN_PASSWORD_HASH 未配置或格式不正确");
+    }
+    return passwordHash;
+  }
+
+  function loginClientKey() {
+    const headers = event.headers || {};
+    const forwarded = String(headers["x-forwarded-for"] || headers["X-Forwarded-For"] || "").split(",")[0].trim();
+    const sourceIp = String(
+      forwarded ||
+      (event.requestContext && event.requestContext.sourceIp) ||
+      (event.requestContext && event.requestContext.identity && event.requestContext.identity.sourceIp) ||
+      "unknown"
+    );
+    return crypto.createHash("sha256").update(sourceIp).digest("hex");
+  }
+
+  function currentLoginFailures(clientKey) {
+    const now = Date.now();
+    const recent = (loginFailures.get(clientKey) || []).filter(timestamp => now - timestamp < LOGIN_RATE_LIMIT_WINDOW_MS);
+    if (recent.length) loginFailures.set(clientKey, recent);
+    else loginFailures.delete(clientKey);
+    return recent;
   }
 
   async function issueAdminToken() {
@@ -348,12 +378,26 @@ exports.main = async (event, context) => {
   }
 
   if (p === "/admin_login" && method === "POST") {
+    let configuredHash;
+    try {
+      configuredHash = configuredAdminPasswordHash();
+    } catch (error) {
+      return { statusCode: 503, headers: h, body: JSON.stringify({ ok: false, msg: "管理员认证尚未安全配置" }) };
+    }
+    const clientKey = loginClientKey();
+    const failures = currentLoginFailures(clientKey);
+    if (failures.length >= LOGIN_RATE_LIMIT_MAX_FAILURES) {
+      return { statusCode: 429, headers: h, body: JSON.stringify({ ok: false, msg: "登录失败次数过多，请稍后再试" }) };
+    }
     const suppliedHash = crypto.createHash("sha256").update(String(data.password || "")).digest("hex");
     const actual = Buffer.from(suppliedHash, "hex");
-    const expected = Buffer.from(ADMIN_PASSWORD_HASH, "hex");
+    const expected = Buffer.from(configuredHash, "hex");
     if (actual.length !== expected.length || !crypto.timingSafeEqual(actual, expected)) {
+      failures.push(Date.now());
+      loginFailures.set(clientKey, failures);
       return { statusCode: 401, headers: h, body: JSON.stringify({ ok: false, msg: "密码错误" }) };
     }
+    loginFailures.delete(clientKey);
     return { statusCode: 200, headers: h, body: JSON.stringify({ ok: true, token: await issueAdminToken(), expires_in: ADMIN_TOKEN_TTL_MS / 1000 }) };
   }
 
@@ -1034,7 +1078,7 @@ exports.main = async (event, context) => {
 
   // ===== API KEY VERIFICATION FOR OPS ENDPOINTS =====
   function verifyOpsApiKey() {
-    const expected = String(process.env.SIGNIN_SERVICE_API_KEY || process.env.OPS_API_KEY || "");
+    const expected = String(process.env.SIGNIN_SERVICE_API_KEY || "");
     const apiKeyHeader = Object.entries(event.headers || {}).find(([name]) => String(name).toLowerCase() === "x-api-key");
     const provided = String(apiKeyHeader ? apiKeyHeader[1] : "");
     if (!expected || !provided) return false;
@@ -1148,7 +1192,7 @@ exports.main = async (event, context) => {
   }
 
   // ===== OPS API: INCREMENTAL SESSIONS PULL =====
-  if (p === "/api/ops/v1/attendance/sessions" && method === "GET") {
+  if (p === "/ops/v1/attendance/sessions" && method === "GET") {
     if (!verifyOpsApiKey()) {
       return { statusCode: 401, headers: h, body: JSON.stringify({ detail: "API Key 无效" }) };
     }
@@ -1202,7 +1246,7 @@ exports.main = async (event, context) => {
   }
 
   // ===== OPS API: INCREMENTAL RECORDS PULL =====
-  if (p === "/api/ops/v1/attendance/records" && method === "GET") {
+  if (p === "/ops/v1/attendance/records" && method === "GET") {
     if (!verifyOpsApiKey()) {
       return { statusCode: 401, headers: h, body: JSON.stringify({ detail: "API Key 无效" }) };
     }

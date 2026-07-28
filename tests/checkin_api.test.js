@@ -1,5 +1,9 @@
 const assert = require("assert");
+const crypto = require("crypto");
 const Module = require("module");
+
+const TEST_ADMIN_PASSWORD = "test-admin-password!";
+process.env.ADMIN_PASSWORD_HASH = crypto.createHash("sha256").update(TEST_ADMIN_PASSWORD).digest("hex");
 
 function createDatabase(seed) {
   const collections = {};
@@ -117,7 +121,7 @@ async function request(path, method, body, token, extraHeaders) {
 }
 
 (async () => {
-  const login = await request("/admin_login", "POST", { password: "shenghe2024" });
+  const login = await request("/admin_login", "POST", { password: TEST_ADMIN_PASSWORD });
   assert.equal(login.status, 200);
   assert.equal(login.data.ok, true);
   const token = login.data.token;
@@ -263,7 +267,7 @@ async function request(path, method, body, token, extraHeaders) {
 
   const previousApiKey = process.env.SIGNIN_SERVICE_API_KEY;
   process.env.SIGNIN_SERVICE_API_KEY = "test-ops-api-key";
-  const unauthorizedSessions = await request("/api/ops/v1/attendance/sessions", "GET");
+  const unauthorizedSessions = await request("/ops/v1/attendance/sessions", "GET");
   assert.equal(unauthorizedSessions.status, 401, "运营拉取接口必须在缺少 API Key 时拒绝访问");
 
   const createdSessions = await request("/create_class_meeting_sessions", "POST", {
@@ -289,7 +293,7 @@ async function request(path, method, body, token, extraHeaders) {
   );
 
   const authorizedSessions = await request(
-    "/api/ops/v1/attendance/sessions?limit=2",
+    "/ops/v1/attendance/sessions?limit=2",
     "GET",
     undefined,
     undefined,
@@ -302,7 +306,7 @@ async function request(path, method, body, token, extraHeaders) {
 
   const firstCreatedSession = createdSessions.data.events[0];
   const authorizedRecords = await request(
-    `/api/ops/v1/attendance/records?session_id=${firstCreatedSession.event_id}`,
+    `/ops/v1/attendance/records?session_id=${firstCreatedSession.event_id}`,
     "GET",
     undefined,
     undefined,
@@ -314,6 +318,19 @@ async function request(path, method, body, token, extraHeaders) {
   assert.equal(authorizedRecords.data.items[0].attendance_status, "ABSENT");
   if (previousApiKey === undefined) delete process.env.SIGNIN_SERVICE_API_KEY;
   else process.env.SIGNIN_SERVICE_API_KEY = previousApiKey;
+
+  const configuredAdminHash = process.env.ADMIN_PASSWORD_HASH;
+  delete process.env.ADMIN_PASSWORD_HASH;
+  const unsafeLogin = await request("/admin_login", "POST", { password: TEST_ADMIN_PASSWORD });
+  assert.equal(unsafeLogin.status, 503, "未安全配置管理员口令时必须失败关闭");
+  process.env.ADMIN_PASSWORD_HASH = configuredAdminHash;
+
+  for (let attempt = 0; attempt < 5; attempt++) {
+    const failedLogin = await request("/admin_login", "POST", { password: "wrong-password" });
+    assert.equal(failedLogin.status, 401);
+  }
+  const rateLimitedLogin = await request("/admin_login", "POST", { password: "wrong-password" });
+  assert.equal(rateLimitedLogin.status, 429, "连续登录失败必须触发限流");
 
   console.log("checkin API regression tests passed");
 })().catch(error => {

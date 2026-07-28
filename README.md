@@ -14,7 +14,7 @@
 ### 管理后台（多活动管理）
 
 1. 浏览器打开唯一后台入口：`https://{你的域名}/admin.html`
-2. 输入管理密码登录（默认 `shenghe2024`）
+2. 输入管理员密码登录。生产环境不提供默认密码，密码摘要通过云函数环境变量 `ADMIN_PASSWORD_HASH` 配置。
 3. 填写活动名称、日期和活动类型，上传 Excel 报名表（支持互动吧导出的 `.xls` / `.xlsx`）
 4. 系统新增独立活动，历史活动及签到记录不会被覆盖；可切换活动查看、导出、开放或关闭签到
 
@@ -64,13 +64,24 @@ tcb env login set --anonymous-login true -e {你的环境ID}
 - **`public/index.html`** — `var API = "..."` 中的域名部分
 - **`public/admin.html`** — `var API = "..."` 中的域名部分
 
-### 4. 部署云函数
+### 4. 配置生产密钥
+
+部署前必须通过 CloudBase 函数配置或密钥托管设置：
+
+- `ADMIN_PASSWORD_HASH`：管理员密码的 SHA-256 十六进制摘要；
+- `OPS_ROSTER_API_KEY`：签到系统读取运营名单的出站密钥；
+- `SIGNIN_SERVICE_API_KEY`：运营平台读取签到数据的入站密钥；
+- `OPS_API_BASE`：运营名单 API 地址。
+
+入站和出站密钥不得复用，也不得写入仓库。
+
+### 5. 部署云函数
 
 ```bash
 tcb fn deploy checkinApi -e {你的环境ID} --dir cloudfunc --force
 ```
 
-### 5. 部署静态页面
+### 6. 部署静态页面
 
 ```bash
 tcb hosting deploy public/index.html /index.html -e {你的环境ID}
@@ -82,14 +93,18 @@ tcb hosting delete /v2/admin.html -e {你的环境ID}
 tcb hosting delete /v3/admin.html -e {你的环境ID}
 ```
 
-### 6. 配置 HTTP 访问服务
+### 7. 配置 HTTP 访问服务
 
 在 CloudBase 控制台 → HTTP 访问服务 → 新建路由：
 
 - 路径：`/api/*`
 - 目标：云函数 `checkinApi`
 
-### 7. 创建数据库集合
+实际 HTTP 访问域名以 `tcb routes list` 返回值为准。例如：
+
+`https://{环境ID}-{AppID}.ap-shanghai.app.tcloudbase.com/api/event`
+
+### 8. 创建数据库集合
 
 在 CloudBase 控制台 → 数据库 → FlexDB → 新建集合：
 
@@ -98,7 +113,7 @@ tcb hosting delete /v3/admin.html -e {你的环境ID}
 - `checkins` — 存储签到记录
 - `events` — 存储活动名称、日期、类型和开放状态
 
-### 8. 生成二维码
+### 9. 生成二维码
 
 新制作二维码统一使用 CloudBase 静态托管详情中显示的完整域名，例如 `https://{环境ID}-{AppID}.tcloudbaseapp.com/index.html`；已经印刷并指向 `/v2/index.html` 或 `/v3/index.html` 的旧二维码继续兼容。不要省略域名中的 `-{AppID}` 后缀，否则该地址无法访问。
 
