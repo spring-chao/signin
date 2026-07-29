@@ -37,6 +37,14 @@ function readableOpsError(payload, fallback) {
 }
 
 function buildOpsRosterParams(data, scope) {
+  const classOrgUnitId = String(data.class_org_unit_id || "").trim();
+  const groupOrgUnitId = String(data.group_org_unit_id || "").trim();
+  if (classOrgUnitId || groupOrgUnitId) {
+    return {
+      class_org_unit_id: classOrgUnitId,
+      group_org_unit_id: scope === "group" ? groupOrgUnitId : ""
+    };
+  }
   const legacyClassName = String(data.class_name || "").trim();
   const legacyCenter = String(data.center || "").trim();
   const legacyGroupName = String(data.group_name || "").trim();
@@ -47,10 +55,7 @@ function buildOpsRosterParams(data, scope) {
       group_name: scope === "group" ? legacyGroupName : ""
     };
   }
-  return {
-    class_org_unit_id: data.class_org_unit_id || "",
-    group_org_unit_id: scope === "group" ? (data.group_org_unit_id || "") : ""
-  };
+  return { class_org_unit_id: "", group_org_unit_id: "" };
 }
 
 function normalizeOpsRosterData(result) {
@@ -65,10 +70,76 @@ function normalizeOpsRosterData(result) {
   return { members: [], version: data && data.version ? data.version : null };
 }
 
+function normalizeOpsRosterOptions(result) {
+  const data = result && result.data;
+  const options = data && !Array.isArray(data) ? data : result;
+  return {
+    classes: Array.isArray(options && options.classes) ? options.classes : [],
+    groups: Array.isArray(options && options.groups) ? options.groups : [],
+    special_cohorts: Array.isArray(options && options.special_cohorts)
+      ? options.special_cohorts
+      : [],
+    version: options && options.version ? options.version : null
+  };
+}
+
+function rosterIdentity(rows) {
+  const values = (field) => [...new Set((Array.isArray(rows) ? rows : [])
+    .map(item => String(item && item[field] || "").trim())
+    .filter(Boolean))];
+  const centers = values("center");
+  const classes = values("class_name");
+  return {
+    center: centers.length === 1 ? centers[0] : "",
+    class_name: classes.length === 1 ? classes[0] : "",
+    center_count: centers.length,
+    class_count: classes.length
+  };
+}
+
+function findClassOption(options, identity) {
+  const className = String(identity && identity.class_name || "").trim();
+  const center = String(identity && identity.center || "").trim();
+  if (!className) return null;
+  let matches = (Array.isArray(options) ? options : []).filter(item =>
+    String(item && (item.name || item.class_name) || "").trim() === className
+  );
+  if (center && matches.length > 1) {
+    const centered = matches.filter(item => {
+      const itemCenter = String(
+        item && (item.center || item.parent_name || item.center_name) || ""
+      ).trim();
+      const path = String(item && item.path || "");
+      return itemCenter === center || path.includes(center);
+    });
+    if (centered.length) matches = centered;
+  }
+  return matches.length === 1 ? matches[0] : null;
+}
+
+function resolveOpsConnection(env) {
+  const configuredBase = String(env.OPS_API_BASE || "").replace(/\/$/, "");
+  const legacyBase = /seiwajyuku-ops-/i.test(configuredBase);
+  return {
+    base: String(env.CHECKIN_ROSTER_API_BASE || (
+      legacyBase
+        ? "https://seiwajyuku-platform-api-287369-8-1453587887.sh.run.tcloudbase.com"
+        : configuredBase
+    )).replace(/\/$/, ""),
+    apiKey: String(env.CHECKIN_ROSTER_API_KEY || (
+      legacyBase ? env.SIGNIN_SERVICE_API_KEY : env.OPS_ROSTER_API_KEY
+    ) || "")
+  };
+}
+
 exports._test = {
   readableOpsError,
   buildOpsRosterParams,
-  normalizeOpsRosterData
+  normalizeOpsRosterData,
+  normalizeOpsRosterOptions,
+  rosterIdentity,
+  findClassOption,
+  resolveOpsConnection
 };
 
 exports.main = async (event, context) => {
@@ -128,8 +199,12 @@ exports.main = async (event, context) => {
   }
 
   async function requestOps(pathname, params) {
-    const base = String(process.env.OPS_API_BASE || "").replace(/\/$/, "");
-    const apiKey = String(process.env.OPS_ROSTER_API_KEY || "");
+    // 旧 OPS_API_BASE 指向历史运营系统，既会超时，也不返回三场签到所需的
+    // 组织 ID。迁移期间自动切到统一平台；新部署可用两个 CHECKIN_ROSTER_*
+    // 环境变量显式覆盖，完成独立密钥切换后即可移除兼容分支。
+    const connection = resolveOpsConnection(process.env);
+    const base = connection.base;
+    const apiKey = connection.apiKey;
     if (!base || !apiKey) throw new Error("签到系统尚未配置运营名册连接");
     const url = new URL(base + pathname);
     Object.entries(params || {}).forEach(([key, value]) => {
@@ -793,8 +868,22 @@ exports.main = async (event, context) => {
   if (p === "/ops_roster_options" && method === "GET") {
     try {
       const result = await requestOps("/api/v1/checkin-rosters/options");
-      return { statusCode: 200, headers: h, body: JSON.stringify({ ok: true, ...(result.data || {}) }) };
+      const options = normalizeOpsRosterOptions(result);
+      await setConfig("ops_roster_options_cache", JSON.stringify(options));
+      return { statusCode: 200, headers: h, body: JSON.stringify({ ok: true, ...options }) };
     } catch (e) {
+      try {
+        const cached = JSON.parse(await getConfig("ops_roster_options_cache", ""));
+        const options = normalizeOpsRosterOptions(cached);
+        if (options.classes.length || options.groups.length) {
+          return { statusCode: 200, headers: h, body: JSON.stringify({
+            ok: true,
+            ...options,
+            cached: true,
+            warning: "运营系统暂时不可用，已显示上次成功读取的名单"
+          }) };
+        }
+      } catch (cacheError) {}
       return { statusCode: 200, headers: h, body: JSON.stringify({ ok: false, msg: "读取运营名单选项失败: " + (e.message || "") }) };
     }
   }
@@ -1150,14 +1239,39 @@ exports.main = async (event, context) => {
       const eventDate = String(data.event_date || "").trim();
       const eventName = String(data.event_name || "").trim() || (eventDate + " 班级学习会");
       const groupField = String(data.group_field || "class_name").trim();
-      const orgUnitId = String(data.org_unit_id || "").trim();
-      const classOrgUnitId = String(data.class_org_unit_id || "").trim();
+      let orgUnitId = String(data.org_unit_id || "").trim();
+      let classOrgUnitId = String(data.class_org_unit_id || "").trim();
+      const rosterMembers = Array.isArray(data.roster_members) ? data.roster_members : [];
+      const identity = rosterIdentity(rosterMembers);
+      const requestedIdentity = {
+        center: String(data.center_name || identity.center || "").trim(),
+        class_name: String(data.class_name || identity.class_name || "").trim()
+      };
 
       if (!/^\d{4}-\d{2}-\d{2}$/.test(eventDate)) {
         return { statusCode: 200, headers: h, body: JSON.stringify({ ok: false, msg: "活动日期格式必须为 YYYY-MM-DD" }) };
       }
+      if (!classOrgUnitId && requestedIdentity.class_name) {
+        try {
+          const options = normalizeOpsRosterOptions(
+            await requestOps("/api/v1/checkin-rosters/options")
+          );
+          const matched = findClassOption(options.classes, requestedIdentity);
+          if (matched) {
+            classOrgUnitId = String(matched.id || matched.class_org_unit_id || "").trim();
+            orgUnitId = orgUnitId || String(
+              matched.parent_id || matched.org_unit_id || ""
+            ).trim();
+          }
+        } catch (resolveError) {}
+      }
       if (!orgUnitId || !classOrgUnitId) {
-        return { statusCode: 200, headers: h, body: JSON.stringify({ ok: false, msg: "分中心和班级组织 ID 不能为空" }) };
+        return { statusCode: 200, headers: h, body: JSON.stringify({
+          ok: false,
+          msg: requestedIdentity.class_name
+            ? "Excel 名单已读取，但暂时无法确认“" + requestedIdentity.class_name + "”的班级组织信息，请稍后重试"
+            : "Excel 名单中需要有且只能有一个班级，或先从运营系统选择班级"
+        }) };
       }
 
       // Session definitions
@@ -1233,22 +1347,22 @@ exports.main = async (event, context) => {
       }
 
       // If roster data is provided, copy to all three sessions
-      if (data.roster_members && Array.isArray(data.roster_members) && data.roster_members.length > 0) {
+      if (rosterMembers.length > 0) {
         for (const ev of createdEvents) {
-          for (const member of data.roster_members) {
+          for (const member of rosterMembers) {
             await db.collection("registrations").add({
               name: String(member.name || "").trim(),
               phone: String(member.phone || "").trim().replace(/\s/g, "").replace(/-/g, ""),
               center: normalizeCenterValue(member.center || member.primary_org_name || ""),
               class_name: normalizeGroupValue(member.class_name || ""),
               group_name: normalizeGroupValue(member.group_name || ""),
-              company: String(member.company_name || "").trim(),
+              company: String(member.company_name || member.company || "").trim(),
               member_code: String(member.member_code || "").trim(),
               group_num: null,
               dinner_table_num: null,
               attendance_status: "pending",
               attendance_note: "",
-              source: "ops_roster",
+              source: data.roster_source === "excel_upload" ? "excel_upload" : "ops_roster",
               batch_id: ev.event_id,
               event_group_id: eventGroupId,
               session_code: ev.session_code,
@@ -1262,7 +1376,7 @@ exports.main = async (event, context) => {
         ok: true,
         event_group_id: eventGroupId,
         events: createdEvents,
-        msg: "三场次班级学习会创建成功" + (data.roster_members ? "，名单已复制到三个场次" : "")
+        msg: "三场次班级学习会创建成功" + (rosterMembers.length ? "，名单已复制到三个场次" : "")
       }) };
     } catch (e) {
       return { statusCode: 200, headers: h, body: JSON.stringify({ ok: false, msg: "创建失败: " + (e.message || "") }) };

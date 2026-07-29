@@ -692,6 +692,39 @@ function stripSpreadsheetExtension(name) {
   return String(name || "").trim().replace(/\.(xlsx|xls|xlsm|xlsb|csv)$/i, "").trim();
 }
 
+function rosterIdentity(rows) {
+  function values(field) {
+    return Array.from(new Set((Array.isArray(rows) ? rows : []).map(function(item) {
+      return String(item && item[field] || "").trim();
+    }).filter(Boolean)));
+  }
+  var centers=values("center"),classes=values("class_name");
+  return {
+    center:centers.length===1?centers[0]:"",
+    class_name:classes.length===1?classes[0]:"",
+    center_count:centers.length,
+    class_count:classes.length
+  };
+}
+
+function findClassOption(options,identity) {
+  var className=String(identity&&identity.class_name||"").trim();
+  var center=String(identity&&identity.center||"").trim();
+  if(!className)return null;
+  var matches=(Array.isArray(options)?options:[]).filter(function(item){
+    return String(item&&(item.name||item.class_name)||"").trim()===className;
+  });
+  if(center&&matches.length>1){
+    var centered=matches.filter(function(item){
+      var itemCenter=String(item&&(item.center||item.parent_name||item.center_name)||"").trim();
+      var path=String(item&&item.path||"");
+      return itemCenter===center||path.indexOf(center)>=0;
+    });
+    if(centered.length)matches=centered;
+  }
+  return matches.length===1?matches[0]:null;
+}
+
 function getUploadEventName() {
   var nameInput = document.getElementById("eventNameInput");
   var manualName = nameInput ? stripSpreadsheetExtension(nameInput.value) : "";
@@ -759,6 +792,7 @@ async function loadOpsRosterOptions() {
     }).join(""):'<option value="">没有可用名单</option>';
     document.getElementById("opsRosterBtn").disabled=opsRosterOptions.length===0;
     if(!opsRosterOptions.length)showMsg(msg,"运营系统暂无有效名单","error");
+    else if(d.cached)showMsg(msg,d.warning||"已显示上次成功读取的名单","info");
   }catch(e){
     opsRosterOptions=[];
     select.innerHTML='<option value="">读取失败</option>';
@@ -861,15 +895,28 @@ function validateThreeSessionValues(values) {
 
 async function createThreeSessionMeeting() {
   var msg=document.getElementById("threeSessionMsg");
+  var fileInput=document.getElementById("fileInput");
+  var fromExcel=!!(fileInput&&fileInput.files&&fileInput.files[0]);
   var selected=opsRosterOptions[Number(document.getElementById("opsRosterSelect").value)];
-  if(!selected){showMsg(msg,"请先选择班级","error");return;}
-  if(!excelData){showMsg(msg,"请先点击“添加运营名单”读取班级名单","error");return;}
+  if(!excelData || !excelData.length){showMsg(msg,"请先添加运营名单或上传 Excel 名单","error");return;}
+  var identity=rosterIdentity(excelData);
+  if(fromExcel&&identity.class_name){
+    selected=findClassOption(opsRosterOptions,identity);
+  }else if(!selected&&identity.class_name){
+    selected=findClassOption(opsRosterOptions,identity);
+  }
+  if(!selected && identity.class_count!==1){
+    showMsg(msg,"Excel 名单中需要有且只能有一个班级，请检查“班级”列","error");
+    return;
+  }
   var eventDate=document.getElementById("eventDateInput").value;
   if(!eventDate){showMsg(msg,"请先选择活动日期","error");return;}
   var values=threeSessionValues(),validation=validateThreeSessionValues(values);
   if(validation){showMsg(msg,validation,"error");return;}
   var eventName=getUploadEventName()||eventDate+" 班级学习会";
-  var selectedName=selected.path||selected.name||selected.class_name||selected.id;
+  var selectedName=selected
+    ? (selected.path||selected.name||selected.class_name||selected.id)
+    : identity.class_name;
   var confirmText="请确认创建三次签到：\n\n班级："+selectedName+
     "\n活动："+eventName+"\n日期："+eventDate+"\n名单："+excelData.length+"人"+
     "\n\n上午："+values.morning_checkin_start.slice(11)+" - "+values.morning_checkin_end.slice(11)+
@@ -883,8 +930,11 @@ async function createThreeSessionMeeting() {
       event_date:eventDate,
       event_name:eventName,
       group_field:"class_name",
-      org_unit_id:selected.parent_id||selected.org_unit_id||"",
-      class_org_unit_id:selected.id||selected.class_org_unit_id||"",
+      org_unit_id:selected?(selected.parent_id||selected.org_unit_id||""):"",
+      class_org_unit_id:selected?(selected.id||selected.class_org_unit_id||""):"",
+      center_name:identity.center,
+      class_name:identity.class_name,
+      roster_source:fromExcel?"excel_upload":"ops_roster",
       roster_members:excelData
     },values);
     var r=await adminFetch("/create_class_meeting_sessions",{method:"POST",body:JSON.stringify(payload)});

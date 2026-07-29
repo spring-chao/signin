@@ -74,4 +74,18 @@ const tooLate = Array.from({ length: 102 }, () => []);
 tooLate[100] = ["姓名", "手机号"];
 assert.equal(context.findHeaderRow(tooLate), null, "只扫描前100行以避免误识别正文");
 
+const excelIdentity = context.rosterIdentity([
+  { center: "园区分中心", class_name: "圆融一班" },
+  { center: "园区分中心", class_name: "圆融一班" }
+]);
+assert.equal(excelIdentity.class_name, "圆融一班", "Excel 名单应识别唯一班级");
+assert.equal(
+  context.findClassOption(
+    [{ id: "class-1", name: "圆融一班", parent_id: "center-1" }],
+    excelIdentity
+  ).id,
+  "class-1",
+  "班级下拉读取成功时应自动匹配 Excel 班级"
+);
+
 console.log("admin Excel parser regression tests passed");
