@@ -120,6 +120,18 @@ assert.deepEqual(
   { class_org_unit_id: "class-1", group_org_unit_id: "group-1" },
   "新运营接口仍应支持组织 ID 参数"
 );
+assert.deepEqual(
+  api._test.buildOpsRosterParams(
+    {
+      class_org_unit_id: "class-1",
+      class_name: "圆融一班",
+      center: "园区分中心"
+    },
+    "class"
+  ),
+  { class_org_unit_id: "class-1", group_org_unit_id: "" },
+  "新平台同时返回组织 ID 和名称时必须优先使用组织 ID"
+);
 assert.equal(
   api._test.readableOpsError(
     {
@@ -146,6 +158,47 @@ assert.equal(
   }).members.length,
   1,
   "新运营接口的 data 数组名单应保持兼容"
+);
+assert.equal(
+  api._test.normalizeOpsRosterOptions({
+    success: true,
+    data: { classes: [{ id: "class-1" }], groups: [] }
+  }).classes.length,
+  1,
+  "运营名单选项应兼容 data 包装"
+);
+assert.deepEqual(
+  api._test.rosterIdentity([
+    { center: "园区分中心", class_name: "圆融一班" },
+    { center: "园区分中心", class_name: "圆融一班" }
+  ]),
+  {
+    center: "园区分中心",
+    class_name: "圆融一班",
+    center_count: 1,
+    class_count: 1
+  },
+  "Excel 名单应识别唯一分中心和班级"
+);
+assert.equal(
+  api._test.findClassOption(
+    [{ id: "class-1", name: "圆融一班", parent_id: "center-1" }],
+    { center: "园区分中心", class_name: "圆融一班" }
+  ).id,
+  "class-1",
+  "Excel 班级名称应能自动匹配运营班级选项"
+);
+assert.deepEqual(
+  api._test.resolveOpsConnection({
+    OPS_API_BASE: "https://seiwajyuku-ops-example.run.tcloudbase.com",
+    OPS_ROSTER_API_KEY: "legacy-roster-key",
+    SIGNIN_SERVICE_API_KEY: "platform-service-key"
+  }),
+  {
+    base: "https://seiwajyuku-platform-api-287369-8-1453587887.sh.run.tcloudbase.com",
+    apiKey: "platform-service-key"
+  },
+  "历史运营地址应自动迁移到返回组织 ID 的统一平台接口"
 );
 
 async function request(path, method, body, token, extraHeaders) {
