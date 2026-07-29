@@ -109,8 +109,8 @@ assert.deepEqual(
     { center: "总中心直属", class_name: "先锋班" },
     "class"
   ),
-  { center: "总中心直属", class_name: "先锋班", group_name: "" },
-  "旧运营接口应按分中心和班级名称读取名单"
+  { class_org_unit_id: "", group_org_unit_id: "" },
+  "名单查询不得再用分中心或班级名称拼接参数"
 );
 assert.deepEqual(
   api._test.buildOpsRosterParams(
@@ -166,6 +166,114 @@ assert.equal(
   }).classes.length,
   1,
   "运营名单选项应兼容 data 包装"
+);
+const validRosterOptions = {
+  success: true,
+  data: {
+    source: "PLATFORM_ORG_RELATIONS",
+    query_mode: "ORG_UNIT_ID",
+    fallback_mode: "FAIL_CLOSED",
+    classes: [{ id: "class-1", member_count: 1 }],
+    groups: [{ id: "group-1", parent_id: "class-1", member_count: 1 }],
+    special_cohorts: []
+  }
+};
+assert.equal(
+  api._test.validateOpsRosterOptions(validRosterOptions).groups.length,
+  1,
+  "统一平台名单选项应通过组织层级校验"
+);
+assert.throws(
+  () => api._test.validateOpsRosterOptions({
+    success: true,
+    data: {
+      source: "PLATFORM_ORG_RELATIONS",
+      query_mode: "ORG_UNIT_ID",
+      fallback_mode: "FAIL_CLOSED",
+      classes: [{ id: "class-1" }],
+      groups: [{ id: "group-1", parent_id: "other-class" }]
+    }
+  }),
+  /小组班级归属校验失败/,
+  "小组与班级归属不一致时必须停止使用名单"
+);
+const validRosterMembers = {
+  success: true,
+  data: {
+    source: "PLATFORM_ORG_RELATIONS",
+    query_mode: "ORG_UNIT_ID",
+    fallback_mode: "FAIL_CLOSED",
+    member_count: 1,
+    scope: {
+      relation_type: "STUDY_GROUP",
+      org_unit_id: "group-1",
+      class_org_unit_id: "class-1"
+    },
+    members: [{
+      member_code: "M0001",
+      relation_type: "STUDY_GROUP",
+      relation_org_id: "group-1"
+    }]
+  }
+};
+assert.equal(
+  api._test.validateOpsRosterData(validRosterMembers, {
+    class_org_unit_id: "class-1",
+    group_org_unit_id: "group-1"
+  }).members.length,
+  1,
+  "名单数量和组织归属一致时应允许导入"
+);
+assert.throws(
+  () => api._test.validateOpsRosterData({
+    ...validRosterMembers,
+    data: { ...validRosterMembers.data, member_count: 2 }
+  }, {
+    class_org_unit_id: "class-1",
+    group_org_unit_id: "group-1"
+  }),
+  /名单数量校验失败/,
+  "接口数量与返回名单不一致时必须停止导入"
+);
+assert.equal(
+  api._test.isScheduledAttendanceSyncEvent({
+    Type: "Timer",
+    TriggerName: "attendanceSyncWeekdays0000"
+  }),
+  true,
+  "只允许指定的工作日零点触发器启动平台同步"
+);
+assert.equal(
+  api._test.validateRosterIntegrity({
+    success: true,
+    data: {
+      source: "PLATFORM_ORG_RELATIONS",
+      query_mode: "ORG_UNIT_ID",
+      fallback_mode: "FAIL_CLOSED",
+      class_member_count: 123,
+      group_member_count: 80,
+      group_class_mismatch_count: 0,
+      invalid_relation_count: 0,
+      passed: true
+    }
+  }).class_member_count,
+  123,
+  "定时任务应先核验名单数量、班级归属和失败关闭模式"
+);
+assert.throws(
+  () => api._test.validateRosterIntegrity({
+    success: true,
+    data: {
+      source: "PLATFORM_ORG_RELATIONS",
+      query_mode: "ORG_UNIT_ID",
+      fallback_mode: "FAIL_CLOSED",
+      group_class_mismatch_count: 1,
+      invalid_relation_count: 0,
+      passed: false
+    }
+  }),
+  /名单组织关系校验未通过/,
+  "自动核验发现班级归属异常时必须停止定时同步"
 );
 assert.deepEqual(
   api._test.rosterIdentity([

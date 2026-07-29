@@ -39,23 +39,10 @@ function readableOpsError(payload, fallback) {
 function buildOpsRosterParams(data, scope) {
   const classOrgUnitId = String(data.class_org_unit_id || "").trim();
   const groupOrgUnitId = String(data.group_org_unit_id || "").trim();
-  if (classOrgUnitId || groupOrgUnitId) {
-    return {
-      class_org_unit_id: classOrgUnitId,
-      group_org_unit_id: scope === "group" ? groupOrgUnitId : ""
-    };
-  }
-  const legacyClassName = String(data.class_name || "").trim();
-  const legacyCenter = String(data.center || "").trim();
-  const legacyGroupName = String(data.group_name || "").trim();
-  if (legacyClassName || legacyCenter || legacyGroupName) {
-    return {
-      center: legacyCenter,
-      class_name: legacyClassName,
-      group_name: scope === "group" ? legacyGroupName : ""
-    };
-  }
-  return { class_org_unit_id: "", group_org_unit_id: "" };
+  return {
+    class_org_unit_id: classOrgUnitId,
+    group_org_unit_id: scope === "group" ? groupOrgUnitId : ""
+  };
 }
 
 function normalizeOpsRosterData(result) {
@@ -81,6 +68,95 @@ function normalizeOpsRosterOptions(result) {
       : [],
     version: options && options.version ? options.version : null
   };
+}
+
+function validateOpsRosterOptions(result) {
+  const payload = result && result.data && !Array.isArray(result.data)
+    ? result.data
+    : result;
+  const options = normalizeOpsRosterOptions(result);
+  if (!payload || payload.source !== "PLATFORM_ORG_RELATIONS") {
+    throw new Error("名单来源校验失败，已停止使用非统一平台数据");
+  }
+  if (payload.query_mode !== "ORG_UNIT_ID" || payload.fallback_mode !== "FAIL_CLOSED") {
+    throw new Error("名单接口未启用组织 ID 严格模式");
+  }
+  const classIds = new Set(options.classes.map(item => String(item && item.id || "")).filter(Boolean));
+  if (classIds.size !== options.classes.length) {
+    throw new Error("班级组织 ID 缺失或重复");
+  }
+  const groupIds = new Set();
+  for (const group of options.groups) {
+    const groupId = String(group && group.id || "");
+    const parentId = String(group && group.parent_id || "");
+    if (!groupId || groupIds.has(groupId)) throw new Error("小组组织 ID 缺失或重复");
+    if (!parentId || !classIds.has(parentId)) throw new Error("小组班级归属校验失败");
+    groupIds.add(groupId);
+  }
+  return options;
+}
+
+function validateOpsRosterData(result, params) {
+  const payload = result && result.data && !Array.isArray(result.data)
+    ? result.data
+    : null;
+  if (!payload || payload.source !== "PLATFORM_ORG_RELATIONS") {
+    throw new Error("名单来源校验失败，已停止导入");
+  }
+  if (payload.query_mode !== "ORG_UNIT_ID" || payload.fallback_mode !== "FAIL_CLOSED") {
+    throw new Error("名单接口未启用组织 ID 严格模式");
+  }
+  const expectedId = String(params.group_org_unit_id || params.class_org_unit_id || "");
+  const scopeId = String(payload.scope && payload.scope.org_unit_id || "");
+  if (!expectedId || scopeId !== expectedId) {
+    throw new Error("名单组织范围与请求不一致");
+  }
+  if (
+    params.group_org_unit_id &&
+    String(payload.scope && payload.scope.class_org_unit_id || "") !==
+      String(params.class_org_unit_id || "")
+  ) {
+    throw new Error("小组所属班级与请求不一致");
+  }
+  const normalized = normalizeOpsRosterData(result);
+  if (Number(payload.member_count) !== normalized.members.length) {
+    throw new Error("名单数量校验失败");
+  }
+  if (normalized.members.some(item =>
+    String(item && item.relation_org_id || "") !== expectedId
+  )) {
+    throw new Error("名单中存在不属于所选组织的人员");
+  }
+  return normalized;
+}
+
+function validateRosterIntegrity(result) {
+  const payload = result && result.data;
+  if (
+    !payload ||
+    payload.source !== "PLATFORM_ORG_RELATIONS" ||
+    payload.query_mode !== "ORG_UNIT_ID" ||
+    payload.fallback_mode !== "FAIL_CLOSED"
+  ) {
+    throw new Error("名单主数据来源配置校验失败");
+  }
+  if (!payload.passed) {
+    throw new Error(
+      "名单组织关系校验未通过：班级归属异常 " +
+      Number(payload.group_class_mismatch_count || 0) +
+      "，无效关系 " +
+      Number(payload.invalid_relation_count || 0)
+    );
+  }
+  return payload;
+}
+
+function isScheduledAttendanceSyncEvent(event) {
+  return Boolean(
+    event &&
+    String(event.Type || event.type || "").toLowerCase() === "timer" &&
+    String(event.TriggerName || event.triggerName || "") === "attendanceSyncWeekdays0000"
+  );
 }
 
 function rosterIdentity(rows) {
@@ -137,9 +213,13 @@ exports._test = {
   buildOpsRosterParams,
   normalizeOpsRosterData,
   normalizeOpsRosterOptions,
+  validateOpsRosterData,
+  validateOpsRosterOptions,
+  validateRosterIntegrity,
   rosterIdentity,
   findClassOption,
-  resolveOpsConnection
+  resolveOpsConnection,
+  isScheduledAttendanceSyncEvent
 };
 
 exports.main = async (event, context) => {
@@ -167,15 +247,23 @@ exports.main = async (event, context) => {
   
   if (method === "OPTIONS") return { statusCode: 200, headers: h, body: "" };
 
-  function requestJson(urlText, headers) {
+  function requestJson(urlText, headers, method, body) {
     const url = new URL(urlText);
+    const payload = body === undefined ? null : Buffer.from(JSON.stringify(body));
     return new Promise((resolve, reject) => {
       const req = https.request({
-        method: "GET",
+        method: method || "GET",
         hostname: url.hostname,
         port: url.port || 443,
         path: url.pathname + url.search,
-        headers: { Accept: "application/json", ...(headers || {}) },
+        headers: {
+          Accept: "application/json",
+          ...(payload ? {
+            "Content-Type": "application/json",
+            "Content-Length": payload.length
+          } : {}),
+          ...(headers || {})
+        },
         timeout: 10000
       }, response => {
         const chunks = [];
@@ -194,6 +282,7 @@ exports.main = async (event, context) => {
       });
       req.on("timeout", () => req.destroy(new Error("连接运营系统超时")));
       req.on("error", reject);
+      if (payload) req.write(payload);
       req.end();
     });
   }
@@ -213,6 +302,36 @@ exports.main = async (event, context) => {
       }
     });
     return await requestJson(url.toString(), { "X-API-Key": apiKey });
+  }
+
+  async function requestScheduledAttendanceSync() {
+    const connection = resolveOpsConnection(process.env);
+    if (!connection.base || !connection.apiKey) {
+      throw new Error("统一平台签到同步连接未配置");
+    }
+    const validation = validateRosterIntegrity(
+      await requestOps("/api/v1/checkin-rosters/validate")
+    );
+    const syncResult = await requestJson(
+      connection.base + "/api/v1/attendance/sync/scheduled",
+      { "X-API-Key": connection.apiKey },
+      "POST",
+      {}
+    );
+    return { validation, syncResult };
+  }
+
+  if (isScheduledAttendanceSyncEvent(event)) {
+    const result = await requestScheduledAttendanceSync();
+    return {
+      ok: true,
+      action: "platform_attendance_sync",
+      roster_validation: "PASSED",
+      class_member_count: result.validation.class_member_count,
+      group_member_count: result.validation.group_member_count,
+      status: result.syncResult && result.syncResult.data &&
+        result.syncResult.data.status || "UNKNOWN"
+    };
   }
 
   async function getConfig(key, def) {
@@ -868,22 +987,9 @@ exports.main = async (event, context) => {
   if (p === "/ops_roster_options" && method === "GET") {
     try {
       const result = await requestOps("/api/v1/checkin-rosters/options");
-      const options = normalizeOpsRosterOptions(result);
-      await setConfig("ops_roster_options_cache", JSON.stringify(options));
+      const options = validateOpsRosterOptions(result);
       return { statusCode: 200, headers: h, body: JSON.stringify({ ok: true, ...options }) };
     } catch (e) {
-      try {
-        const cached = JSON.parse(await getConfig("ops_roster_options_cache", ""));
-        const options = normalizeOpsRosterOptions(cached);
-        if (options.classes.length || options.groups.length) {
-          return { statusCode: 200, headers: h, body: JSON.stringify({
-            ok: true,
-            ...options,
-            cached: true,
-            warning: "运营系统暂时不可用，已显示上次成功读取的名单"
-          }) };
-        }
-      } catch (cacheError) {}
       return { statusCode: 200, headers: h, body: JSON.stringify({ ok: false, msg: "读取运营名单选项失败: " + (e.message || "") }) };
     }
   }
@@ -891,11 +997,15 @@ exports.main = async (event, context) => {
   if (p === "/ops_roster_members" && method === "POST") {
     try {
       const scope = data.scope === "group" ? "group" : "class";
+      const params = buildOpsRosterParams(data, scope);
+      if (!params.class_org_unit_id || (scope === "group" && !params.group_org_unit_id)) {
+        throw new Error(scope === "group" ? "请选择有效的小组组织 ID" : "请选择有效的班级组织 ID");
+      }
       const result = await requestOps(
         "/api/v1/checkin-rosters/members",
-        buildOpsRosterParams(data, scope)
+        params
       );
-      const normalized = normalizeOpsRosterData(result);
+      const normalized = validateOpsRosterData(result, params);
       const attendees = normalized.members.map(item => ({
         name: item.name || "",
         phone: item.phone || "",
