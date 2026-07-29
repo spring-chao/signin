@@ -78,6 +78,8 @@ tcb env login set --anonymous-login true -e {你的环境ID}
 生产环境为 `checkinApi` 配置 `attendanceSyncWeekdays0000` 定时触发器，
 Cron 为 `0 0 0 ? * MON-FRI *`。它只调用新运营平台的受保护同步入口，
 在工作日 00:00 由新平台拉取签到数据，不改变扫码签到 HTTP 路由。
+定时调用允许等待新平台冷启动和增量处理，云函数超时配置为 120 秒；
+普通名单读取仍采用较短的 20 秒出站超时。
 
 ### 5. 部署云函数
 

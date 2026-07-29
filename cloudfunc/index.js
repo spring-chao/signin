@@ -247,7 +247,7 @@ exports.main = async (event, context) => {
   
   if (method === "OPTIONS") return { statusCode: 200, headers: h, body: "" };
 
-  function requestJson(urlText, headers, method, body) {
+  function requestJson(urlText, headers, method, body, timeoutMs) {
     const url = new URL(urlText);
     const payload = body === undefined ? null : Buffer.from(JSON.stringify(body));
     return new Promise((resolve, reject) => {
@@ -264,7 +264,7 @@ exports.main = async (event, context) => {
           } : {}),
           ...(headers || {})
         },
-        timeout: 10000
+        timeout: timeoutMs || 20000
       }, response => {
         const chunks = [];
         response.on("data", chunk => chunks.push(chunk));
@@ -316,7 +316,8 @@ exports.main = async (event, context) => {
       connection.base + "/api/v1/attendance/sync/scheduled",
       { "X-API-Key": connection.apiKey },
       "POST",
-      {}
+      {},
+      100000
     );
     return { validation, syncResult };
   }
