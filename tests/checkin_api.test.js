@@ -97,6 +97,7 @@ const db = createDatabase({
     { _id: "reg-2", batch_id: "batch-1", name: "李二", phone: "13800000002", center: "", class_name: "二班", group_name: "二组", company: "乙公司" }
   ],
   checkins: [],
+  event_audit_logs: [],
   events: [{
     _id: "event-1",
     event_id: "batch-1",
@@ -364,6 +365,20 @@ async function request(path, method, body, token, extraHeaders) {
   const version = await request("/version", "GET");
   assert.equal(version.data.service, "signin");
   assert.equal(version.data.ok, false, "未经过发布脚本生成构建清单时版本接口必须明确标记未知");
+  const health = await request("/health", "GET");
+  assert.equal(health.data.ok, true, "核心数据集合完整时健康检查应通过");
+  assert(health.data.collections.some(row => row.collection === "event_audit_logs" && row.ok), "健康检查必须覆盖活动审计日志集合");
+  const missingAuditHealth = await api._test.checkRequiredCollections({
+    collection(name) {
+      if (name === "event_audit_logs") {
+        return { limit() { return { get: async () => { throw new Error("collection event_audit_logs does not exist"); } }; } };
+      }
+      return db.collection(name);
+    }
+  });
+  assert.equal(missingAuditHealth.ok, false, "审计集合缺失时健康检查必须失败关闭");
+  assert.equal(missingAuditHealth.collections.find(row => row.collection === "event_audit_logs").reason, "COLLECTION_MISSING");
+  assert.match(api._test.adminOperationErrorMessage(new Error("collection event_audit_logs does not exist"), "活动生命周期更新"), /系统初始化未完成/);
 
   const added = await request("/registration", "POST", {
     name: "王三",
