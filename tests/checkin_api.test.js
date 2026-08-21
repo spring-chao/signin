@@ -247,6 +247,19 @@ assert.throws(
   /名单数量校验失败/,
   "接口数量与返回名单不一致时必须停止导入"
 );
+const sharedPhoneRoster = api._test.validateClassMeetingRoster([
+  { name: "本人", phone: "13800000011" },
+  { name: "代报名员工", phone: "13800000011" }
+]);
+assert.equal(sharedPhoneRoster.passed, true, "共用联系电话不能阻断班会名单创建");
+assert.equal(sharedPhoneRoster.shared_phone_member_count, 2, "应记录共用联系电话人数供后台提示");
+const invalidPhoneRoster = api._test.validateClassMeetingRoster([
+  { name: "缺手机号", phone: "" },
+  { name: "格式错误", phone: "23800000012" }
+]);
+assert.equal(invalidPhoneRoster.passed, false, "缺失或非法手机号必须阻断班会名单");
+assert.equal(invalidPhoneRoster.missing_phone_count, 1);
+assert.equal(invalidPhoneRoster.invalid_phone_count, 1);
 assert.equal(
   api._test.isScheduledAttendanceSyncEvent({
     Type: "Timer",
@@ -508,6 +521,12 @@ async function request(path, method, body, token, extraHeaders) {
   const earlyRegistration = await request("/registration", "POST", { event_id: "batch-3", name: "临时学员", phone: "13800000007" }, token);
   assert.equal(earlyRegistration.data.ok, true, "活动开始前应允许后台维护临时报名名单");
   assert(db.collections.registrations.some(row => row.batch_id === "batch-3" && row.phone === "13800000007"));
+  const selectHistorical = await request("/event_update", "POST", { event_id: "batch-3", select: true }, token);
+  assert.equal(selectHistorical.data.ok, true);
+  const todayWorkspaceData = await request("/admin_events?page=1&page_size=20", "GET", undefined, token);
+  assert.notEqual(todayWorkspaceData.data.today_selected_event_id, "batch-3", "选择未来活动后，今日工作台不得切换到非今日活动");
+  assert(todayWorkspaceData.data.today_selected_item && todayWorkspaceData.data.today_selected_item.event_date === today, "今日工作台必须返回今天的活动候选");
+  await request("/event_update", "POST", { event_id: "batch-1", select: true }, token);
 
   db.collections.events.push({ _id: "event-4", event_id: "batch-4", name: "已结束课程", event_date: "2000-01-01", activity_type: "course", status: "active", lifecycle_status: "CONFIRMED", checkin_start_at: "2000-01-01T00:00:00.000Z", checkin_end_at: "2000-01-01T12:00:00.000Z" });
   const endedRegistration = await request("/registration", "POST", { event_id: "batch-4", name: "结束后学员", phone: "13800000006" }, token);
@@ -561,7 +580,8 @@ async function request(path, method, body, token, extraHeaders) {
     event_date: defaultDate,
     event_name: "默认时间测试班会",
     org_unit_id: "center-default",
-    class_org_unit_id: "class-default"
+    class_org_unit_id: "class-default",
+    roster_members: [{ name: "默认名单学员", phone: "13800000013", class_name: "默认班" }]
   }, token);
   assert.equal(defaultSessions.data.ok, true);
   const defaultSessionRows = db.collections.events.filter(row => row.event_group_id === defaultSessions.data.event_group_id).sort((a, b) => a.session_order - b.session_order);
@@ -570,6 +590,26 @@ async function request(path, method, body, token, extraHeaders) {
     ["AFTERNOON", "2099-03-03T04:10:00.000Z", "2099-03-03T05:30:00.000Z", "2099-03-03T07:00:00.000Z", "2099-03-03T09:00:00.000Z"],
     ["KONPA", "2099-03-03T09:10:00.000Z", "2099-03-03T10:00:00.000Z", "2099-03-03T12:30:00.000Z", "2099-03-03T12:30:00.000Z"]
   ], "班会三场默认时间应使用新的运营时间口径");
+
+  const missingRosterSessions = await request("/create_class_meeting_sessions", "POST", {
+    event_date: "2099-03-03",
+    event_name: "缺少名单字段测试",
+    org_unit_id: "center-missing-roster",
+    class_org_unit_id: "class-missing-roster"
+  }, token);
+  assert.equal(missingRosterSessions.data.ok, false, "三场班会不得在缺少名单字段时创建");
+
+  const eventsBeforeInvalidRoster = db.collections.events.length;
+  const invalidRosterSessions = await request("/create_class_meeting_sessions", "POST", {
+    event_date: "2099-03-04",
+    event_name: "名单质量失败测试",
+    org_unit_id: "center-invalid-roster",
+    class_org_unit_id: "class-invalid-roster",
+    roster_members: [{ name: "资料待完善", phone: "" }]
+  }, token);
+  assert.equal(invalidRosterSessions.data.ok, false, "班会创建接口必须阻断缺少手机号的名单");
+  assert.equal(invalidRosterSessions.data.code, "ROSTER_QUALITY_INVALID");
+  assert.equal(db.collections.events.length, eventsBeforeInvalidRoster, "名单质量失败时不得创建任何场次");
 
   const deleteCurrentEvent = await request("/clear_all", "POST", { event_id: "batch-2" }, token);
   assert.equal(deleteCurrentEvent.data.ok, true);
@@ -604,6 +644,23 @@ async function request(path, method, body, token, extraHeaders) {
     db.collections.registrations.filter(row => row.event_group_id === createdSessions.data.event_group_id).length,
     3,
     "同一份名单必须复制到三个签到场次"
+  );
+  const sharedPhoneSessions = await request("/create_class_meeting_sessions", "POST", {
+    token,
+    event_date: "2099-03-05",
+    event_name: "共用联系电话测试班会",
+    org_unit_id: "center-shared-phone",
+    class_org_unit_id: "class-shared-phone",
+    roster_members: [
+      { name: "本人", phone: "13800000011", class_name: "测试班" },
+      { name: "代报名员工", phone: "13800000011", class_name: "测试班" }
+    ]
+  });
+  assert.equal(sharedPhoneSessions.data.ok, true, "共用联系电话不应阻断班会创建");
+  assert.equal(
+    db.collections.registrations.filter(row => row.event_group_id === sharedPhoneSessions.data.event_group_id).length,
+    6,
+    "共用联系电话名单仍应复制到三个签到场次"
   );
   const invalidSessionTimes = await request("/create_class_meeting_sessions", "POST", {
     token,
@@ -644,6 +701,128 @@ async function request(path, method, body, token, extraHeaders) {
   assert.equal(authorizedRecords.data.items[0].attendance_status, "ABSENT");
   if (previousApiKey === undefined) delete process.env.SIGNIN_SERVICE_API_KEY;
   else process.env.SIGNIN_SERVICE_API_KEY = previousApiKey;
+
+  const paginationSeed = Array.from({ length: 620 }, (_, index) => ({
+    _id: "pagination-event-" + index,
+    event_id: "pagination-batch-" + index,
+    name: "历史分页活动 " + index,
+    event_date: `2080-${String((index % 12) + 1).padStart(2, "0")}-${String((index % 28) + 1).padStart(2, "0")}`,
+    activity_type: index % 2 ? "course" : "group_meeting",
+    status: "active",
+    lifecycle_status: index % 3 === 0 ? "CONFIRMED" : "DRAFT",
+    checkin_start_at: "2080-01-01T00:00:00.000Z",
+    checkin_end_at: "2080-01-01T01:00:00.000Z"
+  }));
+  db.collections.events.push(...paginationSeed);
+  const firstPage = await request("/admin_events?page=1&page_size=20", "GET", undefined, token);
+  assert.equal(firstPage.data.ok, true);
+  assert.equal(firstPage.data.page, 1);
+  assert.equal(firstPage.data.page_size, 20);
+  assert(firstPage.data.items.length <= 20, "活动列表每页不得超过 page_size");
+  assert.equal(firstPage.data.has_more, true, "超过一页活动时必须返回 has_more");
+  assert(!Object.prototype.hasOwnProperty.call(firstPage.data.items[0], "total"), "活动列表不得为每条历史活动读取报名统计");
+  assert(!Object.prototype.hasOwnProperty.call(firstPage.data.items[0], "checked"), "活动列表不得为每条历史活动读取签到统计");
+  const twentiethPage = await request("/admin_events?page=20&page_size=20", "GET", undefined, token);
+  assert.equal(twentiethPage.data.items.length, 20, "第20页应能读取 620 条活动中的中间页");
+  const lastPage = await request("/admin_events?page=32&page_size=20", "GET", undefined, token);
+  assert(lastPage.data.items.length > 0 && lastPage.data.items.length <= 20, "最后一页应能读取活动尾部");
+  assert.equal(lastPage.data.has_more, false);
+  const filteredPage = await request("/admin_events?page=1&page_size=20&lifecycle_status=CONFIRMED&activity_type=course", "GET", undefined, token);
+  assert(filteredPage.data.items.every(item => item.lifecycle_status === "CONFIRMED" && item.activity_type === "course"), "活动列表筛选必须在后端生效");
+  const keywordPage = await request("/admin_events?page=1&page_size=20&keyword=" + encodeURIComponent("历史分页活动 619") + "&date_from=2080-01-01&date_to=2080-12-31", "GET", undefined, token);
+  assert.equal(keywordPage.data.items.length, 1, "活动名称和日期筛选必须在后端生效");
+  assert.equal(keywordPage.data.items[0].event_id, "pagination-batch-619");
+
+  const sameDayEvents = Array.from({ length: 60 }, (_, index) => ({
+    _id: "same-day-event-" + index,
+    event_id: "same-day-batch-" + index,
+    name: "同日稳定排序活动 " + index,
+    event_date: "2078-06-06",
+    activity_type: "course",
+    status: "active",
+    lifecycle_status: "DRAFT",
+    created_at: `2078-06-06T${String(Math.floor(index / 60)).padStart(2, "0")}:${String(index).padStart(2, "0")}:00.000Z`
+  }));
+  db.collections.events.push(...sameDayEvents);
+  const sameDayPages = [];
+  for (const page of [1, 2, 3]) {
+    const result = await request(`/admin_events?page=${page}&page_size=20&date_from=2078-06-06&date_to=2078-06-06`, "GET", undefined, token);
+    sameDayPages.push(...result.data.items.map(item => item.event_id));
+  }
+  assert.equal(sameDayPages.length, 60, "同一天的 60 个活动应完整分页");
+  assert.equal(new Set(sameDayPages).size, 60, "同一天跨页活动不得重复");
+
+  const boundarySingles = Array.from({ length: 19 }, (_, index) => ({
+    _id: "boundary-single-before-" + index,
+    event_id: "boundary-single-before-" + index,
+    name: "分页边界普通活动前 " + index,
+    event_date: "2077-05-05",
+    activity_type: "course",
+    status: "active",
+    lifecycle_status: "DRAFT",
+    created_at: `2077-05-05T02:${String(index).padStart(2, "0")}:00.000Z`
+  })).concat(Array.from({ length: 5 }, (_, index) => ({
+    _id: "boundary-single-after-" + index,
+    event_id: "boundary-single-after-" + index,
+    name: "分页边界普通活动后 " + index,
+    event_date: "2077-05-05",
+    activity_type: "course",
+    status: "active",
+    lifecycle_status: "DRAFT",
+    created_at: `2077-05-05T00:${String(index).padStart(2, "0")}:00.000Z`
+  })));
+  const boundaryGroup = [1, 2, 3].map(order => ({
+    _id: "boundary-group-event-" + order,
+    event_id: "boundary-group-batch-" + order,
+    event_group_id: "boundary-group",
+    session_order: order,
+    session_name: ["上午", "下午", "晚上空巴"][order - 1],
+    name: "跨页边界班会 - " + ["上午", "下午", "晚上空巴"][order - 1],
+    event_date: "2077-05-05",
+    activity_type: "class_meeting",
+    status: "active",
+    lifecycle_status: "DRAFT",
+    created_at: "2077-05-05T01:00:00.000Z"
+  }));
+  db.collections.events.push(...boundarySingles, ...boundaryGroup, {
+    _id: "legacy-draft-event",
+    event_id: "legacy-draft-event",
+    name: "缺少生命周期的历史活动",
+    event_date: "2076-04-04",
+    activity_type: "course",
+    status: "active"
+  });
+  const boundaryPage1 = await request("/admin_events?page=1&page_size=20&date_from=2077-05-05&date_to=2077-05-05", "GET", undefined, token);
+  const boundaryPage2 = await request("/admin_events?page=2&page_size=20&date_from=2077-05-05&date_to=2077-05-05", "GET", undefined, token);
+  const boundaryRows = boundaryPage1.data.items.concat(boundaryPage2.data.items);
+  assert.equal(boundaryRows.filter(item => item.event_group_id === "boundary-group").length, 1, "三场班会跨分页边界时只能出现一次");
+  assert.equal(boundaryRows.find(item => item.event_group_id === "boundary-group").session_count, 3);
+  assert.equal(new Set(boundaryRows.map(item => item.event_id)).size, boundaryRows.length, "跨页逻辑活动不得重复或遗漏");
+  const legacyDraftPage = await request("/admin_events?page=1&page_size=20&lifecycle_status=DRAFT&keyword=" + encodeURIComponent("缺少生命周期") , "GET", undefined, token);
+  assert.equal(legacyDraftPage.data.items.length, 1, "缺少 lifecycle_status 的旧活动应按草稿筛选出现");
+  assert.equal(legacyDraftPage.data.items[0].lifecycle_status, "DRAFT");
+
+  const pagedGroup = [1, 2, 3].map(order => ({
+    _id: "paged-group-event-" + order,
+    event_id: "paged-group-batch-" + order,
+    event_group_id: "paged-group",
+    session_order: order,
+    session_name: ["上午", "下午", "晚上空巴"][order - 1],
+    name: "分页边界班会 - " + ["上午", "下午", "晚上空巴"][order - 1],
+    event_date: "2099-04-01",
+    activity_type: "course",
+    status: "active",
+    lifecycle_status: "DRAFT",
+    checkin_start_at: "2099-04-01T00:00:00.000Z",
+    checkin_end_at: "2099-04-01T01:00:00.000Z"
+  }));
+  db.collections.events.push(...pagedGroup);
+  const groupedList = await request("/admin_events?page=1&page_size=20&keyword=" + encodeURIComponent("分页边界班会"), "GET", undefined, token);
+  assert.equal(groupedList.data.items.length, 1, "三场班会在活动列表中应合并为一行");
+  assert.equal(groupedList.data.items[0].session_count, 3);
+  const pagedGroupLifecycle = await request("/event_lifecycle_update", "POST", { event_group_id: "paged-group", lifecycle_status: "CONFIRMED", reason: "跨分页回归" }, token);
+  assert.equal(pagedGroupLifecycle.data.ok, true, "活动组生命周期操作不得依赖当前分页结果");
+  assert(db.collections.events.filter(row => row.event_group_id === "paged-group").every(row => row.lifecycle_status === "CONFIRMED"));
 
   const configuredAdminHash = process.env.ADMIN_PASSWORD_HASH;
   delete process.env.ADMIN_PASSWORD_HASH;

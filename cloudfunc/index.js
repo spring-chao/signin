@@ -68,6 +68,62 @@ function normalizeOpsRosterData(result) {
   return { members: [], version: data && data.version ? data.version : null };
 }
 
+function normalizeRosterPhone(value) {
+  return String(value || "").trim().replace(/\s/g, "").replace(/-/g, "");
+}
+
+function validateClassMeetingRoster(members) {
+  const rows = Array.isArray(members) ? members : [];
+  const issues = [];
+  const validPhoneIndexes = new Map();
+  let validNameCount = 0;
+  let validPhoneCount = 0;
+
+  rows.forEach((member, index) => {
+    const item = member && typeof member === "object" ? member : {};
+    const name = String(item.name || "").trim();
+    const phone = normalizeRosterPhone(item.phone);
+    const issueCodes = [];
+    if (name) validNameCount += 1;
+    else issueCodes.push("MISSING_NAME");
+    if (!phone) issueCodes.push("MISSING_PHONE");
+    else if (!/^1\d{10}$/.test(phone)) issueCodes.push("INVALID_PHONE");
+    else {
+      validPhoneCount += 1;
+      const indexes = validPhoneIndexes.get(phone) || [];
+      indexes.push(index);
+      validPhoneIndexes.set(phone, indexes);
+    }
+    if (issueCodes.length) {
+      issues.push({
+        row_number: index + 1,
+        name: name || ("第" + (index + 1) + "行"),
+        issue_codes: issueCodes
+      });
+    }
+  });
+
+  if (!rows.length) {
+    issues.push({ row_number: 0, name: "名单", issue_codes: ["EMPTY_ROSTER"] });
+  }
+
+  const sharedPhoneGroups = [...validPhoneIndexes.values()].filter(indexes => indexes.length > 1);
+  const sharedPhoneMemberCount = sharedPhoneGroups.reduce((sum, indexes) => sum + indexes.length, 0);
+  return {
+    passed: issues.length === 0,
+    member_count: rows.length,
+    valid_name_count: validNameCount,
+    valid_phone_count: validPhoneCount,
+    missing_name_count: issues.filter(item => item.issue_codes.includes("MISSING_NAME")).length,
+    missing_phone_count: issues.filter(item => item.issue_codes.includes("MISSING_PHONE")).length,
+    invalid_phone_count: issues.filter(item => item.issue_codes.includes("INVALID_PHONE")).length,
+    issue_count: issues.length,
+    issues,
+    shared_phone_group_count: sharedPhoneGroups.length,
+    shared_phone_member_count: sharedPhoneMemberCount
+  };
+}
+
 function normalizeOpsRosterOptions(result) {
   const data = result && result.data;
   const options = data && !Array.isArray(data) ? data : result;
@@ -223,6 +279,8 @@ exports._test = {
   readableOpsError,
   buildOpsRosterParams,
   normalizeOpsRosterData,
+  normalizeRosterPhone,
+  validateClassMeetingRoster,
   normalizeOpsRosterOptions,
   validateOpsRosterData,
   validateOpsRosterOptions,
@@ -507,8 +565,7 @@ exports.main = async (event, context) => {
     if (normalizeActivityType(selectedEvent && selectedEvent.activity_type) !== "class_meeting" || !eventGroupId || ![1, 2, 3].includes(selectedOrder)) {
       return [selectedEvent];
     }
-    const related = (await getEvents()).filter(item =>
-      String(item.event_group_id || "") === eventGroupId &&
+    const related = (await getEventGroupById(eventGroupId)).filter(item =>
       normalizeActivityType(item.activity_type) === "class_meeting" &&
       Number(item.session_order) >= selectedOrder &&
       Number(item.session_order) <= 3
@@ -538,10 +595,10 @@ exports.main = async (event, context) => {
   }
 
   async function ensureLegacyEvent() {
-    const existing = await getAll("events", 500);
-    if (existing.length) return existing;
+    const existing = await db.collection("events").limit(1).get();
+    if (existing.data && existing.data.length) return;
     const batchId = await getConfig("active_batch_id", "");
-    if (!batchId) return [];
+    if (!batchId) return;
     const name = await getConfig("event_name", "盛和塾签到");
     const groupField = await getConfig("group_field", "");
     await db.collection("events").add({
@@ -556,17 +613,239 @@ exports.main = async (event, context) => {
       created_at: new Date().toISOString(),
       migrated_from_legacy: true
     });
-    return await getAll("events", 500);
-  }
-
-  async function getEvents() {
-    const events = await ensureLegacyEvent();
-    return events.sort((a, b) => String(b.event_date || "").localeCompare(String(a.event_date || "")) || String(b.created_at || "").localeCompare(String(a.created_at || "")));
   }
 
   async function getEventById(eventId) {
-    const events = await getEvents();
-    return events.find(item => String(item.event_id || item._id || "") === String(eventId || "")) || null;
+    await ensureLegacyEvent();
+    const key = String(eventId || "").trim();
+    if (!key) return null;
+    const byEventId = await db.collection("events").where({ event_id: key }).limit(1).get();
+    if (byEventId.data && byEventId.data.length) return byEventId.data[0];
+    const byDocumentId = await db.collection("events").where({ _id: key }).limit(1).get();
+    return byDocumentId.data && byDocumentId.data.length ? byDocumentId.data[0] : null;
+  }
+
+  async function getEventGroupById(eventGroupId) {
+    await ensureLegacyEvent();
+    const key = String(eventGroupId || "").trim();
+    if (!key) return [];
+    const result = await db.collection("events")
+      .where({ event_group_id: key })
+      .orderBy("session_order", "asc")
+      .get();
+    return (result.data || []).sort((a, b) => Number(a.session_order || 0) - Number(b.session_order || 0));
+  }
+
+  function eventDateQueryFilter(filters) {
+    const from = validEventDate(filters && filters.date_from);
+    const to = validEventDate(filters && filters.date_to);
+    const command = db.command;
+    if (!command || (!from && !to)) return null;
+    const conditions = [];
+    if (from) conditions.push(command.gte(from));
+    if (to) conditions.push(command.lte(to));
+    return conditions.length === 1 ? conditions[0] : command.and(...conditions);
+  }
+
+  function escapeRegExp(value) {
+    return String(value || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  }
+
+  function eventListWhere(filters) {
+    const where = {};
+    const lifecycle = String(filters && filters.lifecycle_status || "").trim().toUpperCase();
+    const activityType = String(filters && filters.activity_type || "").trim();
+    if (lifecycle && lifecycle !== "ALL") where.lifecycle_status = lifecycle;
+    if (activityType && activityType !== "ALL") where.activity_type = activityType;
+    const dateFilter = eventDateQueryFilter(filters);
+    if (dateFilter) where.event_date = dateFilter;
+    const keyword = String(filters && filters.keyword || "").trim();
+    if (keyword && typeof db.RegExp === "function") {
+      where.name = db.RegExp({ regexp: escapeRegExp(keyword), options: "i" });
+    }
+    return where;
+  }
+
+  function hasEventQueryCondition(condition) {
+    return Boolean(condition && typeof condition === "object" && Object.keys(condition).length);
+  }
+
+  function logicalActivityAnchorCondition(command) {
+    if (!command || typeof command.or !== "function" || typeof command.exists !== "function") return null;
+    return command.or(
+      { event_group_id: command.exists(false) },
+      { event_group_id: "" },
+      { session_order: 1 }
+    );
+  }
+
+  function eventListQueryCondition(filters, includeLogicalAnchors) {
+    const command = db.command;
+    if (!command) return eventListWhere(filters || {});
+    const lifecycle = String(filters && filters.lifecycle_status || "").trim().toUpperCase();
+    const activityType = String(filters && filters.activity_type || "").trim();
+    const keyword = String(filters && filters.keyword || "").trim();
+    const conditions = [];
+    if (lifecycle && lifecycle !== "ALL") {
+      if (lifecycle === "DRAFT" && typeof command.exists === "function") {
+        conditions.push(command.or(
+          { lifecycle_status: "DRAFT" },
+          { lifecycle_status: command.exists(false) }
+        ));
+      } else if (!(lifecycle === "DRAFT" && typeof command.exists !== "function")) {
+        conditions.push({ lifecycle_status: lifecycle });
+      }
+    }
+    if (activityType && activityType !== "ALL") conditions.push({ activity_type: activityType });
+    const dateFilter = eventDateQueryFilter(filters);
+    if (dateFilter) conditions.push({ event_date: dateFilter });
+    if (keyword && typeof db.RegExp === "function") {
+      conditions.push({ name: db.RegExp({ regexp: escapeRegExp(keyword), options: "i" }) });
+    }
+    if (includeLogicalAnchors) {
+      const logicalCondition = logicalActivityAnchorCondition(command);
+      if (logicalCondition) conditions.push(logicalCondition);
+    }
+    if (!conditions.length) return {};
+    return conditions.length === 1 ? conditions[0] : command.and(...conditions);
+  }
+
+  function compareEventListOrder(a, b) {
+    return String(b && b.event_date || "").localeCompare(String(a && a.event_date || "")) ||
+      String(b && b.created_at || "").localeCompare(String(a && a.created_at || "")) ||
+      String(b && b._id || b && b.event_id || "").localeCompare(String(a && a._id || a && a.event_id || ""));
+  }
+
+  function isLogicalActivityAnchor(item) {
+    const groupId = String(item && item.event_group_id || "").trim();
+    return !groupId || Number(item && item.session_order || 0) === 1;
+  }
+
+  function orderEventListQuery(query) {
+    let ordered = query.orderBy("event_date", "desc");
+    if (ordered && typeof ordered.orderBy === "function") {
+      ordered = ordered.orderBy("created_at", "desc").orderBy("_id", "desc");
+    }
+    return ordered;
+  }
+
+  function matchesEventListFilter(item, filters) {
+    const lifecycle = String(filters && filters.lifecycle_status || "").trim().toUpperCase();
+    const activityType = String(filters && filters.activity_type || "").trim();
+    const keyword = String(filters && filters.keyword || "").trim().toLowerCase();
+    const date = String(item && item.event_date || "");
+    if (lifecycle && lifecycle !== "ALL" && lifecycleStatus(item) !== lifecycle) return false;
+    if (activityType && activityType !== "ALL" && normalizeActivityType(item && item.activity_type) !== activityType) return false;
+    if (validEventDate(filters && filters.date_from) && date < String(filters.date_from)) return false;
+    if (validEventDate(filters && filters.date_to) && date > String(filters.date_to)) return false;
+    if (keyword && !String(item && item.name || "").toLowerCase().includes(keyword)) return false;
+    return true;
+  }
+
+  async function queryEventPage(filters) {
+    await ensureLegacyEvent();
+    const page = Math.max(1, Math.min(parseInt(filters && filters.page || "1", 10) || 1, 100000));
+    const pageSize = Math.max(1, Math.min(parseInt(filters && filters.page_size || "20", 10) || 20, 50));
+    let where = eventListQueryCondition(filters || {}, true);
+    const lifecycle = String(filters && filters.lifecycle_status || "").trim().toUpperCase();
+    if (!db.command && lifecycle === "DRAFT" && where && typeof where === "object") {
+      where = { ...where };
+      delete where.lifecycle_status;
+    }
+    let query = db.collection("events");
+    if (hasEventQueryCondition(where)) query = query.where(where);
+    const keyword = String(filters && filters.keyword || "").trim();
+    const needsClientFiltering = !db.command || typeof db.command.exists !== "function" ||
+      (keyword && typeof db.RegExp !== "function") ||
+      (lifecycle === "DRAFT" && (!db.command || typeof db.command.exists !== "function"));
+    if (needsClientFiltering) {
+      // The local regression double does not implement CloudBase commands or
+      // regex queries. Filter before slicing so page boundaries remain valid.
+      const result = await orderEventListQuery(query).limit(10000).get();
+      const filtered = (result.data || [])
+        .filter(item => matchesEventListFilter(item, filters || {}))
+        .filter(isLogicalActivityAnchor)
+        .sort(compareEventListOrder);
+      const offset = (page - 1) * pageSize;
+      return { rows: filtered.slice(offset, offset + pageSize), page, pageSize, hasMore: filtered.length > offset + pageSize };
+    }
+    const result = await orderEventListQuery(query).skip((page - 1) * pageSize).limit(pageSize + 1).get();
+    const rows = result.data || [];
+    return { rows: rows.slice(0, pageSize), page, pageSize, hasMore: rows.length > pageSize };
+  }
+
+  async function getTodayEvents() {
+    await ensureLegacyEvent();
+    const today = chinaDate();
+    const filters = { date_from: today, date_to: today };
+    const where = eventListQueryCondition(filters, false);
+    let query = db.collection("events");
+    if (hasEventQueryCondition(where)) query = query.where(where);
+    const result = await orderEventListQuery(query).limit(1000).get();
+    const rows = (result.data || []).sort(compareEventListOrder);
+    return (!db.command ? rows.filter(item => matchesEventListFilter(item, filters)) : rows);
+  }
+
+  async function getEventsByDate(eventDate) {
+    await ensureLegacyEvent();
+    const key = validEventDate(eventDate);
+    if (!key) return [];
+    const result = await db.collection("events").where({ event_date: key }).orderBy("created_at", "desc").orderBy("_id", "desc").limit(1000).get();
+    return (result.data || []).sort((a, b) => String(b.created_at || "").localeCompare(String(a.created_at || "")) || String(b._id || "").localeCompare(String(a._id || "")));
+  }
+
+  function logicalActivityName(item) {
+    const name = String(item && item.name || "盛和塾活动");
+    const sessionName = String(item && item.session_name || "").trim();
+    const suffix = sessionName ? " - " + sessionName : "";
+    return suffix && name.endsWith(suffix) ? name.slice(0, -suffix.length) : name;
+  }
+
+  function summarizeEventGroup(rows) {
+    const sorted = (rows || []).slice().sort((a, b) => Number(a.session_order || 0) - Number(b.session_order || 0));
+    const primary = sorted[0];
+    if (!primary) return null;
+    const sessions = sorted.map(publicEvent);
+    const groupId = String(primary.event_group_id || "");
+    const logicalName = groupId ? logicalActivityName(primary) : String(primary.name || "盛和塾活动");
+    return {
+      ...publicEvent(primary),
+      name: logicalName,
+      logical_name: logicalName,
+      event_group_id: groupId,
+      is_group: Boolean(groupId && sorted.length > 1),
+      session_count: sorted.length,
+      sessions
+    };
+  }
+
+  async function summarizeEventRows(rows) {
+    const summaries = [];
+    const seenGroups = new Set();
+    for (const item of rows || []) {
+      const groupId = String(item.event_group_id || "");
+      if (groupId && seenGroups.has(groupId)) continue;
+      const groupRows = groupId ? await getEventGroupById(groupId) : [item];
+      if (groupId) seenGroups.add(groupId);
+      const summary = summarizeEventGroup(groupRows);
+      if (summary) summaries.push(summary);
+    }
+    return summaries;
+  }
+
+  function summaryHasEvent(summary, eventId) {
+    return Boolean(summary && (summary.event_id === eventId || (summary.sessions || []).some(item => item.event_id === eventId)));
+  }
+
+  function summaryHasLifecycle(summary, lifecycle) {
+    return Boolean(summary && (summary.sessions || [summary]).some(item => item.lifecycle_status === lifecycle));
+  }
+
+  function todaySummaryPriority(summary) {
+    const sessions = summary && summary.sessions || [summary];
+    if (sessions.some(item => item.lifecycle_status !== "CANCELLED" && item.checkin_status === "open")) return 0;
+    if (sessions.some(item => item.lifecycle_status !== "CANCELLED" && item.checkin_status === "upcoming")) return 1;
+    return 2;
   }
 
   async function getRequestedEvent(eventId) {
@@ -790,14 +1069,16 @@ exports.main = async (event, context) => {
       if (!["DRAFT", "CONFIRMED", "CANCELLED"].includes(requestedStatus)) {
         return { statusCode: 200, headers: h, body: JSON.stringify({ ok: false, msg: "生命周期状态必须是 DRAFT、CONFIRMED 或 CANCELLED" }) };
       }
-      const allEvents = await getEvents();
-      const selected = data.event_group_id
-        ? allEvents.filter(item => String(item.event_group_id || "") === String(data.event_group_id || ""))
-        : allEvents.filter(item => String(item.event_id || item._id || "") === String(data.event_id || ""));
-      if (!selected.length) return { statusCode: 200, headers: h, body: JSON.stringify({ ok: false, msg: "未找到活动或活动组" }) };
-      const targetEvents = selected[0].event_group_id
-        ? allEvents.filter(item => String(item.event_group_id || "") === String(selected[0].event_group_id || ""))
-        : selected;
+      const selectedEvent = data.event_group_id
+        ? null
+        : await getEventById(data.event_id);
+      const selectedGroup = data.event_group_id
+        ? await getEventGroupById(data.event_group_id)
+        : (selectedEvent && selectedEvent.event_group_id ? await getEventGroupById(selectedEvent.event_group_id) : []);
+      const targetEvents = data.event_group_id || (selectedEvent && selectedEvent.event_group_id)
+        ? selectedGroup
+        : (selectedEvent ? [selectedEvent] : []);
+      if (!targetEvents.length) return { statusCode: 200, headers: h, body: JSON.stringify({ ok: false, msg: "未找到活动或活动组" }) };
       if (requestedStatus === "CONFIRMED") {
         const invalid = targetEvents.map(item => ({ item, msg: validateLifecycleConfirmation(item) })).find(row => row.msg);
         if (invalid) return { statusCode: 200, headers: h, body: JSON.stringify({ ok: false, msg: String(invalid.item.name || "活动") + "：" + invalid.msg }) };
@@ -1035,7 +1316,7 @@ exports.main = async (event, context) => {
     if (!name || !phone) return { statusCode: 200, headers: h, body: JSON.stringify({ ok: false, msg: "请输入姓名和手机号" }) };
     if (phone.length !== 11 || !/^\d+$/.test(phone)) return { statusCode: 200, headers: h, body: JSON.stringify({ ok: false, msg: "请输入正确的11位手机号" }) };
     try {
-      const activeEvents = (await getEvents()).filter(item => isPublicCheckinEligible(item));
+      const activeEvents = (await getTodayEvents()).filter(item => isPublicCheckinEligible(item));
       if (!activeEvents.length) return { statusCode: 200, headers: h, body: JSON.stringify({ ok: false, msg: "当前没有开放签到的活动" }) };
       const activeIds = new Set(activeEvents.map(item => String(item.event_id || item._id || "")));
       // Phones are normalized when importing or adding registrations. Limiting
@@ -1125,7 +1406,7 @@ exports.main = async (event, context) => {
   // ===== EVENT INFO =====
   if (p === "/event" && method === "GET") {
     try {
-      const allEvents = await getEvents();
+      const allEvents = await getTodayEvents();
       // The public QR page only shows activities dated today in China Standard
       // Time. Future activities remain available in the admin console.
       const todayEvents = allEvents.filter(item => isEventToday(item));
@@ -1155,17 +1436,61 @@ exports.main = async (event, context) => {
   // ===== SETTINGS =====
   if (p === "/admin_events" && method === "GET") {
     try {
-      const events = await getEvents();
+      const pageResult = await queryEventPage({
+        page: query.page,
+        page_size: query.page_size,
+        keyword: query.keyword,
+        lifecycle_status: query.lifecycle_status,
+        activity_type: query.activity_type,
+        date_from: query.date_from,
+        date_to: query.date_to
+      });
+      const summaries = await summarizeEventRows(pageResult.rows);
+      const today = chinaDate();
+      const todayPage = await queryEventPage({ page: 1, page_size: 50, date_from: today, date_to: today });
+      const todayItems = await summarizeEventRows(todayPage.rows);
       const selectedEventId = await getConfig("active_batch_id", "");
-      const rows = await Promise.all(events.map(async item => {
-        const eventId = String(item.event_id || item._id || "");
-        const [eventRegs, eventCks] = await Promise.all([
-          rowsForBatch("registrations", eventId, 5000),
-          rowsForBatch("checkins", eventId, 5000)
-        ]);
-        return { ...publicEvent(item), total: eventRegs.length, checked: buildAttendanceState(eventRegs, eventCks).checkedIndexes.size };
-      }));
-      return { statusCode: 200, headers: h, body: JSON.stringify({ ok: true, events: rows, selected_event_id: selectedEventId, activity_types: ACTIVITY_TYPES }) };
+      let selectedItem = null;
+      let selectedEvent = null;
+      if (selectedEventId) {
+        selectedEvent = await getEventById(selectedEventId);
+        if (selectedEvent) {
+          const selectedRows = selectedEvent.event_group_id
+            ? await getEventGroupById(selectedEvent.event_group_id)
+            : [selectedEvent];
+          selectedItem = summarizeEventGroup(selectedRows);
+        }
+      }
+      const selectedTodayItem = selectedEvent && String(selectedEvent.event_date || "") === today && selectedItem && !summaryHasLifecycle(selectedItem, "CANCELLED") && todaySummaryPriority(selectedItem) < 2
+        ? selectedItem
+        : null;
+      const todayCandidates = todayItems
+        .filter(item => !summaryHasLifecycle(item, "CANCELLED") && todaySummaryPriority(item) < 2)
+        .sort((a, b) => todaySummaryPriority(a) - todaySummaryPriority(b) || compareEventListOrder(a, b));
+      const todaySelectedItem = selectedTodayItem || todayCandidates[0] || null;
+      const todaySelectedSessions = todaySelectedItem ? (todaySelectedItem.sessions || [todaySelectedItem]) : [];
+      const todaySelectedEventId = todaySelectedItem
+        ? (selectedTodayItem && selectedEventId && summaryHasEvent(todaySelectedItem, selectedEventId)
+          ? selectedEventId
+          : ((todaySelectedSessions.find(item => item.checkin_status === "open") ||
+            todaySelectedSessions.find(item => item.checkin_status === "upcoming") ||
+            todaySelectedSessions[0]).event_id))
+        : "";
+      return { statusCode: 200, headers: h, body: JSON.stringify({
+        ok: true,
+        items: summaries,
+        // Keep the legacy key during the PR #6 transition for older admin tabs.
+        events: summaries,
+        page: pageResult.page,
+        page_size: pageResult.pageSize,
+        has_more: pageResult.hasMore,
+        selected_event_id: selectedEventId,
+        selected_item: selectedItem,
+        today_items: todayItems,
+        today_selected_event_id: todaySelectedEventId,
+        today_selected_item: todaySelectedItem,
+        activity_types: ACTIVITY_TYPES
+      }) };
     } catch (e) {
       return { statusCode: 200, headers: h, body: JSON.stringify({ ok: false, msg: "读取活动失败: " + (e.message || "") }) };
     }
@@ -1223,7 +1548,7 @@ exports.main = async (event, context) => {
       const normalized = validateOpsRosterData(result, params);
       const attendees = normalized.members.map(item => ({
         name: item.name || "",
-        phone: item.phone || "",
+        phone: normalizeRosterPhone(item.phone),
         member_code: item.member_code || "",
         company: item.company_name || item.company || "",
         center: item.primary_org_name || item.center || "",
@@ -1232,11 +1557,13 @@ exports.main = async (event, context) => {
         group_num: null,
         dinner_table_num: null
       }));
+      const rosterQuality = validateClassMeetingRoster(attendees);
       return { statusCode: 200, headers: h, body: JSON.stringify({
         ok: true,
         scope,
         member_count: attendees.length,
         attendees,
+        roster_quality: rosterQuality,
         version: normalized.version
       }) };
     } catch (e) {
@@ -1467,7 +1794,7 @@ exports.main = async (event, context) => {
     try {
       const upload = normalizeUploadPayload(data);
       if (upload.error) return { statusCode: 200, headers: h, body: JSON.stringify({ ok: false, msg: upload.error }) };
-      const events = await getEvents();
+      const events = await getEventsByDate(upload.eventDate);
       if (events.some(item => String(item.name || "").trim() === upload.eventName && String(item.event_date || "") === upload.eventDate)) {
         return { statusCode: 200, headers: h, body: JSON.stringify({ ok: false, msg: "同一天已存在同名活动，请修改活动名称或在已有活动中维护名单" }) };
       }
@@ -1507,7 +1834,7 @@ exports.main = async (event, context) => {
     const upload = normalizeUploadPayload(data);
     if (upload.error) return { statusCode: 200, headers: h, body: JSON.stringify({ ok: false, msg: upload.error }) };
     const { eventName, eventDate, checkinStartAt, checkinEndAt, activityType, groupField, normalizedRows, identityCounts } = upload;
-    const eventsAtConfirmation = await getEvents();
+    const eventsAtConfirmation = await getEventsByDate(eventDate);
     if (eventsAtConfirmation.some(item => String(item.name || "").trim() === eventName && String(item.event_date || "") === eventDate)) {
       return { statusCode: 200, headers: h, body: JSON.stringify({ ok: false, msg: "同一天已存在同名活动，请勿重复导入" }) };
     }
@@ -1574,11 +1901,8 @@ exports.main = async (event, context) => {
     try {
       const selectedEvent = await getRequestedEvent(data.event_id);
       if (!selectedEvent) return { statusCode: 200, headers: h, body: JSON.stringify({ ok: false, msg: "请先选择要删除的当前活动" }) };
-      const allEvents = await getEvents();
       const eventGroupId = String(selectedEvent.event_group_id || "").trim();
-      const targetEvents = eventGroupId
-        ? allEvents.filter(item => String(item.event_group_id || "") === eventGroupId)
-        : [selectedEvent];
+      const targetEvents = eventGroupId ? await getEventGroupById(eventGroupId) : [selectedEvent];
       const deletedEventIds = [];
       let delRegs = 0;
       let delCks = 0;
@@ -1590,8 +1914,8 @@ exports.main = async (event, context) => {
         await writeEventDeletionAudit(target, eventGroupId ? "后台人工永久删除三场活动组" : "后台人工永久删除单场活动");
         deletedEventIds.push(eventId);
       }
-      const remainingEvents = await getEvents();
-      const nextEvent = remainingEvents[0] || null;
+      const remainingPage = await queryEventPage({ page: 1, page_size: 1 });
+      const nextEvent = remainingPage.rows[0] || null;
       await setConfig("event_name", nextEvent ? nextEvent.name : "盛和塾签到");
       await setConfig("group_field", nextEvent ? (nextEvent.group_field || "") : "");
       await setConfig("active_batch_id", nextEvent ? String(nextEvent.event_id || nextEvent._id || "") : "");
@@ -1624,7 +1948,22 @@ exports.main = async (event, context) => {
       const groupField = String(data.group_field || "class_name").trim();
       let orgUnitId = String(data.org_unit_id || "").trim();
       let classOrgUnitId = String(data.class_org_unit_id || "").trim();
-      const rosterMembers = Array.isArray(data.roster_members) ? data.roster_members : [];
+      if (!Array.isArray(data.roster_members)) {
+        return { statusCode: 200, headers: h, body: JSON.stringify({ ok: false, msg: "班级名单格式不正确，未创建签到活动" }) };
+      }
+      const rosterMembers = data.roster_members;
+      const rosterQuality = validateClassMeetingRoster(rosterMembers);
+      if (!rosterQuality.passed) {
+        const emptyRoster = rosterQuality.issues.some(item => item.issue_codes.includes("EMPTY_ROSTER"));
+        return { statusCode: 200, headers: h, body: JSON.stringify({
+          ok: false,
+          code: "ROSTER_QUALITY_INVALID",
+          msg: emptyRoster
+            ? "班级名单为空，不能创建三场签到；请先读取运营系统名单"
+            : "班级名单存在 " + rosterQuality.issue_count + " 条资料问题，不能创建三场签到；请先在运营平台补全姓名和手机号后重新读取名单",
+          roster_quality: rosterQuality
+        }) };
+      }
       const identity = rosterIdentity(rosterMembers);
       const requestedIdentity = {
         center: String(data.center_name || identity.center || "").trim(),
@@ -1737,7 +2076,7 @@ exports.main = async (event, context) => {
           for (const member of rosterMembers) {
             await db.collection("registrations").add({
               name: String(member.name || "").trim(),
-              phone: String(member.phone || "").trim().replace(/\s/g, "").replace(/-/g, ""),
+              phone: normalizeRosterPhone(member.phone),
               center: normalizeCenterValue(member.center || member.primary_org_name || ""),
               class_name: normalizeGroupValue(member.class_name || ""),
               group_name: normalizeGroupValue(member.group_name || ""),
