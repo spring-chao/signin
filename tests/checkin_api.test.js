@@ -4,6 +4,9 @@ const Module = require("module");
 
 const TEST_ADMIN_PASSWORD = "test-admin-password!";
 process.env.ADMIN_PASSWORD_HASH = crypto.createHash("sha256").update(TEST_ADMIN_PASSWORD).digest("hex");
+const TEST_TODAY = new Intl.DateTimeFormat("en-CA", {
+  timeZone: "Asia/Shanghai", year: "numeric", month: "2-digit", day: "2-digit"
+}).format(new Date());
 
 function createDatabase(seed) {
   const collections = {};
@@ -93,7 +96,16 @@ const db = createDatabase({
     { _id: "reg-1", batch_id: "batch-1", name: "陈一", phone: "13800000001", center: "", class_name: "一班", group_name: "一组", company: "甲公司" },
     { _id: "reg-2", batch_id: "batch-1", name: "李二", phone: "13800000002", center: "", class_name: "二班", group_name: "二组", company: "乙公司" }
   ],
-  checkins: []
+  checkins: [],
+  events: [{
+    _id: "event-1",
+    event_id: "batch-1",
+    name: "测试活动",
+    event_date: TEST_TODAY,
+    activity_type: "course",
+    status: "active",
+    lifecycle_status: "CONFIRMED"
+  }]
 });
 
 const originalLoad = Module._load;
@@ -336,6 +348,9 @@ async function request(path, method, body, token, extraHeaders) {
   assert.equal(initial.data.pending, 2);
   const singlePublicEvent = await request("/event", "GET");
   assert.equal(singlePublicEvent.data.event_name, "测试活动", "只有一个开放活动时扫码页应显示活动名称");
+  const version = await request("/version", "GET");
+  assert.equal(version.data.service, "signin");
+  assert.equal(version.data.ok, false, "未经过发布脚本生成构建清单时版本接口必须明确标记未知");
 
   const added = await request("/registration", "POST", {
     name: "王三",
@@ -427,7 +442,7 @@ async function request(path, method, body, token, extraHeaders) {
     month: "2-digit",
     day: "2-digit"
   }).format(new Date());
-  db.collections.events.push({ _id: "event-2", event_id: "batch-2", name: "同日班会", event_date: today, activity_type: "class_meeting", status: "active" });
+  db.collections.events.push({ _id: "event-2", event_id: "batch-2", name: "同日班会", event_date: today, activity_type: "class_meeting", class_org_unit_id: "class-2", checkin_start_at: "2000-01-01T00:00:00.000Z", checkin_end_at: "2099-01-01T00:00:00.000Z", status: "active", lifecycle_status: "CONFIRMED" });
   db.collections.registrations.push({ _id: "reg-5", batch_id: "batch-2", name: "陈一", phone: "13800000001", center: "", class_name: "一班", group_name: "一组" });
   const multiplePublicEvents = await request("/event", "GET");
   assert.equal(multiplePublicEvents.data.event_name, "盛和塾活动签到");
@@ -448,19 +463,113 @@ async function request(path, method, body, token, extraHeaders) {
   assert.equal(secondStats.data.group_field, "group_name", "班会活动应按小组分类");
   assert.equal(secondStats.data.group_type, "小组");
   assert.equal(secondStats.data.groups["一组"].total, 1);
+  db.collections.registrations.push({ _id: "reg-cancel", batch_id: "batch-2", name: "取消活动报名", phone: "13800000005", center: "", class_name: "一班", group_name: "一组" });
 
+  const cancelled = await request("/event_lifecycle_update", "POST", {
+    event_id: "batch-2", lifecycle_status: "CANCELLED", reason: "回归测试"
+  }, token);
+  assert.equal(cancelled.data.ok, true, "活动取消必须通过受保护生命周期接口完成");
+  const addToCancelled = await request("/registration", "POST", {
+    event_id: "batch-2", name: "取消后新增", phone: "13800000010"
+  }, token);
+  assert.equal(addToCancelled.data.ok, false, "已取消活动不得新增临时报名");
+  const updateCancelledRegistration = await request("/attendance_status", "POST", {
+    registration_id: "reg-cancel", status: "leave", note: "取消后修改"
+  }, token);
+  assert.equal(updateCancelledRegistration.data.ok, false, "已取消活动不得修改报名跟进状态");
+  const deleteCancelledRegistration = await request("/registration_delete", "POST", {
+    registration_id: "reg-cancel"
+  }, token);
+  assert.equal(deleteCancelledRegistration.data.ok, false, "已取消活动不得删除报名记录");
+  const cancelledPublic = await request("/event", "GET");
+  assert(!cancelledPublic.data.active_events.some(row => row.event_id === "batch-2"), "已取消活动不得进入公开签到候选");
+  assert(!cancelledPublic.data.display_events.some(row => row.event_id === "batch-2"), "已取消活动不得显示在学员页");
+  const restoredToDraft = await request("/event_lifecycle_update", "POST", {
+    event_id: "batch-2", lifecycle_status: "DRAFT", reason: "回归测试"
+  }, token);
+  assert.equal(restoredToDraft.data.ok, true, "已取消活动应能退回草稿而不是直接恢复公开");
+  const confirmedAgain = await request("/event_lifecycle_update", "POST", {
+    event_id: "batch-2", lifecycle_status: "CONFIRMED", reason: "回归测试"
+  }, token);
+  assert.equal(confirmedAgain.data.ok, true, "满足日期、时间和组织校验的草稿活动可以确认举办");
   db.collections.events.find(row => row.event_id === "batch-2").status = "closed";
+  const closedEventDisplay = await request("/event", "GET");
+  assert(!closedEventDisplay.data.display_events.some(row => row.event_id === "batch-2"), "签到页不得显示今天已手动关闭的活动");
+  assert(!closedEventDisplay.data.active_events.some(row => row.event_id === "batch-2"));
   const addToClosedEvent = await request("/registration", "POST", {
     event_id: "batch-2", name: "关闭活动测试", phone: "13800000009"
   }, token);
   assert.equal(addToClosedEvent.data.ok, false, "临时报名不得加入已关闭签到的活动");
 
-  db.collections.events.push({ _id: "event-3", event_id: "batch-3", name: "未来课程", event_date: "2099-01-01", activity_type: "course", status: "active", checkin_start_at: "2099-01-01T00:00:00.000Z", checkin_end_at: "2099-01-01T12:00:00.000Z" });
+  db.collections.events.push({ _id: "event-3", event_id: "batch-3", name: "未来课程", event_date: "2099-01-01", activity_type: "course", status: "active", lifecycle_status: "CONFIRMED", checkin_start_at: "2099-01-01T00:00:00.000Z", checkin_end_at: "2099-01-01T12:00:00.000Z" });
   db.collections.registrations.push({ _id: "reg-6", batch_id: "batch-3", name: "未来学员", phone: "13800000008" });
   const earlyCheckin = await request("/checkin", "POST", { name: "未来学员", phone: "13800000008" });
   assert.equal(earlyCheckin.data.ok, false, "未到签到开始时间不得签到");
   const earlyRegistration = await request("/registration", "POST", { event_id: "batch-3", name: "临时学员", phone: "13800000007" }, token);
-  assert.equal(earlyRegistration.data.ok, false, "未到签到开始时间不得新增临时报名");
+  assert.equal(earlyRegistration.data.ok, true, "活动开始前应允许后台维护临时报名名单");
+  assert(db.collections.registrations.some(row => row.batch_id === "batch-3" && row.phone === "13800000007"));
+
+  db.collections.events.push({ _id: "event-4", event_id: "batch-4", name: "已结束课程", event_date: "2000-01-01", activity_type: "course", status: "active", lifecycle_status: "CONFIRMED", checkin_start_at: "2000-01-01T00:00:00.000Z", checkin_end_at: "2000-01-01T12:00:00.000Z" });
+  const endedRegistration = await request("/registration", "POST", { event_id: "batch-4", name: "结束后学员", phone: "13800000006" }, token);
+  assert.equal(endedRegistration.data.ok, false, "已结束活动不得新增临时报名");
+
+  const tomorrow = new Date(Date.parse(today + "T12:00:00+08:00") + 24 * 60 * 60 * 1000);
+  const tomorrowKey = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Shanghai", year: "numeric", month: "2-digit", day: "2-digit"
+  }).format(tomorrow);
+  db.collections.events.push({
+    _id: "event-tomorrow-boundary", event_id: "batch-tomorrow-boundary", name: "次日边界活动",
+    event_date: tomorrowKey, activity_type: "course", status: "active", lifecycle_status: "CONFIRMED",
+    checkin_start_at: `${today}T23:30:00.000Z`, checkin_end_at: `${tomorrowKey}T12:00:00.000Z`
+  });
+  const boundaryPublic = await request("/event", "GET");
+  assert(!boundaryPublic.data.display_events.some(row => row.event_id === "batch-tomorrow-boundary"), "UTC 日期字符串为今天但中国业务日期为明天的活动不得显示");
+
+  const cascadeEvents = [
+    { event_id: "cascade-1", session_code: "MORNING", session_name: "上午", session_order: 1, checkin_start_at: "2099-02-01T00:00:00.000Z", checkin_end_at: "2099-02-01T01:30:00.000Z" },
+    { event_id: "cascade-2", session_code: "AFTERNOON", session_name: "下午", session_order: 2, checkin_start_at: "2099-02-01T05:00:00.000Z", checkin_end_at: "2099-02-01T06:30:00.000Z" },
+    { event_id: "cascade-3", session_code: "KONPA", session_name: "晚上空巴", session_order: 3, checkin_start_at: "2099-02-01T10:00:00.000Z", checkin_end_at: "2099-02-01T11:30:00.000Z" }
+  ].map(item => ({ ...item, _id: "event-" + item.event_id, event_group_id: "cascade-group", name: "级联班会 - " + item.session_name, event_date: "2099-02-01", activity_type: "class_meeting", status: "active" }));
+  db.collections.events.push(...cascadeEvents);
+  const morningCascade = await request("/registration", "POST", { event_id: "cascade-1", name: "上午临时学员", phone: "13800000021" }, token);
+  assert.equal(morningCascade.data.added_count, 3, "上午新增应自动同步至下午和空巴");
+  assert.deepEqual(db.collections.registrations.filter(row => row.phone === "13800000021").map(row => row.batch_id).sort(), ["cascade-1", "cascade-2", "cascade-3"]);
+  const afternoonCascade = await request("/registration", "POST", { event_id: "cascade-2", name: "下午临时学员", phone: "13800000022" }, token);
+  assert.equal(afternoonCascade.data.added_count, 2, "下午新增应自动同步至空巴");
+  assert.deepEqual(db.collections.registrations.filter(row => row.phone === "13800000022").map(row => row.batch_id).sort(), ["cascade-2", "cascade-3"]);
+  const konpaOnly = await request("/registration", "POST", { event_id: "cascade-3", name: "空巴临时学员", phone: "13800000023" }, token);
+  assert.equal(konpaOnly.data.added_count, 1, "空巴新增只应写入当前场次");
+  assert.deepEqual(db.collections.registrations.filter(row => row.phone === "13800000023").map(row => row.batch_id), ["cascade-3"]);
+  const konpaLate = await request("/attendance_status", "POST", {
+    registration_id: db.collections.registrations.find(row => row.phone === "13800000023")._id,
+    status: "late"
+  }, token);
+  assert.equal(konpaLate.data.ok, false, "空巴不应设置迟到状态");
+
+  db.collections.checkins.push({ _id: "checkin-cascade", batch_id: "cascade-2", registration_id: db.collections.registrations.find(row => row.phone === "13800000022" && row.batch_id === "cascade-2")._id, checked_at: new Date().toISOString() });
+  const deletedCascadeGroup = await request("/clear_all", "POST", { event_id: "cascade-1" }, token);
+  assert.equal(deletedCascadeGroup.data.ok, true, "删除三场班会时应删除整个活动组");
+  assert.equal(deletedCascadeGroup.data.deleted_count, 3);
+  assert.deepEqual(deletedCascadeGroup.data.deleted_event_ids.sort(), ["cascade-1", "cascade-2", "cascade-3"]);
+  assert(!db.collections.events.some(row => row.event_group_id === "cascade-group"), "三场班会的全部活动记录都必须删除");
+  assert(!db.collections.registrations.some(row => ["cascade-1", "cascade-2", "cascade-3"].includes(row.batch_id)), "三场班会的全部报名都必须删除");
+  assert(!db.collections.checkins.some(row => ["cascade-1", "cascade-2", "cascade-3"].includes(row.batch_id)), "三场班会的全部签到都必须删除");
+  assert.equal(db.collections.event_audit_logs.filter(row => row.action === "event.deleted" && row.event_group_id === "cascade-group").length, 3, "三场删除必须为每个场次写入删除审计");
+
+  const defaultDate = "2099-03-03";
+  const defaultSessions = await request("/create_class_meeting_sessions", "POST", {
+    event_date: defaultDate,
+    event_name: "默认时间测试班会",
+    org_unit_id: "center-default",
+    class_org_unit_id: "class-default"
+  }, token);
+  assert.equal(defaultSessions.data.ok, true);
+  const defaultSessionRows = db.collections.events.filter(row => row.event_group_id === defaultSessions.data.event_group_id).sort((a, b) => a.session_order - b.session_order);
+  assert.deepEqual(defaultSessionRows.map(row => [row.session_code, row.checkin_start_at, row.scheduled_start_at, row.checkin_end_at, row.scheduled_end_at]), [
+    ["MORNING", "2099-03-02T23:30:00.000Z", "2099-03-03T01:00:00.000Z", "2099-03-03T02:30:00.000Z", "2099-03-03T04:00:00.000Z"],
+    ["AFTERNOON", "2099-03-03T04:10:00.000Z", "2099-03-03T05:30:00.000Z", "2099-03-03T07:00:00.000Z", "2099-03-03T09:00:00.000Z"],
+    ["KONPA", "2099-03-03T09:10:00.000Z", "2099-03-03T10:00:00.000Z", "2099-03-03T12:30:00.000Z", "2099-03-03T12:30:00.000Z"]
+  ], "班会三场默认时间应使用新的运营时间口径");
 
   const deleteCurrentEvent = await request("/clear_all", "POST", { event_id: "batch-2" }, token);
   assert.equal(deleteCurrentEvent.data.ok, true);

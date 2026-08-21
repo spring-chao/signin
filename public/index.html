@@ -86,17 +86,35 @@ body{font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;backgr
 </div>
 <script>
 var API="https://shengheshu-d2g2zyyl99f6c6fc2-1453587887.ap-shanghai.app.tcloudbase.com/api";
-var pendingName="",pendingPhone="",pendingEventId="";
+var pendingName="",pendingPhone="",pendingEventId="",eventRefreshTimer=null;
+function formatChinaDateTime(value, options){
+  var date=new Date(value);if(isNaN(date.getTime()))return "";
+  return date.toLocaleString("zh-CN",Object.assign({timeZone:"Asia/Shanghai"},options||{}));
+}
+function formatChinaTime(value){return formatChinaDateTime(value,{hour:"2-digit",minute:"2-digit",hour12:false});}
 
 async function init(){
   try{
     var r=await fetch(API+"/event");var d=await r.json();
     document.getElementById("eventName").textContent=d.event_name||"盛和塾签到";
-    var activeEvents=d.active_events||[],displayEvents=d.display_events||activeEvents,eventsBox=document.getElementById("activeEvents");
-    if(activeEvents.length>1){eventsBox.innerHTML='<strong>请输入姓名和手机号，系统会自动识别本次签到活动。</strong><br>今日有 '+activeEvents.length+' 场活动进行中：<br>'+activeEvents.map(function(item){return '• '+esc(item.activity_type_name+' · '+item.name)}).join('<br>');eventsBox.classList.add('show')}
-    else if(displayEvents.length===1 && displayEvents[0].checkin_status==="upcoming"){var start=new Date(displayEvents[0].checkin_start_at);eventsBox.innerHTML='<strong>活动尚未开始签到</strong><br>签到将于 '+esc(start.toLocaleString('zh-CN',{timeZone:'Asia/Shanghai',month:'long',day:'numeric',hour:'2-digit',minute:'2-digit',hour12:false}))+' 开始';eventsBox.classList.add('show')}
-    else eventsBox.classList.remove('show');
-    if(Number(d.active_event_count||0)===0){document.getElementById("submitBtn").disabled=true;document.getElementById("submitBtn").textContent=displayEvents.length?"尚未到签到时间":"当前暂无开放签到的活动";document.getElementById("nameInput").disabled=true;document.getElementById("phoneInput").disabled=true;}
+    var activeEvents=(d.active_events||[]).slice().sort(function(a,b){return Number(a.session_order||0)-Number(b.session_order||0)||String(a.checkin_start_at||"").localeCompare(String(b.checkin_start_at||""));}),nextEvent=d.next_event||null,eventsBox=document.getElementById("activeEvents");
+    var lines=[];
+    activeEvents.forEach(function(item){lines.push("• "+esc(item.name)+"（当前可签到）");});
+    if(nextEvent && !activeEvents.some(function(item){return String(item.event_id)===String(nextEvent.event_id)})){
+      lines.push("• "+esc(nextEvent.name)+"（"+esc(formatChinaTime(nextEvent.checkin_start_at))+" 开始）");
+    }
+    if(lines.length){
+      var title=activeEvents.length?"当前可签到":"下一场活动";
+      eventsBox.innerHTML='<strong>'+title+'</strong><br>'+lines.join('<br>');
+      eventsBox.classList.add('show');
+    } else eventsBox.classList.remove('show');
+    var hasActiveEvents=Number(d.active_event_count||0)>0;
+    document.getElementById("submitBtn").disabled=!hasActiveEvents;
+    document.getElementById("submitBtn").textContent=hasActiveEvents?"提交签到":(nextEvent?"尚未到签到时间":"当前暂无开放签到的活动");
+    document.getElementById("nameInput").disabled=!hasActiveEvents;
+    document.getElementById("phoneInput").disabled=!hasActiveEvents;
+    if(eventRefreshTimer)clearInterval(eventRefreshTimer);
+    eventRefreshTimer=nextEvent?setInterval(init,25000):null;
     document.getElementById("loadingArea").style.display="none";
     document.getElementById("mainArea").style.display="block";
   }catch(e){document.getElementById("loadingArea").innerHTML='<div style="color:#f87171">⚠️ 加载失败</div><div style="font-size:12px">请刷新重试</div>'}
@@ -171,7 +189,7 @@ async function submitCheckin(quantity){
       else if(d.data.group_name) info+="小组："+esc(d.data.group_name)+"<br>";
       if(d.data.company) info+="公司："+esc(d.data.company);
       if(d.data.multi_total>1) info+=(info?"<br>":"")+"多人报名：已签到 "+d.data.multi_checked+"/"+d.data.multi_total+" 人"+(d.checked_count?"（本次 "+d.checked_count+" 人）":"");
-      if(d.already) info=(info?info+"<br>":"")+"（已签到 · "+new Date(d.data.checked_at).toLocaleString("zh-CN")+"）";
+      if(d.already) info=(info?info+"<br>":"")+"（已签到 · "+esc(formatChinaDateTime(d.data.checked_at))+"）";
       document.getElementById("resultInfo").innerHTML=info||"签到成功";
     }
     else{m(d.msg,"error");document.getElementById("formCard").style.display="block";}

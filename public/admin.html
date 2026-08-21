@@ -132,6 +132,13 @@ input:checked+.slider:before{transform:translateX(20px)}
         <div class="form-field"><label>活动状态</label><button class="btn" id="eventStatusBtn" onclick="toggleEventStatus()">切换状态</button></div>
       </div>
       <div class="form-help" id="eventMeta"></div>
+      <div class="form-help" id="eventLifecycleActions" style="margin-top:10px"></div>
+      <div class="btn-group" style="margin-top:10px">
+        <button class="btn success" id="confirmEventBtn" onclick="updateEventLifecycle('CONFIRMED')">确认举办</button>
+        <button class="btn danger" id="cancelEventBtn" onclick="updateEventLifecycle('CANCELLED')">取消活动</button>
+        <button class="btn" id="draftEventBtn" onclick="updateEventLifecycle('DRAFT')">退回草稿</button>
+      </div>
+      <div class="msg" id="eventLifecycleMsg"></div>
     </div>
     <div class="overview" id="overview"></div>
 
@@ -149,6 +156,17 @@ input:checked+.slider:before{transform:translateX(20px)}
     </div>
 
     <div class="section" style="background:rgba(255,255,255,.04);border-radius:12px;padding:16px;border:1px solid rgba(255,255,255,.06)">
+      <h3>&#x1f510; 修改后台密码</h3>
+      <div class="form-grid">
+        <div class="form-field"><label for="newAdminPassword">新密码</label><input id="newAdminPassword" type="password" autocomplete="new-password" placeholder="10至128位，含字母和数字"></div>
+        <div class="form-field"><label for="confirmAdminPassword">确认新密码</label><input id="confirmAdminPassword" type="password" autocomplete="new-password" placeholder="再次输入新密码"></div>
+      </div>
+      <div class="form-help">密码修改后，所有已登录的后台会话都会失效，需要使用新密码重新登录。</div>
+      <button class="btn primary full" id="changePasswordBtn" onclick="changeAdminPassword()">保存新密码</button>
+      <div class="msg" id="changePasswordMsg"></div>
+    </div>
+
+    <div class="section" style="background:rgba(255,255,255,.04);border-radius:12px;padding:16px;border:1px solid rgba(255,255,255,.06)">
       <h3>&#x2795; 新增临时报名</h3>
       <div class="form-grid">
         <div class="form-field"><label for="manualName">姓名 <span>（必填）</span></label><input id="manualName" type="text" maxlength="50" placeholder="学长姓名"></div>
@@ -159,7 +177,7 @@ input:checked+.slider:before{transform:translateX(20px)}
         <div class="form-field"><label for="manualCompany">公司 <span>（选填）</span></label><input id="manualCompany" type="text" maxlength="100" placeholder="公司名称"></div>
       </div>
       <datalist id="centerOptions"><option value="园区分中心"><option value="姑苏相城分中心"><option value="吴江分中心"><option value="昆山分中心"><option value="新吴分中心"><option value="张家港分中心"></datalist>
-      <div class="form-help">分中心支持模糊识别并统一为六个标准名称，例如“园区”会自动归为“园区分中心”；未识别内容进入未分组。</div>
+      <div class="form-help">分中心支持模糊识别并统一为六个标准名称，例如“园区”会自动归为“园区分中心”；未识别内容进入未分组。三场班会中，上午新增会自动同步至下午和空巴，下午新增会自动同步至空巴。</div>
       <button class="btn primary full" id="manualAddBtn" onclick="addManualRegistration()">确认新增报名</button>
       <div class="msg" id="manualAddMsg"></div>
     </div>
@@ -237,19 +255,25 @@ input:checked+.slider:before{transform:translateX(20px)}
     </div>
     <div id="tabContent"></div>
     <div class="btn-group">
-      <button class="btn danger" onclick="resetCheckins()">&#x1f504; 清空签到</button>
-      <button class="btn danger" onclick="clearAll()">&#x1f5d1; 删除当前活动全部数据</button>
+      <button class="btn danger" id="resetCheckinsBtn" onclick="resetCheckins()">&#x1f504; 清空签到</button>
+      <button class="btn danger" id="clearAllBtn" onclick="clearAll()">&#x1f5d1; 删除当前活动全部数据</button>
     </div>
     <div class="msg" id="clearMsg"></div>
   </div>
-  <div class="footer"><a href="index.html">&larr; 返回签到页</a></div>
+  <div class="footer"><a href="index.html">&larr; 返回签到页</a><div id="versionInfo" style="margin-top:8px"></div></div>
 </div>
 <script>
 var API = "https://shengheshu-d2g2zyyl99f6c6fc2-1453587887.ap-shanghai.app.tcloudbase.com/api";
-var adminToken = "", refreshTimer = null;
+var adminToken = "", refreshTimer = null, eventListTimer = null, versionCheckTimer = null, versionCheckInFlight = null, versionConsistent = false;
 var currentTab = "groups", currentData = null, currentEvents = [], currentEventId = "", excelData = null, uploadGroupField = "", uploadPreview = null, uploadPreviewTimer = null, opsRosterOptions = [];
 document.getElementById("eventDateInput").value = new Date().toLocaleDateString("en-CA", {timeZone:"Asia/Shanghai"});
 syncDefaultCheckinTimes();
+
+function formatChinaDateTime(value, options){
+  var date=new Date(value);if(isNaN(date.getTime()))return "";
+  return date.toLocaleString("zh-CN",Object.assign({timeZone:"Asia/Shanghai"},options||{}));
+}
+function formatChinaTime(value){return formatChinaDateTime(value,{hour:"2-digit",minute:"2-digit",hour12:false});}
 
 function authHeaders(json) {
   var headers = {"Authorization":"Bearer "+adminToken};
@@ -265,11 +289,15 @@ function esc(value) {
 
 async function adminFetch(path, options) {
   options = options || {};
+  var method = String(options.method || "GET").toUpperCase();
+  if (method !== "GET" && !(await ensureVersionConsistent())) throw new Error("前后端版本未通过一致性校验，高风险操作已禁用");
   options.headers = Object.assign({}, options.headers || {}, authHeaders(!!options.body));
   var response = await fetch(API + path, options);
   if (response.status === 401) {
     adminToken = "";
     if (refreshTimer) clearInterval(refreshTimer);
+    if (eventListTimer) clearInterval(eventListTimer);
+    if (versionCheckTimer) clearInterval(versionCheckTimer);
     document.getElementById("mainPanel").style.display="none";
     document.getElementById("loginCard").style.display="block";
     throw new Error("登录已失效，请重新登录");
@@ -289,9 +317,14 @@ async function doLogin() {
     adminToken = result.token;
     document.getElementById("loginCard").style.display="none";
     document.getElementById("mainPanel").style.display="block";
+    await ensureVersionConsistent();
     await loadData();
     if (refreshTimer) clearInterval(refreshTimer);
-    refreshTimer = setInterval(loadData, 5000);
+    if (eventListTimer) clearInterval(eventListTimer);
+    if (versionCheckTimer) clearInterval(versionCheckTimer);
+    refreshTimer = setInterval(refreshCurrentStats, 5000);
+    eventListTimer = setInterval(loadData, 45000);
+    versionCheckTimer = setInterval(ensureVersionConsistent, 60000);
   } catch (e) { showMsg(m,"登录失败："+e.message,"error"); }
 }
 
@@ -304,10 +337,18 @@ async function loadData() {
     if (!currentEventId || !currentEvents.some(function(item){return item.event_id===currentEventId;})) currentEventId = ed.selected_event_id || (currentEvents[0] && currentEvents[0].event_id) || "";
     renderEventSelector();
     if (!currentEventId) { document.getElementById("eventTitle").textContent="请先新增活动"; return; }
+    await refreshCurrentStats();
+  } catch(e) { document.getElementById("lastUpdate").textContent = e.message || "加载失败"; }
+}
+
+async function refreshCurrentStats() {
+  if (!adminToken || !currentEventId) return;
+  try {
     var r = await adminFetch("/stats?event_id="+encodeURIComponent(currentEventId));
     currentData = await r.json();
+    if (!currentData.ok && currentData.msg) throw new Error(currentData.msg);
     document.getElementById("eventTitle").textContent = currentData.event_name || "管理后台";
-    document.getElementById("lastUpdate").textContent = new Date().toLocaleTimeString();
+    document.getElementById("lastUpdate").textContent = formatChinaDateTime(new Date(),{hour:"2-digit",minute:"2-digit",second:"2-digit",hour12:false});
     document.getElementById("overview").innerHTML =
       '<div class="ov-item"><div class="num green">'+currentData.checked+'</div><div class="label">已签到</div></div>'+
       '<div class="ov-item"><div class="num blue">'+currentData.total+'</div><div class="label">报名总数</div></div>'+
@@ -318,18 +359,79 @@ async function loadData() {
     var tabs = document.querySelectorAll("#tabBar .tab");
     if (tabs.length > 0) tabs[0].textContent = gt;
     renderTab();
-  } catch(e) { document.getElementById("lastUpdate").textContent = e.message || "加载失败"; }
+  } catch(e) { document.getElementById("lastUpdate").textContent = e.message || "统计加载失败"; }
 }
 
 function renderEventSelector() {
   var select=document.getElementById("eventSelect");
-  select.innerHTML=currentEvents.map(function(item){return '<option value="'+esc(item.event_id)+'"'+(item.event_id===currentEventId?' selected':'')+'>'+esc(item.event_date+' · '+item.name)+'</option>';}).join("");
+  var lifecycleNames={DRAFT:"草稿",CONFIRMED:"已确认",CANCELLED:"已取消"};
+  select.innerHTML=currentEvents.map(function(item){return '<option value="'+esc(item.event_id)+'"'+(item.event_id===currentEventId?' selected':'')+'>'+esc(item.event_date+' · '+(lifecycleNames[item.lifecycle_status]||"草稿")+' · '+item.name)+'</option>';}).join("");
   var item=currentEvents.find(function(row){return row.event_id===currentEventId;});
   var stateNames={open:"签到中",upcoming:"未开始",ended:"已结束",closed:"已手动关闭"};
-  document.getElementById("eventMeta").textContent=item ? item.event_date+" · "+item.activity_type_name+" · "+(stateNames[item.checkin_status]||"")+" · "+item.total+"人报名 · "+item.checked+"人签到" : "暂无活动";
+  document.getElementById("eventMeta").textContent=item ? item.event_date+" · "+item.activity_type_name+" · "+({DRAFT:"草稿",CONFIRMED:"已确认举办",CANCELLED:"已取消"}[item.lifecycle_status]||"草稿")+" · "+(stateNames[item.checkin_status]||"")+" · "+item.total+"人报名 · "+item.checked+"人签到" : "暂无活动";
+  var lifecycle=item&&item.lifecycle_status||"DRAFT";
+  var groupTargets = lifecycleTargetEvents(item);
+  var groupNotice = groupTargets.length > 1 ? "当前为三场次活动组，生命周期操作将同时作用于：" + groupTargets.map(function(row){return row.session_name || row.name;}).join("、") + "。" : "";
+  document.getElementById("eventLifecycleActions").textContent=item ? (lifecycle==="CONFIRMED" ? "已确认举办；如需停止公开签到，请使用上方“手动关闭签到”。" : lifecycle==="CANCELLED" ? "已取消，不会进入学员公开签到页。" : "草稿不会进入学员公开签到页，请先确认举办。") + (groupNotice ? " " + groupNotice : "") : "";
+  document.getElementById("confirmEventBtn").disabled=!item||lifecycle==="CONFIRMED";
+  document.getElementById("cancelEventBtn").disabled=!item||lifecycle==="CANCELLED";
+  document.getElementById("draftEventBtn").disabled=!item||lifecycle==="DRAFT";
   var btn=document.getElementById("eventStatusBtn");
   btn.textContent=item && item.manual_status==="active" ? "手动关闭签到" : "恢复按时间开放";
-  document.getElementById("manualAddBtn").disabled=!item || item.checkin_status!=="open";
+  document.getElementById("confirmEventBtn").dataset.stateDisabled=String(!item||lifecycle==="CONFIRMED");
+  document.getElementById("cancelEventBtn").dataset.stateDisabled=String(!item||lifecycle==="CANCELLED");
+  document.getElementById("draftEventBtn").dataset.stateDisabled=String(!item||lifecycle==="DRAFT");
+  btn.dataset.stateDisabled=String(!item);
+  document.getElementById("resetCheckinsBtn").dataset.stateDisabled=String(!item);
+  document.getElementById("clearAllBtn").dataset.stateDisabled=String(!item);
+  document.getElementById("manualAddBtn").disabled=!item || item.lifecycle_status==="CANCELLED" || ["upcoming","open"].indexOf(item.checkin_status)===-1;
+  setUnsafeActionAvailability();
+}
+
+function lifecycleTargetEvents(item) {
+  if (!item || !item.event_group_id) return item ? [item] : [];
+  return currentEvents.filter(function(row){return String(row.event_group_id||"")===String(item.event_group_id||"");}).sort(function(a,b){return Number(a.session_order||0)-Number(b.session_order||0);});
+}
+
+function setUnsafeActionAvailability() {
+  var safe = !!adminToken && versionConsistent;
+  ["eventStatusBtn","confirmEventBtn","cancelEventBtn","draftEventBtn","resetCheckinsBtn","clearAllBtn"].forEach(function(id){
+    var element=document.getElementById(id); if(element) element.disabled=element.dataset.stateDisabled==="true" || !safe;
+  });
+}
+
+async function loadVersionInfo(){
+  try{
+    versionConsistent=false;
+    document.getElementById("versionInfo").textContent="正在校验前后端版本…";
+    var results=await Promise.all([
+      fetch(API+"/version",{cache:"no-store"}).then(function(r){return r.json();}),
+      fetch(new URL("/build-info.json?check="+Date.now(),window.location.origin),{cache:"no-store"}).then(function(r){return r.json();})
+    ]);
+    var backend=results[0],frontend=results[1];
+    var backendCommit=String(backend.commit||"").trim(), frontendCommit=String(frontend.commit||"").trim();
+    versionConsistent=Boolean(backend.ok===true && backendCommit && backendCommit!=="unknown" && frontendCommit && frontendCommit!=="unknown" && backendCommit===frontendCommit);
+    var shortCommit=backendCommit && backendCommit!=="unknown" ? backendCommit.slice(0,7) : "unknown";
+    var text="生产版本："+(backend.version||"unknown")+" · 后端 "+shortCommit+" · 前端 "+(frontendCommit&&frontendCommit!=="unknown"?frontendCommit.slice(0,7):"unknown");
+    if(versionConsistent){
+      document.getElementById("versionInfo").innerHTML='<span style="color:#4ade80">✅ '+esc(text+' · 前后端一致')+'</span>';
+    }else{
+      document.getElementById("versionInfo").innerHTML='<span style="color:#f87171">⚠️ '+esc(text+' · 前后端版本不一致，高风险操作已禁用')+'</span>';
+    }
+    setUnsafeActionAvailability();
+    return versionConsistent;
+  }catch(e){
+    versionConsistent=false;
+    document.getElementById("versionInfo").innerHTML='<span style="color:#f87171">⚠️ 前后端版本校验失败，高风险操作已禁用</span>';
+    setUnsafeActionAvailability();
+    return false;
+  }
+}
+
+function ensureVersionConsistent(){
+  if(versionCheckInFlight) return versionCheckInFlight;
+  versionCheckInFlight=loadVersionInfo().finally(function(){versionCheckInFlight=null;});
+  return versionCheckInFlight;
 }
 
 async function selectAdminEvent(){
@@ -339,11 +441,59 @@ async function selectAdminEvent(){
 }
 
 async function toggleEventStatus(){
+  if(!(await ensureVersionConsistent())){showMsg(document.getElementById("eventLifecycleMsg"),"前后端版本未通过一致性校验，高风险操作已禁用","error");return;}
   var item=currentEvents.find(function(row){return row.event_id===currentEventId;}); if(!item)return;
   var next=item.manual_status==="active"?"closed":"active";
   if(!confirm(next==="closed"?"关闭后，该活动将不能继续签到，确定关闭吗？":"确定重新开放该活动签到吗？"))return;
   await adminFetch("/event_update",{method:"POST",body:JSON.stringify({event_id:currentEventId,status:next})});
   await loadData();
+}
+
+async function updateEventLifecycle(next){
+  if(!(await ensureVersionConsistent())){showMsg(document.getElementById("eventLifecycleMsg"),"前后端版本未通过一致性校验，高风险操作已禁用","error");return;}
+  var item=currentEvents.find(function(row){return row.event_id===currentEventId;});
+  if(!item)return;
+  var labels={DRAFT:"退回草稿",CONFIRMED:"确认举办",CANCELLED:"取消活动"};
+  var targets=lifecycleTargetEvents(item);
+  var targetName=targets.length>1 ? item.name+"（"+targets.map(function(row){return row.session_name||row.name;}).join("、")+"）" : item.name;
+  var groupMessage=targets.length>1 ? "\n\n此操作将同时作用于上述全部场次。" : "";
+  if(!confirm("确定"+labels[next]+"“"+targetName+"”吗？"+groupMessage+(next==="CANCELLED"?"\n取消后不会出现在学员公开签到页，也不能继续维护报名记录。":"")))return;
+  var msg=document.getElementById("eventLifecycleMsg");
+  try{
+    var r=await adminFetch("/event_lifecycle_update",{method:"POST",body:JSON.stringify({event_id:currentEventId,lifecycle_status:next,reason:"后台人工操作"})});
+    var d=await r.json();
+    if(!d.ok)throw new Error(d.msg||"更新失败");
+    showMsg(msg,d.msg||"活动状态已更新","success");
+    await loadData();
+  }catch(e){showMsg(msg,e.message||"更新失败","error");}
+}
+
+async function changeAdminPassword(){
+  var next=document.getElementById("newAdminPassword").value;
+  var confirmPassword=document.getElementById("confirmAdminPassword").value;
+  var msg=document.getElementById("changePasswordMsg");
+  if(next.length<10||next.length>128||/\s/.test(next)||!/[A-Za-z]/.test(next)||!/\d/.test(next)){
+    showMsg(msg,"新密码须为10至128位，包含字母和数字，且不含空格","error");return;
+  }
+  if(next!==confirmPassword){showMsg(msg,"两次输入的新密码不一致","error");return;}
+  if(!confirm("确定修改后台密码吗？修改后所有已登录设备都需要重新登录。"))return;
+  var btn=document.getElementById("changePasswordBtn"),oldText=btn.textContent;
+  btn.disabled=true;btn.textContent="保存中…";
+  try{
+    var response=await adminFetch("/admin_password",{method:"POST",body:JSON.stringify({new_password:next})});
+    var result=await response.json();
+    if(!result.ok)throw new Error(result.msg||"密码修改失败");
+    document.getElementById("newAdminPassword").value="";
+    document.getElementById("confirmAdminPassword").value="";
+    adminToken="";
+    if(refreshTimer)clearInterval(refreshTimer);
+    if(eventListTimer)clearInterval(eventListTimer);
+    if(versionCheckTimer)clearInterval(versionCheckTimer);
+    document.getElementById("mainPanel").style.display="none";
+    document.getElementById("loginCard").style.display="block";
+    showMsg(document.getElementById("loginMsg"),"密码已修改，请使用新密码重新登录","success");
+  }catch(e){showMsg(msg,e.message||"密码修改失败","error");}
+  finally{btn.disabled=false;btn.textContent=oldText;}
 }
 
 async function saveToggle() {
@@ -373,17 +523,20 @@ async function addManualRegistration() {
   };
   if (!payload.event_id) { showMsg(msg, "请先选择当前管理活动", "error"); return; }
   var currentEvent=currentEvents.find(function(row){return row.event_id===currentEventId;});
-  if (!currentEvent || currentEvent.checkin_status!=="open") { showMsg(msg, "当前管理活动不在签到时间内，不能新增临时报名", "error"); return; }
+  if (!currentEvent || currentEvent.lifecycle_status==="CANCELLED" || ["upcoming","open"].indexOf(currentEvent.checkin_status)===-1) { showMsg(msg, "当前管理活动已结束、已关闭或已取消，不能新增临时报名", "error"); return; }
   if (!payload.name) { showMsg(msg, "请输入姓名", "error"); return; }
   if (!/^\d{11}$/.test(payload.phone)) { showMsg(msg, "请输入正确的11位手机号", "error"); return; }
+  showMsg(msg, "正在新增报名，请稍候…", "info");
   btn.disabled = true; btn.textContent = "新增中...";
   try {
     var r = await adminFetch("/registration", {method:"POST",body:JSON.stringify(payload)});
     var d = await r.json();
     if (!d.ok) { showMsg(msg, d.msg || "新增失败", "error"); return; }
     ["manualName","manualPhone","manualCenter","manualClass","manualGroup","manualCompany"].forEach(function(id){document.getElementById(id).value="";});
-    showMsg(msg, d.msg, "success");
     await loadData();
+    var refreshedEvent=currentEvents.find(function(row){return row.event_id===currentEventId;});
+    var totalText=refreshedEvent && Number.isFinite(Number(refreshedEvent.total)) ? "，当前报名人数 "+refreshedEvent.total+" 人" : "";
+    showMsg(msg, (d.msg || "临时报名已新增")+totalText, "success");
   } catch(e) {
     showMsg(msg, "新增失败："+e.message, "error");
   } finally {
@@ -507,10 +660,11 @@ function renderTab() {
       if (!grouped[key]) grouped[key] = [];
       grouped[key].push(n);
     });
+    var allowLate = !(currentData.event && currentData.event.session_code === "KONPA");
     h = '<div class="section"><h3>&#x26a0; 未签到 ('+missing.length+'人) · 按'+esc(groupLabel)+'分类</h3>'+
       '<div class="missing-summary">'+
         '<span class="summary-chip">待确认 '+Number(currentData.pending||0)+'</span>'+
-        '<span class="summary-chip late">迟到 '+Number(currentData.late||0)+'</span>'+
+        (allowLate ? '<span class="summary-chip late">迟到 '+Number(currentData.late||0)+'</span>' : '')+
         '<span class="summary-chip leave">请假 '+Number(currentData.leave||0)+'</span>'+
       '</div>';
     var groupKeys = Object.keys(grouped).sort(function(a,b) {
@@ -537,7 +691,7 @@ function renderTab() {
           (meta.length ? '<div class="person-meta">'+esc(meta.join(" · "))+'</div>' : '')+
           '<div class="status-actions">'+
             '<button class="mini-btn '+(status==="pending"?'active':'')+'" data-id="'+esc(n.registration_id)+'" data-status="pending" onclick="setAttendanceStatus(this)">未签到</button>'+
-            '<button class="mini-btn late '+(status==="late"?'active':'')+'" data-id="'+esc(n.registration_id)+'" data-status="late" onclick="setAttendanceStatus(this)">迟到</button>'+
+            (allowLate ? '<button class="mini-btn late '+(status==="late"?'active':'')+'" data-id="'+esc(n.registration_id)+'" data-status="late" onclick="setAttendanceStatus(this)">迟到</button>' : '')+
             '<button class="mini-btn leave '+(status==="leave"?'active':'')+'" data-id="'+esc(n.registration_id)+'" data-status="leave" onclick="setAttendanceStatus(this)">请假</button>'+
             '<button class="mini-btn delete" data-id="'+esc(n.registration_id)+'" onclick="deleteRegistration(this)">删除报名</button>'+
           '</div></div>';
@@ -748,9 +902,9 @@ function syncDefaultCheckinTimes() {
   document.getElementById("checkinStartInput").value=date+"T00:00";
   document.getElementById("checkinEndInput").value=date+"T23:59";
   var defaults={
-    morningCheckinStart:"08:00",morningScheduledStart:"09:00",morningCheckinEnd:"09:30",morningScheduledEnd:"12:00",
-    afternoonCheckinStart:"13:00",afternoonScheduledStart:"14:00",afternoonCheckinEnd:"14:30",afternoonScheduledEnd:"17:00",
-    konpaCheckinStart:"18:00",konpaScheduledStart:"19:00",konpaCheckinEnd:"19:30",konpaScheduledEnd:"21:00"
+    morningCheckinStart:"07:30",morningScheduledStart:"09:00",morningCheckinEnd:"10:30",morningScheduledEnd:"12:00",
+    afternoonCheckinStart:"12:10",afternoonScheduledStart:"13:30",afternoonCheckinEnd:"15:00",afternoonScheduledEnd:"17:00",
+    konpaCheckinStart:"17:10",konpaScheduledStart:"18:00",konpaCheckinEnd:"20:30",konpaScheduledEnd:"20:30"
   };
   Object.keys(defaults).forEach(function(id){
     document.getElementById(id).value=date+"T"+defaults[id];
@@ -965,7 +1119,7 @@ async function loadUploadPreview() {
     return;
   }
   uploadPreview = d;
-  var eventHtml = '新活动：'+esc(d.event_date+' · '+d.activity_type_name+' · '+d.new_event_name)+'<br>签到时间：'+esc(new Date(d.checkin_start_at).toLocaleString('zh-CN'))+' 至 '+esc(new Date(d.checkin_end_at).toLocaleString('zh-CN'));
+  var eventHtml = '新活动：'+esc(d.event_date+' · '+d.activity_type_name+' · '+d.new_event_name)+'<br>签到时间：'+esc(formatChinaDateTime(d.checkin_start_at))+' 至 '+esc(formatChinaDateTime(d.checkin_end_at));
   box.innerHTML = '<div class="preview-title">新增活动核对</div>'+
     '<div class="preview-summary">本次将导入 <strong>'+d.new_total+'</strong> 人</div>'+
     '<div class="preview-events">'+eventHtml+'</div>'+
@@ -986,7 +1140,7 @@ async function uploadData() {
   var confirmText = "请确认新增活动：\n\n活动："+uploadPreview.new_event_name+
     "\n日期："+uploadPreview.event_date+
     "\n类型："+uploadPreview.activity_type_name+
-    "\n签到时间："+new Date(uploadPreview.checkin_start_at).toLocaleString("zh-CN")+" 至 "+new Date(uploadPreview.checkin_end_at).toLocaleString("zh-CN")+
+    "\n签到时间："+formatChinaDateTime(uploadPreview.checkin_start_at)+" 至 "+formatChinaDateTime(uploadPreview.checkin_end_at)+
     "\n报名人数："+uploadPreview.new_total+
     "\n重复报名组："+uploadPreview.duplicate_groups+
     "（额外名额 "+uploadPreview.repeated_slots+" 个）";
@@ -1028,6 +1182,7 @@ function showMsg(el, text, type) {
 }
 
 async function resetCheckins() {
+  if(!(await ensureVersionConsistent())){showMsg(document.getElementById("clearMsg"),"前后端版本未通过一致性校验，高风险操作已禁用","error");return;}
   if (!confirm("确定清空当前活动的签到记录？")) return;
   var msg = document.getElementById("clearMsg");
   try {
@@ -1039,10 +1194,15 @@ async function resetCheckins() {
 }
 
 async function clearAll() {
+  if(!(await ensureVersionConsistent())){showMsg(document.getElementById("clearMsg"),"前后端版本未通过一致性校验，高风险操作已禁用","error");return;}
   var item=currentEvents.find(function(row){return row.event_id===currentEventId;});
   if(!item){showMsg(document.getElementById("clearMsg"),"请先选择当前活动","error");return;}
-  if (!confirm("第一次确认：将删除当前活动“"+item.name+"”的全部报名和签到记录。\n\n其他活动不会受到影响。是否继续？")) return;
-  if (!confirm("第二次确认：活动“"+item.name+"”及其报名、签到数据删除后不可恢复。\n\n确定永久删除吗？")) return;
+  var targets=lifecycleTargetEvents(item);
+  var isGroup=targets.length>1;
+  var targetLabel=isGroup ? "三场活动组（"+targets.map(function(row){return row.session_name||row.name;}).join("、")+"）" : "当前活动“"+item.name+"”";
+  var scopeText=isGroup ? "这是一个三场班会活动组，上午、下午、空巴及其全部报名和签到记录都会一起删除。" : "将删除当前活动的全部报名和签到记录。";
+  if (!confirm("第一次确认：将永久删除"+targetLabel+"。\n\n"+scopeText+"\n其他活动不会受到影响。是否继续？")) return;
+  if (!confirm("第二次确认："+targetLabel+"及其报名、签到数据删除后不可恢复。\n\n确定永久删除吗？")) return;
   var msg = document.getElementById("clearMsg");
   try {
     var r = await adminFetch("/clear_all", {method:"POST",body:JSON.stringify({event_id:currentEventId})});

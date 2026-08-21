@@ -2,6 +2,17 @@ const cloudbase = require("@cloudbase/node-sdk");
 const crypto = require("crypto");
 const https = require("https");
 
+let BUILD_INFO = {
+  version: "unknown",
+  commit: "unknown",
+  deployed_at: "unknown",
+  environment: "unknown",
+  service: "signin"
+};
+try {
+  BUILD_INFO = { ...BUILD_INFO, ...require("./build-info.json") };
+} catch (e) {}
+
 const ADMIN_TOKEN_TTL_MS = 12 * 60 * 60 * 1000;
 const LOGIN_RATE_LIMIT_WINDOW_MS = 15 * 60 * 1000;
 const LOGIN_RATE_LIMIT_MAX_FAILURES = 5;
@@ -242,10 +253,33 @@ exports.main = async (event, context) => {
     "Access-Control-Allow-Origin": "*",
     "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
     "Access-Control-Allow-Headers": "Content-Type, Authorization, X-API-Key",
-    "Content-Type": "application/json; charset=utf-8"
+    "Content-Type": "application/json; charset=utf-8",
+    "X-App-Version": String(BUILD_INFO.version || "unknown"),
+    "X-Git-Commit": String(BUILD_INFO.commit || "unknown")
   };
   
   if (method === "OPTIONS") return { statusCode: 200, headers: h, body: "" };
+
+  if (p === "/version" && method === "GET") {
+    const complete = Boolean(
+      BUILD_INFO.version && BUILD_INFO.version !== "unknown" &&
+      /^[0-9a-f]{40}$/i.test(String(BUILD_INFO.commit || "")) &&
+      BUILD_INFO.deployed_at && BUILD_INFO.deployed_at !== "unknown" &&
+      BUILD_INFO.environment && BUILD_INFO.environment !== "unknown"
+    );
+    return {
+      statusCode: 200,
+      headers: h,
+      body: JSON.stringify({
+        ok: complete,
+        version: String(BUILD_INFO.version || "unknown"),
+        commit: String(BUILD_INFO.commit || "unknown"),
+        deployed_at: String(BUILD_INFO.deployed_at || "unknown"),
+        environment: String(BUILD_INFO.environment || "unknown"),
+        service: String(BUILD_INFO.service || "signin")
+      })
+    };
+  }
 
   function requestJson(urlText, headers, method, body, timeoutMs) {
     const url = new URL(urlText);
@@ -430,6 +464,58 @@ exports.main = async (event, context) => {
     return eventTimeState(item) === "open";
   }
 
+  function lifecycleStatus(item) {
+    const value = String(item && item.lifecycle_status || "DRAFT").trim().toUpperCase();
+    return ["DRAFT", "CONFIRMED", "CANCELLED"].includes(value) ? value : "DRAFT";
+  }
+
+  function validEventDate(value) {
+    const text = String(value || "").trim();
+    return /^\d{4}-\d{2}-\d{2}$/.test(text) ? text : "";
+  }
+
+  function chinaDateFromTimestamp(value) {
+    const timestamp = Date.parse(String(value || ""));
+    return Number.isFinite(timestamp) ? chinaDateKey(new Date(timestamp)) : "";
+  }
+
+  function eventBusinessDate(item) {
+    const eventDate = validEventDate(item && item.event_date);
+    if (eventDate) return eventDate;
+    return chinaDateFromTimestamp(item && item.checkin_start_at);
+  }
+
+  function isEventConfirmed(item) {
+    return lifecycleStatus(item) === "CONFIRMED";
+  }
+
+  function isPublicCheckinEligible(item, now) {
+    return isEventConfirmed(item) && isEventToday(item, now) && isEventOpen(item);
+  }
+
+  function isPublicUpcoming(item, now) {
+    return isEventConfirmed(item) && isEventToday(item, now) && eventTimeState(item, now) === "upcoming";
+  }
+
+  function canManageEventRegistrations(item) {
+    return lifecycleStatus(item) !== "CANCELLED" && ["upcoming", "open"].includes(eventTimeState(item));
+  }
+
+  async function manualRegistrationTargetEvents(selectedEvent) {
+    const selectedOrder = Number(selectedEvent && selectedEvent.session_order);
+    const eventGroupId = String(selectedEvent && selectedEvent.event_group_id || "").trim();
+    if (normalizeActivityType(selectedEvent && selectedEvent.activity_type) !== "class_meeting" || !eventGroupId || ![1, 2, 3].includes(selectedOrder)) {
+      return [selectedEvent];
+    }
+    const related = (await getEvents()).filter(item =>
+      String(item.event_group_id || "") === eventGroupId &&
+      normalizeActivityType(item.activity_type) === "class_meeting" &&
+      Number(item.session_order) >= selectedOrder &&
+      Number(item.session_order) <= 3
+    ).sort((a, b) => Number(a.session_order) - Number(b.session_order));
+    return related.length ? related : [selectedEvent];
+  }
+
   function chinaDateKey(now) {
     const parts = new Intl.DateTimeFormat("en-CA", {
       timeZone: "Asia/Shanghai", year: "numeric", month: "2-digit", day: "2-digit"
@@ -440,17 +526,9 @@ exports.main = async (event, context) => {
   }
 
   function isEventToday(item, now) {
-    function dateKey(value) {
-      const raw = typeof value === "string" ? value : JSON.stringify(value || "");
-      const match = String(raw || "").match(/(\d{4})\D+(\d{1,2})\D+(\d{1,2})/);
-      return match ? match[1] + "-" + match[2].padStart(2, "0") + "-" + match[3].padStart(2, "0") : "";
-    }
-    const eventDate = dateKey(item && item.event_date);
-    // Check-in time is a fallback for older records whose activity-date field
-    // was stored in a non-standard format.
-    const startDate = dateKey(item && item.checkin_start_at);
+    const eventDate = eventBusinessDate(item);
     const today = chinaDateKey(now);
-    return eventDate === today || startDate === today;
+    return eventDate === today;
   }
 
   async function rowsForBatch(collectionName, batchId, maxTotal) {
@@ -472,6 +550,8 @@ exports.main = async (event, context) => {
       activity_type: "other",
       event_date: inferEventDate(name),
       status: "active",
+      lifecycle_status: "DRAFT",
+      source_system: "MANUAL_ADMIN",
       group_field: groupField,
       created_at: new Date().toISOString(),
       migrated_from_legacy: true
@@ -508,6 +588,10 @@ exports.main = async (event, context) => {
       activity_type_name: ACTIVITY_TYPES[normalizeActivityType(item.activity_type)],
       status: ["closed", "ended"].includes(timeState) ? "closed" : "active",
       manual_status: item.status === "closed" ? "closed" : "active",
+      lifecycle_status: lifecycleStatus(item),
+      source_system: item.source_system || "MANUAL_ADMIN",
+      source_event_id: item.source_event_id || "",
+      source_revision: item.source_revision || "",
       checkin_status: timeState,
       checkin_start_at: item.checkin_start_at || "",
       checkin_end_at: item.checkin_end_at || "",
@@ -567,11 +651,16 @@ exports.main = async (event, context) => {
       secret = crypto.randomBytes(32).toString("hex");
       await setConfig("admin_auth_secret", secret);
     }
-    return crypto.createHmac("sha256", secret).update(configuredAdminPasswordHash()).digest("hex");
+    return crypto.createHmac("sha256", secret).update(await configuredAdminPasswordHash()).digest("hex");
   }
 
-  function configuredAdminPasswordHash() {
-    const passwordHash = String(process.env.ADMIN_PASSWORD_HASH || "").trim().toLowerCase();
+  async function configuredAdminPasswordHash() {
+    // A value changed through the protected admin page takes precedence. The
+    // environment variable remains the initial secure bootstrap credential.
+    const storedHash = String(await getConfig("admin_password_hash", "")).trim().toLowerCase();
+    const passwordHash = /^[a-f0-9]{64}$/.test(storedHash)
+      ? storedHash
+      : String(process.env.ADMIN_PASSWORD_HASH || "").trim().toLowerCase();
     if (!/^[a-f0-9]{64}$/.test(passwordHash)) {
       throw new Error("ADMIN_PASSWORD_HASH 未配置或格式不正确");
     }
@@ -628,7 +717,7 @@ exports.main = async (event, context) => {
   if (p === "/admin_login" && method === "POST") {
     let configuredHash;
     try {
-      configuredHash = configuredAdminPasswordHash();
+      configuredHash = await configuredAdminPasswordHash();
     } catch (error) {
       return { statusCode: 503, headers: h, body: JSON.stringify({ ok: false, msg: "管理员认证尚未安全配置" }) };
     }
@@ -649,8 +738,123 @@ exports.main = async (event, context) => {
     return { statusCode: 200, headers: h, body: JSON.stringify({ ok: true, token: await issueAdminToken(), expires_in: ADMIN_TOKEN_TTL_MS / 1000 }) };
   }
 
-  const protectedPaths = new Set(["/settings", "/admin_events", "/event_update", "/registration", "/registration_delete", "/attendance_status", "/export", "/stats", "/ops_roster_options", "/ops_roster_members", "/upload_preview", "/upload", "/reset", "/clear_all", "/create_class_meeting_sessions"]);
+  const protectedPaths = new Set(["/settings", "/admin_password", "/admin_events", "/event_update", "/event_lifecycle_update", "/registration", "/registration_delete", "/attendance_status", "/export", "/stats", "/ops_roster_options", "/ops_roster_members", "/upload_preview", "/upload", "/reset", "/clear_all", "/create_class_meeting_sessions"]);
   if (protectedPaths.has(p) && !(await isAdminRequest())) return unauthorized();
+
+  async function writeEventAudit(eventItem, previousStatus, nextStatus, reason) {
+    await db.collection("event_audit_logs").add({
+      action: "event.lifecycle_status.update",
+      event_id: String(eventItem.event_id || eventItem._id || ""),
+      event_group_id: String(eventItem.event_group_id || ""),
+      previous_status: previousStatus,
+      next_status: nextStatus,
+      reason: String(reason || "").trim(),
+      source_system: eventItem.source_system || "MANUAL_ADMIN",
+      actor: "admin_token",
+      occurred_at: new Date().toISOString()
+    });
+  }
+
+  async function writeEventDeletionAudit(eventItem, reason) {
+    await db.collection("event_audit_logs").add({
+      action: "event.deleted",
+      event_id: String(eventItem.event_id || eventItem._id || ""),
+      event_group_id: String(eventItem.event_group_id || ""),
+      previous_status: lifecycleStatus(eventItem),
+      next_status: "DELETED",
+      reason: String(reason || "后台人工永久删除").trim(),
+      source_system: eventItem.source_system || "MANUAL_ADMIN",
+      actor: "admin_token",
+      occurred_at: new Date().toISOString()
+    });
+  }
+
+  function validateLifecycleConfirmation(eventItem) {
+    const eventDate = validEventDate(eventItem && eventItem.event_date);
+    if (!eventDate) return "活动日期必须为 YYYY-MM-DD";
+    const startsAt = Date.parse(eventItem && eventItem.checkin_start_at || "");
+    const endsAt = Date.parse(eventItem && eventItem.checkin_end_at || "");
+    if (!Number.isFinite(startsAt) || !Number.isFinite(endsAt) || endsAt <= startsAt) {
+      return "签到开始和截止时间必须完整且顺序正确";
+    }
+    if (!ACTIVITY_TYPES[String(eventItem && eventItem.activity_type || "")]) return "活动类型不正确";
+    const type = normalizeActivityType(eventItem && eventItem.activity_type);
+    if (type === "class_meeting" && !String(eventItem.class_org_unit_id || "").trim()) return "班会活动缺少班级组织 ID";
+    if (type === "group_meeting" && !String(eventItem.group_org_unit_id || eventItem.class_org_unit_id || "").trim()) return "小组活动缺少组织 ID";
+    return "";
+  }
+
+  if (p === "/event_lifecycle_update" && method === "POST") {
+    try {
+      const requestedStatus = String(data.lifecycle_status || "").trim().toUpperCase();
+      if (!["DRAFT", "CONFIRMED", "CANCELLED"].includes(requestedStatus)) {
+        return { statusCode: 200, headers: h, body: JSON.stringify({ ok: false, msg: "生命周期状态必须是 DRAFT、CONFIRMED 或 CANCELLED" }) };
+      }
+      const allEvents = await getEvents();
+      const selected = data.event_group_id
+        ? allEvents.filter(item => String(item.event_group_id || "") === String(data.event_group_id || ""))
+        : allEvents.filter(item => String(item.event_id || item._id || "") === String(data.event_id || ""));
+      if (!selected.length) return { statusCode: 200, headers: h, body: JSON.stringify({ ok: false, msg: "未找到活动或活动组" }) };
+      const targetEvents = selected[0].event_group_id
+        ? allEvents.filter(item => String(item.event_group_id || "") === String(selected[0].event_group_id || ""))
+        : selected;
+      if (requestedStatus === "CONFIRMED") {
+        const invalid = targetEvents.map(item => ({ item, msg: validateLifecycleConfirmation(item) })).find(row => row.msg);
+        if (invalid) return { statusCode: 200, headers: h, body: JSON.stringify({ ok: false, msg: String(invalid.item.name || "活动") + "：" + invalid.msg }) };
+        if (targetEvents.some(item => lifecycleStatus(item) === "CANCELLED" && data.allow_restore !== true)) {
+          return { statusCode: 200, headers: h, body: JSON.stringify({ ok: false, msg: "已取消活动需先退回草稿，再确认举办" }) };
+        }
+      }
+      const now = new Date().toISOString();
+      const changes = {
+        lifecycle_status: requestedStatus,
+        confirmed_at: requestedStatus === "CONFIRMED" ? now : "",
+        confirmed_by: requestedStatus === "CONFIRMED" ? "admin_token" : "",
+        cancelled_at: requestedStatus === "CANCELLED" ? now : "",
+        cancelled_by: requestedStatus === "CANCELLED" ? "admin_token" : "",
+        updated_at: now
+      };
+      const snapshots = targetEvents.map(item => ({
+        item,
+        previous: {
+          lifecycle_status: item.lifecycle_status,
+          confirmed_at: item.confirmed_at || "",
+          confirmed_by: item.confirmed_by || "",
+          cancelled_at: item.cancelled_at || "",
+          cancelled_by: item.cancelled_by || "",
+          updated_at: item.updated_at || ""
+        }
+      }));
+      const updated = [];
+      try {
+        for (const snapshot of snapshots) {
+          await db.collection("events").doc(snapshot.item._id).update(changes);
+          updated.push(snapshot);
+        }
+        for (const snapshot of snapshots) {
+          await writeEventAudit(snapshot.item, lifecycleStatus(snapshot.item), requestedStatus, data.reason);
+        }
+      } catch (writeError) {
+        for (const snapshot of updated.reverse()) {
+          try { await db.collection("events").doc(snapshot.item._id).update(snapshot.previous); } catch (rollbackError) {}
+        }
+        throw writeError;
+      }
+      return { statusCode: 200, headers: h, body: JSON.stringify({ ok: true, lifecycle_status: requestedStatus, event_group_id: targetEvents[0].event_group_id || "", events: targetEvents.map(item => publicEvent({ ...item, ...changes })), msg: requestedStatus === "CONFIRMED" ? "活动已确认举办" : requestedStatus === "CANCELLED" ? "活动已取消，不会进入公开签到" : "活动已退回草稿" }) };
+    } catch (e) {
+      return { statusCode: 200, headers: h, body: JSON.stringify({ ok: false, msg: "更新活动生命周期失败: " + (e.message || "") }) };
+    }
+  }
+
+  if (p === "/admin_password" && method === "POST") {
+    const newPassword = String(data.new_password || "");
+    if (newPassword.length < 10 || newPassword.length > 128 || /\s/.test(newPassword) || !/[A-Za-z]/.test(newPassword) || !/\d/.test(newPassword)) {
+      return { statusCode: 200, headers: h, body: JSON.stringify({ ok: false, msg: "新密码须为10至128位，包含字母和数字，且不含空格" }) };
+    }
+    await setConfig("admin_password_hash", crypto.createHash("sha256").update(newPassword).digest("hex"));
+    loginFailures.clear();
+    return { statusCode: 200, headers: h, body: JSON.stringify({ ok: true, msg: "密码已修改，请使用新密码重新登录" }) };
+  }
 
   function identityKey(person) {
     var name = String(person.name || "").trim().replace(/\s+/g, "").toLowerCase();
@@ -831,7 +1035,7 @@ exports.main = async (event, context) => {
     if (!name || !phone) return { statusCode: 200, headers: h, body: JSON.stringify({ ok: false, msg: "请输入姓名和手机号" }) };
     if (phone.length !== 11 || !/^\d+$/.test(phone)) return { statusCode: 200, headers: h, body: JSON.stringify({ ok: false, msg: "请输入正确的11位手机号" }) };
     try {
-      const activeEvents = (await getEvents()).filter(item => isEventToday(item)).filter(isEventOpen);
+      const activeEvents = (await getEvents()).filter(item => isPublicCheckinEligible(item));
       if (!activeEvents.length) return { statusCode: 200, headers: h, body: JSON.stringify({ ok: false, msg: "当前没有开放签到的活动" }) };
       const activeIds = new Set(activeEvents.map(item => String(item.event_id || item._id || "")));
       // Phones are normalized when importing or adding registrations. Limiting
@@ -925,14 +1129,24 @@ exports.main = async (event, context) => {
       // The public QR page only shows activities dated today in China Standard
       // Time. Future activities remain available in the admin console.
       const todayEvents = allEvents.filter(item => isEventToday(item));
-      const activeEvents = todayEvents.filter(isEventOpen);
-      const displayEvents = todayEvents.filter(item => ["open", "upcoming"].includes(eventTimeState(item)));
+      const activeEvents = todayEvents.filter(item => isPublicCheckinEligible(item));
+      const upcomingEvents = todayEvents
+        .filter(item => isPublicUpcoming(item))
+        .sort((a, b) => Date.parse(a.checkin_start_at || "") - Date.parse(b.checkin_start_at || ""));
+      const nextEvent = upcomingEvents[0] || null;
+      const displayEvents = activeEvents.concat(
+        nextEvent && !activeEvents.some(item => String(item.event_id || item._id || "") === String(nextEvent.event_id || nextEvent._id || ""))
+          ? [nextEvent]
+          : []
+      );
       const ds = await getDisplaySettings();
       const activeIds = activeEvents.map(item => String(item.event_id || item._id || ""));
       const activeRegistrationRows = await Promise.all(activeIds.map(eventId => rowsForBatch("registrations", eventId, 5000)));
       const total = activeRegistrationRows.reduce((sum, rows) => sum + rows.length, 0);
-      const eventName = displayEvents.length === 0 ? "当前暂无可签到活动" : (displayEvents.length === 1 ? (displayEvents[0].name || "盛和塾活动签到") : "盛和塾活动签到");
-      return { statusCode: 200, headers: h, body: JSON.stringify({ event_name: eventName, active_event_count: activeEvents.length, active_events: activeEvents.map(publicEvent), display_events: displayEvents.map(publicEvent), show_group: ds.show_group, show_dinner_table: ds.show_dinner_table, total }) };
+      const eventName = activeEvents.length === 1
+        ? (activeEvents[0].name || "盛和塾活动签到")
+        : (activeEvents.length > 1 ? "盛和塾活动签到" : "当前暂无可签到活动");
+      return { statusCode: 200, headers: h, body: JSON.stringify({ event_name: eventName, active_event_count: activeEvents.length, active_events: activeEvents.map(publicEvent), next_event: nextEvent ? publicEvent(nextEvent) : null, display_events: displayEvents.map(publicEvent), show_group: ds.show_group, show_dinner_table: ds.show_dinner_table, total }) };
     } catch (e) {
       return { statusCode: 200, headers: h, body: JSON.stringify({ event_name: "签到活动加载失败", active_event_count: 0, active_events: [], show_group: "true", show_dinner_table: "true", total: 0 }) };
     }
@@ -942,15 +1156,15 @@ exports.main = async (event, context) => {
   if (p === "/admin_events" && method === "GET") {
     try {
       const events = await getEvents();
-      const regs = await getAll("registrations", 5000);
-      const cks = await getAll("checkins", 5000);
       const selectedEventId = await getConfig("active_batch_id", "");
-      const rows = events.map(item => {
+      const rows = await Promise.all(events.map(async item => {
         const eventId = String(item.event_id || item._id || "");
-        const eventRegs = regs.filter(row => String(row.batch_id || "") === eventId);
-        const eventCks = cks.filter(row => String(row.batch_id || "") === eventId);
+        const [eventRegs, eventCks] = await Promise.all([
+          rowsForBatch("registrations", eventId, 5000),
+          rowsForBatch("checkins", eventId, 5000)
+        ]);
         return { ...publicEvent(item), total: eventRegs.length, checked: buildAttendanceState(eventRegs, eventCks).checkedIndexes.size };
-      });
+      }));
       return { statusCode: 200, headers: h, body: JSON.stringify({ ok: true, events: rows, selected_event_id: selectedEventId, activity_types: ACTIVITY_TYPES }) };
     } catch (e) {
       return { statusCode: 200, headers: h, body: JSON.stringify({ ok: false, msg: "读取活动失败: " + (e.message || "") }) };
@@ -1062,14 +1276,48 @@ exports.main = async (event, context) => {
 
       const selectedEvent = await getRequestedEvent(data.event_id);
       if (!selectedEvent) return { statusCode: 200, headers: h, body: JSON.stringify({ ok: false, msg: "请先选择活动" }) };
-      if (!isEventOpen(selectedEvent)) return { statusCode: 200, headers: h, body: JSON.stringify({ ok: false, msg: "当前活动不在签到时间内，不能新增临时报名" }) };
-      const activeBatchId = String(selectedEvent.event_id || selectedEvent._id || "");
-      const regs = await rowsForBatch("registrations", activeBatchId, 5000);
-      if (regs.some(row => identityKey(row) === identityKey(registration))) {
-        return { statusCode: 200, headers: h, body: JSON.stringify({ ok: false, msg: "当前活动已有相同姓名和手机号的报名记录" }) };
+      if (!canManageEventRegistrations(selectedEvent)) return { statusCode: 200, headers: h, body: JSON.stringify({ ok: false, msg: "当前活动已结束或已关闭，不能新增临时报名" }) };
+      const targetEvents = await manualRegistrationTargetEvents(selectedEvent);
+      const unavailableEvent = targetEvents.find(item => !canManageEventRegistrations(item));
+      if (unavailableEvent) {
+        return { statusCode: 200, headers: h, body: JSON.stringify({ ok: false, msg: "需同步的“" + String(unavailableEvent.session_name || unavailableEvent.name || "活动") + "”已结束或已关闭，未新增任何报名" }) };
       }
-      const result = await db.collection("registrations").add({ ...registration, batch_id: activeBatchId || "" });
-      return { statusCode: 200, headers: h, body: JSON.stringify({ ok: true, registration_id: result.id || result._id || "", msg: "临时报名已新增，学长现在可以正常签到" }) };
+      const targetRows = await Promise.all(targetEvents.map(async item => ({
+        event: item,
+        registrations: await rowsForBatch("registrations", String(item.event_id || item._id || ""), 5000)
+      })));
+      const missingTargets = targetRows.filter(item => !item.registrations.some(row => identityKey(row) === identityKey(registration)));
+      const existingTargets = targetRows.filter(item => item.registrations.some(row => identityKey(row) === identityKey(registration)));
+      if (!missingTargets.length) {
+        return { statusCode: 200, headers: h, body: JSON.stringify({ ok: false, msg: "当前场次及其后续场次已有相同姓名和手机号的报名记录" }) };
+      }
+      const added = [];
+      for (const target of missingTargets) {
+        const item = target.event;
+        const batchId = String(item.event_id || item._id || "");
+        const result = await db.collection("registrations").add({
+          ...registration,
+          batch_id: batchId,
+          event_group_id: String(item.event_group_id || ""),
+          session_code: String(item.session_code || "")
+        });
+        added.push({
+          registration_id: result.id || result._id || "",
+          event_id: batchId,
+          session_name: String(item.session_name || item.name || "当前活动")
+        });
+      }
+      const addedNames = added.map(item => item.session_name).join("、");
+      const existingNames = existingTargets.map(item => String(item.event.session_name || item.event.name || "当前活动")).join("、");
+      const message = (added.length > 1 ? "临时报名已自动同步至" : "临时报名已新增至") + addedNames + "，共" + added.length + "场" + (existingNames ? "；" + existingNames + "已有相同报名，已跳过" : "");
+      return { statusCode: 200, headers: h, body: JSON.stringify({
+        ok: true,
+        registration_id: added[0].registration_id,
+        added_count: added.length,
+        skipped_count: existingTargets.length,
+        added_events: added,
+        msg: message
+      }) };
     } catch (e) {
       return { statusCode: 200, headers: h, body: JSON.stringify({ ok: false, msg: "新增失败: " + (e.message || "") }) };
     }
@@ -1084,6 +1332,10 @@ exports.main = async (event, context) => {
       const allRegs = await getAll("registrations", 5000);
       const registration = allRegs.find(row => String(row._id || "") === registrationId);
       if (!registration) return { statusCode: 200, headers: h, body: JSON.stringify({ ok: false, msg: "未找到报名记录" }) };
+      const registrationEvent = await getEventById(registration.batch_id);
+      if (registrationEvent && lifecycleStatus(registrationEvent) === "CANCELLED") {
+        return { statusCode: 200, headers: h, body: JSON.stringify({ ok: false, msg: "活动已取消，不能删除或修改报名记录" }) };
+      }
       const regs = allRegs.filter(row => String(row.batch_id || "") === String(registration.batch_id || ""));
       const index = regs.findIndex(row => String(row._id || "") === registrationId);
       const cks = await rowsForBatch("checkins", registration.batch_id, 5000);
@@ -1109,6 +1361,13 @@ exports.main = async (event, context) => {
       const allRegs = await getAll("registrations", 5000);
       const registration = allRegs.find(row => String(row._id || "") === registrationId);
       if (!registration) return { statusCode: 200, headers: h, body: JSON.stringify({ ok: false, msg: "未找到报名记录" }) };
+      const registrationEvent = await getEventById(registration.batch_id);
+      if (registrationEvent && lifecycleStatus(registrationEvent) === "CANCELLED") {
+        return { statusCode: 200, headers: h, body: JSON.stringify({ ok: false, msg: "活动已取消，不能删除或修改报名记录" }) };
+      }
+      if (registrationEvent && String(registrationEvent.session_code || "").toUpperCase() === "KONPA" && status === "late") {
+        return { statusCode: 200, headers: h, body: JSON.stringify({ ok: false, msg: "晚上空巴不设置迟到状态，请以实际签到记录为准" }) };
+      }
       const regs = allRegs.filter(row => String(row.batch_id || "") === String(registration.batch_id || ""));
       const index = regs.findIndex(row => String(row._id || "") === registrationId);
       const cks = await rowsForBatch("checkins", registration.batch_id, 5000);
@@ -1277,7 +1536,7 @@ exports.main = async (event, context) => {
       await setConfig("event_name", eventName);
       await setConfig("group_field", groupField);
       await setConfig("active_batch_id", batchId);
-      const eventResult = await db.collection("events").add({ event_id: batchId, name: eventName, event_date: eventDate, checkin_start_at: checkinStartAt, checkin_end_at: checkinEndAt, activity_type: activityType, status: "active", group_field: groupField, created_at: new Date().toISOString() });
+      const eventResult = await db.collection("events").add({ event_id: batchId, name: eventName, event_date: eventDate, checkin_start_at: checkinStartAt, checkin_end_at: checkinEndAt, activity_type: activityType, status: "active", lifecycle_status: "DRAFT", source_system: "MANUAL_ADMIN", group_field: groupField, created_at: new Date().toISOString() });
       stagedEventDoc = { _id: eventResult.id || eventResult._id };
       const repeatedSlots = Object.values(identityCounts).reduce((sum, count) => sum + Math.max(0, count - 1), 0);
       const repeatMessage = repeatedSlots ? "，其中多人共用姓名和手机号的额外名额 " + repeatedSlots + " 个" : "";
@@ -1315,16 +1574,29 @@ exports.main = async (event, context) => {
     try {
       const selectedEvent = await getRequestedEvent(data.event_id);
       if (!selectedEvent) return { statusCode: 200, headers: h, body: JSON.stringify({ ok: false, msg: "请先选择要删除的当前活动" }) };
-      const eventId = String(selectedEvent.event_id || selectedEvent._id || "");
-      const delRegs = await deleteDocs("registrations", await rowsForBatch("registrations", eventId, 5000));
-      const delCks = await deleteDocs("checkins", await rowsForBatch("checkins", eventId, 5000));
-      await db.collection("events").doc(selectedEvent._id).remove();
-      const remainingEvents = (await getAll("events", 500)).sort((a, b) => String(b.event_date || "").localeCompare(String(a.event_date || "")));
+      const allEvents = await getEvents();
+      const eventGroupId = String(selectedEvent.event_group_id || "").trim();
+      const targetEvents = eventGroupId
+        ? allEvents.filter(item => String(item.event_group_id || "") === eventGroupId)
+        : [selectedEvent];
+      const deletedEventIds = [];
+      let delRegs = 0;
+      let delCks = 0;
+      for (const target of targetEvents) {
+        const eventId = String(target.event_id || target._id || "");
+        delRegs += await deleteDocs("registrations", await rowsForBatch("registrations", eventId, 5000));
+        delCks += await deleteDocs("checkins", await rowsForBatch("checkins", eventId, 5000));
+        await db.collection("events").doc(target._id).remove();
+        await writeEventDeletionAudit(target, eventGroupId ? "后台人工永久删除三场活动组" : "后台人工永久删除单场活动");
+        deletedEventIds.push(eventId);
+      }
+      const remainingEvents = await getEvents();
       const nextEvent = remainingEvents[0] || null;
       await setConfig("event_name", nextEvent ? nextEvent.name : "盛和塾签到");
       await setConfig("group_field", nextEvent ? (nextEvent.group_field || "") : "");
       await setConfig("active_batch_id", nextEvent ? String(nextEvent.event_id || nextEvent._id || "") : "");
-      return { statusCode: 200, headers: h, body: JSON.stringify({ ok: true, deleted_event_id: eventId, msg: "当前活动“" + String(selectedEvent.name || "") + "”已删除（报名" + delRegs + "条，签到" + delCks + "条）；其他活动未受影响" }) };
+      const groupText = targetEvents.length > 1 ? "活动组（" + targetEvents.map(item => String(item.session_name || item.name || "活动")).join("、") + "）" : "当前活动“" + String(selectedEvent.name || "") + "”";
+      return { statusCode: 200, headers: h, body: JSON.stringify({ ok: true, deleted_event_id: deletedEventIds[0] || "", deleted_event_ids: deletedEventIds, deleted_event_group_id: eventGroupId, deleted_count: deletedEventIds.length, msg: groupText + "已删除（报名" + delRegs + "条，签到" + delCks + "条）；其他活动未受影响" }) };
     } catch (e) {
       return { statusCode: 200, headers: h, body: JSON.stringify({ ok: false, msg: "操作失败: " + (e.message || "") }) };
     }
@@ -1388,20 +1660,20 @@ exports.main = async (event, context) => {
       // Session definitions
       const sessions = [
         { code: "MORNING", name: "上午", order: 1,
-          checkin_start: data.morning_checkin_start || (eventDate + "T08:00"),
+          checkin_start: data.morning_checkin_start || (eventDate + "T07:30"),
           scheduled_start: data.morning_scheduled_start || (eventDate + "T09:00"),
           scheduled_end: data.morning_scheduled_end || (eventDate + "T12:00"),
-          checkin_end: data.morning_checkin_end || (eventDate + "T09:30") },
+          checkin_end: data.morning_checkin_end || (eventDate + "T10:30") },
         { code: "AFTERNOON", name: "下午", order: 2,
-          checkin_start: data.afternoon_checkin_start || (eventDate + "T13:00"),
-          scheduled_start: data.afternoon_scheduled_start || (eventDate + "T14:00"),
+          checkin_start: data.afternoon_checkin_start || (eventDate + "T12:10"),
+          scheduled_start: data.afternoon_scheduled_start || (eventDate + "T13:30"),
           scheduled_end: data.afternoon_scheduled_end || (eventDate + "T17:00"),
-          checkin_end: data.afternoon_checkin_end || (eventDate + "T14:30") },
+          checkin_end: data.afternoon_checkin_end || (eventDate + "T15:00") },
         { code: "KONPA", name: "晚上空巴", order: 3,
-          checkin_start: data.konpa_checkin_start || (eventDate + "T18:00"),
-          scheduled_start: data.konpa_scheduled_start || (eventDate + "T19:00"),
-          scheduled_end: data.konpa_scheduled_end || (eventDate + "T21:00"),
-          checkin_end: data.konpa_checkin_end || (eventDate + "T19:30") }
+          checkin_start: data.konpa_checkin_start || (eventDate + "T17:10"),
+          scheduled_start: data.konpa_scheduled_start || (eventDate + "T18:00"),
+          scheduled_end: data.konpa_scheduled_end || (eventDate + "T20:30"),
+          checkin_end: data.konpa_checkin_end || (eventDate + "T20:30") }
       ];
 
       let previousScheduledEnd = null;
@@ -1449,6 +1721,8 @@ exports.main = async (event, context) => {
           scheduled_end_at: session.scheduled_end_at,
           activity_type: "class_meeting",
           status: "active",
+          lifecycle_status: "DRAFT",
+          source_system: "MANUAL_ADMIN",
           group_field: groupField,
           org_unit_id: orgUnitId,
           class_org_unit_id: classOrgUnitId,
@@ -1524,7 +1798,11 @@ exports.main = async (event, context) => {
             event_date: item.event_date,
             activity_type: item.activity_type,
             org_unit_id: item.org_unit_id || "",
-            study_org_unit_id: item.class_org_unit_id || null
+            study_org_unit_id: item.class_org_unit_id || null,
+            lifecycle_status: lifecycleStatus(item),
+            source_system: item.source_system || "MANUAL_ADMIN",
+            source_event_id: item.source_event_id || "",
+            source_revision: item.source_revision || ""
           },
           session_code: item.session_code || "MORNING",
           session_name: item.session_name || "",
@@ -1534,6 +1812,10 @@ exports.main = async (event, context) => {
           scheduled_end_at: item.scheduled_end_at || "",
           checkin_end_at: item.checkin_end_at || "",
           status: item.status || "active",
+          lifecycle_status: lifecycleStatus(item),
+          source_system: item.source_system || "MANUAL_ADMIN",
+          source_event_id: item.source_event_id || "",
+          source_revision: item.source_revision || "",
           revision: 1,
           updated_at: item.created_at || ""
         };

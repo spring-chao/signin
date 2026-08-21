@@ -16,7 +16,7 @@
 1. 浏览器打开唯一后台入口：`https://{你的域名}/admin.html`
 2. 输入管理员密码登录。生产环境不提供默认密码，密码摘要通过云函数环境变量 `ADMIN_PASSWORD_HASH` 配置。
 3. 填写活动名称、日期和活动类型，上传 Excel 报名表（支持互动吧导出的 `.xls` / `.xlsx`）
-4. 系统新增独立活动，历史活动及签到记录不会被覆盖；可切换活动查看、导出、开放或关闭签到
+4. 系统新增独立活动，历史活动及签到记录不会被覆盖；新活动默认是“草稿”，必须在后台“确认举办”后才会进入学员公开签到候选；可切换活动查看、导出、手动关闭或取消签到
 
 活动进行中还可以在后台：
 
@@ -81,23 +81,36 @@ Cron 为 `0 0 0 ? * MON-FRI *`。它只调用新运营平台的受保护同步�
 定时调用允许等待新平台冷启动和增量处理，云函数超时配置为 120 秒；
 普通名单读取仍采用较短的 20 秒出站超时。
 
-### 5. 部署云函数
+### 5. 生成可追溯发布包
 
-```bash
-tcb fn deploy checkinApi -e {你的环境ID} --dir cloudfunc --force
+发布必须从干净的 Git 工作树开始。脚本会把同一个完整 commit 写入云函数和静态托管的构建清单：
+
+```powershell
+$release = .\scripts\release\prepare.ps1 -Environment production
 ```
 
-### 6. 部署静态页面
+记录脚本输出的 `CLOUDFUNC_DIR`、`PUBLIC_DIR`、`COMMIT` 和 `VERSION`，后续部署只能使用该发布包目录。
+
+### 6. 部署云函数
 
 ```bash
-tcb hosting deploy public/index.html /index.html -e {你的环境ID}
-tcb hosting deploy public/index.html /v2/index.html -e {你的环境ID} # 兼容已印刷的旧二维码
-tcb hosting deploy public/index.html /v3/index.html -e {你的环境ID} # 兼容已印刷的旧二维码
-tcb hosting deploy public/admin.html /admin.html -e {你的环境ID}
+tcb fn deploy checkinApi -e {你的环境ID} --dir {CLOUDFUNC_DIR} --force
+```
+
+### 7. 部署静态页面
+
+```bash
+tcb hosting deploy {PUBLIC_DIR}/index.html /index.html -e {你的环境ID}
+tcb hosting deploy {PUBLIC_DIR}/index.html /v2/index.html -e {你的环境ID} # 兼容已印刷的旧二维码
+tcb hosting deploy {PUBLIC_DIR}/index.html /v3/index.html -e {你的环境ID} # 兼容已印刷的旧二维码
+tcb hosting deploy {PUBLIC_DIR}/admin.html /admin.html -e {你的环境ID}
+tcb hosting deploy {PUBLIC_DIR}/build-info.json /build-info.json -e {你的环境ID}
 # 后台只保留 /admin.html，旧版入口应删除：
 tcb hosting delete /v2/admin.html -e {你的环境ID}
 tcb hosting delete /v3/admin.html -e {你的环境ID}
 ```
+
+部署后必须核对 `GET /api/version` 和 `/build-info.json` 的完整 `commit` 相同；任一接口返回 `unknown` 或 commit 不一致时停止，不切换现场二维码流量。
 
 ### 7. 配置 HTTP 访问服务
 
@@ -118,6 +131,7 @@ tcb hosting delete /v3/admin.html -e {你的环境ID}
 - `registrations` — 存储报名数据
 - `checkins` — 存储签到记录
 - `events` — 存储活动名称、日期、类型和开放状态
+- `event_audit_logs` — 存储活动确认、取消和退回草稿的生命周期审计记录
 
 ### 9. 生成二维码
 
@@ -145,6 +159,7 @@ tcb hosting delete /v3/admin.html -e {你的环境ID}
 | 接口 | 方法 | 说明 |
 |------|------|------|
 | `/api/event` | GET | 获取当前活动名称和报名人数 |
+| `/api/version` | GET | 获取生产版本、Git commit 和部署时间 |
 | `/api/checkin` | POST | 签到（姓名+手机号） |
 | `/api/stats` | GET | 签到统计数据 |
 | `/api/registration` | POST | 后台新增单条临时报名 |
@@ -152,7 +167,8 @@ tcb hosting delete /v3/admin.html -e {你的环境ID}
 | `/api/attendance_status` | POST | 后台标记未签到、迟到或请假 |
 | `/api/upload` | POST | 管理后台导入 Excel |
 | `/api/reset` | POST | 清空签到记录 |
-| `/api/clear_all` | POST | 清空全部数据 |
+| `/api/clear_all` | POST | 永久删除当前活动；三场班会按 `event_group_id` 删除整个活动组并写入删除审计 |
+| `/api/event_lifecycle_update` | POST | 后台确认、取消或退回活动草稿 |
 
 ### 签到请求示例
 
