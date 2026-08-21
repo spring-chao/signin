@@ -138,6 +138,7 @@ input:checked+.slider:before{transform:translateX(20px)}
 .activity-workspace-grid{display:grid;grid-template-columns:minmax(300px,.9fr) minmax(0,1.35fr);gap:16px;align-items:start}
 .activity-detail-layout{display:grid;gap:12px}
 .activity-detail-placeholder{min-height:220px;display:flex;align-items:center;justify-content:center}
+.history-data-panel{border-top:1px solid rgba(255,255,255,.08);padding-top:12px}
 .session-picker{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin:12px 0}
 .session-card{display:block;width:100%;padding:11px;text-align:left;border:1px solid rgba(255,255,255,.1);border-radius:10px;background:rgba(255,255,255,.035);color:#e2e8f0;cursor:pointer;transition:border-color .2s,background .2s,transform .2s}
 .session-card:hover,.session-card.selected{border-color:#60a5fa;background:rgba(59,130,246,.16);transform:translateY(-1px)}
@@ -161,6 +162,7 @@ input:checked+.slider:before{transform:translateX(20px)}
 .activity-card .activity-status{float:right;padding:3px 8px;border-radius:999px;font-size:10px;color:#bfdbfe;background:rgba(59,130,246,.16)}
 .activity-card .activity-status.cancelled{color:#fca5a5;background:rgba(239,68,68,.14)}
 .activity-card .activity-status.draft{color:#fcd34d;background:rgba(245,158,11,.14)}
+.activity-card .activity-status.ended{color:#cbd5e1;background:rgba(100,116,139,.2)}
 .pager{display:flex;justify-content:center;align-items:center;gap:12px;margin-top:16px}
 .pager span{font-size:12px;color:#94a3b8;min-width:70px;text-align:center}
 .empty-state{padding:28px 12px;text-align:center;color:#64748b;font-size:13px;border:1px dashed rgba(255,255,255,.1);border-radius:12px}
@@ -271,8 +273,16 @@ input:checked+.slider:before{transform:translateX(20px)}
         <div id="activityDetailMeta" class="form-help"></div>
         <div id="activityDetailSessions" class="session-picker" aria-label="选择签到场次"></div>
         <div class="overview" id="activityDetailStats"></div>
+        <div id="activityHistoryData" class="history-data-panel" style="display:none">
+          <div class="form-help">历史活动只读数据</div>
+          <div class="tabs" id="activityHistoryTabBar">
+            <button class="tab active" onclick="switchActivityHistoryTab('missing',this)">未签到</button>
+            <button class="tab" onclick="switchActivityHistoryTab('recent',this)">签到历史</button>
+          </div>
+          <div id="activityHistoryTabContent"></div>
+        </div>
         <button class="btn primary full" id="activityOpenTodayBtn" onclick="openActivityInToday()" style="display:none">打开今日签到</button>
-        <div class="activity-detail-toolbar">
+        <div id="activityOperationToolbar" class="activity-detail-toolbar">
           <button class="btn" id="activityStatusBtn" onclick="toggleEventStatus()">切换签到状态</button>
           <button class="btn success" id="activityConfirmBtn" onclick="updateEventLifecycle('CONFIRMED')">确认举办</button>
           <button class="btn danger" id="activityCancelBtn" onclick="updateEventLifecycle('CANCELLED')">取消活动</button>
@@ -528,6 +538,20 @@ function activityTypeLabel(type) {
   return {course:"课程",class_meeting:"班会/班级学习会",group_meeting:"小组学习会",national_report:"全国报告会",center_quarterly_report:"分中心季度报告会",staff_training:"班主任辅导员培训会",board_meeting:"理事会",study_tour:"游学",other:"其他"}[type] || type || "其他";
 }
 
+function isHistoricalActivity(item, selectedEventId) {
+  if(!item) return false;
+  if(String(item.event_date||"") && String(item.event_date) < chinaDateKey()) return true;
+  var sessions=item.sessions||[item];
+  var selectedId=String(selectedEventId||currentEventId||"");
+  var selected=sessions.find(function(row){return String(row.event_id||"")===selectedId;});
+  if(selected) return String(selected.checkin_status||"") === "ended";
+  return sessions.length > 0 && sessions.every(function(row){return String(row.checkin_status||"") === "ended";});
+}
+
+function activityDisplayStatus(item) {
+  return isHistoricalActivity(item) ? "已结束 · 历史记录" : activityLifecycleLabel(item && item.lifecycle_status);
+}
+
 function setLifecycleButtonVisibility(prefix, lifecycle) {
   var ids = prefix ? {
     Confirm: "activityConfirmBtn",
@@ -583,12 +607,13 @@ function renderActivityList() {
   if(!activityItems.length){list.innerHTML='<div class="empty-state">没有找到符合条件的活动</div>';}
   else {
     list.innerHTML=activityItems.map(function(item){
-      var statusClass=String(item.lifecycle_status||"").toLowerCase();
+      var historical=isHistoricalActivity(item);
+      var statusClass=historical ? "ended" : String(item.lifecycle_status||"").toLowerCase();
       var sessions=(item.sessions||[]).map(function(row){return row.session_name||row.name;}).filter(Boolean);
       var sessionText=sessions.length>1 ? sessions.join(" / ") : (sessions[0]||"单场活动");
       var selected=activityItemContainsEvent(item,currentEventId);
       return '<button type="button" class="activity-card'+(selected?' selected':'')+'" data-event-id="'+esc(item.event_id)+'">'+
-        '<div class="activity-date">'+esc(item.event_date||"")+' <span class="activity-status '+statusClass+'">'+esc(activityLifecycleLabel(item.lifecycle_status))+(item.is_group?' · '+esc(item.session_count||sessions.length)+'场':'')+'</span></div>'+
+        '<div class="activity-date">'+esc(item.event_date||"")+' <span class="activity-status '+statusClass+'">'+esc(activityDisplayStatus(item))+(item.is_group?' · '+esc(item.session_count||sessions.length)+'场':'')+'</span></div>'+
         '<div class="activity-name">'+esc(item.logical_name||item.name||"")+'</div>'+
         '<div class="activity-meta">'+esc(activityTypeLabel(item.activity_type))+' · '+esc(sessionText)+'</div>'+
         (selected ? '<div class="activity-current-selection">✓ 当前选择</div>' : '<div class="activity-meta">点击查看当前活动统计和管理</div>')+'</button>';
@@ -617,11 +642,13 @@ function renderActivityDetail(item) {
   }
   if(placeholder) placeholder.style.display="none";
   if(content) content.style.display="grid";
-  if(heading) heading.textContent="活动详情 · 当前选择";
+  var historical=isHistoricalActivity(item,currentEventId);
+  if(heading) heading.textContent=historical ? "活动详情 · 历史活动" : "活动详情 · 当前选择";
   var lifecycleNames={DRAFT:"草稿",CONFIRMED:"已确认举办",CANCELLED:"已取消"};
   var stateNames={open:"签到中",upcoming:"未开始",ended:"已结束",closed:"已手动关闭"};
   var sessions=item.sessions||[item];
-  document.getElementById("activityDetailMeta").textContent=(item.event_date||"")+" · "+(item.activity_type_name||activityTypeLabel(item.activity_type))+" · "+(lifecycleNames[item.lifecycle_status]||"草稿");
+  var lifecycleText=lifecycleNames[item.lifecycle_status]||"草稿";
+  document.getElementById("activityDetailMeta").textContent=(item.event_date||"")+" · "+(item.activity_type_name||activityTypeLabel(item.activity_type))+" · "+(historical ? "已结束 · 历史记录（原生命周期："+lifecycleText+"）" : lifecycleText);
   var sessionPicker=document.getElementById("activityDetailSessions");
   sessionPicker.innerHTML=sessions.map(function(row){
     var selected=String(row.event_id||"")===String(currentEventId||"");
@@ -635,6 +662,9 @@ function renderActivityDetail(item) {
   var stats=document.getElementById("activityDetailStats");
   stats.innerHTML=currentData && currentData.event && String(currentData.event.event_id||"")===String(currentEventId||"") ?
     '<div class="ov-item"><div class="num green">'+currentData.checked+'</div><div class="label">已签到</div></div><div class="ov-item"><div class="num blue">'+currentData.total+'</div><div class="label">报名总数</div></div><div class="ov-item"><div class="num yellow">'+currentData.rate+'%</div><div class="label">签到率</div></div>' : '<div class="form-help">正在读取当前活动统计…</div>';
+  var historyPanel=document.getElementById("activityHistoryData");
+  if(historyPanel) historyPanel.style.display=historical ? "block" : "none";
+  if(historical) renderActivityHistoryTab();
   var current=currentEvents.find(function(row){return row.event_id===currentEventId;})||item;
   var lifecycle=current.lifecycle_status||item.lifecycle_status||"DRAFT";
   var statusButton=document.getElementById("activityStatusBtn");
@@ -645,8 +675,9 @@ function renderActivityDetail(item) {
   statusButton.dataset.stateDisabled="false";
   document.getElementById("activityResetBtn").dataset.stateDisabled="false";
   document.getElementById("activityClearBtn").dataset.stateDisabled="false";
-  document.getElementById("activityOpenTodayBtn").style.display=item.event_date===chinaDateKey() ? "block" : "none";
-  setLifecycleButtonVisibility("activity", lifecycle);
+  document.getElementById("activityOpenTodayBtn").style.display=!historical && item.event_date===chinaDateKey() ? "block" : "none";
+  document.getElementById("activityOperationToolbar").style.display=historical ? "none" : "flex";
+  setLifecycleButtonVisibility("activity", historical ? "" : lifecycle);
   setUnsafeActionAvailability();
 }
 
@@ -769,21 +800,23 @@ async function refreshCurrentStats() {
 function renderEventSelector() {
   var select=document.getElementById("eventSelect");
   var lifecycleNames={DRAFT:"草稿",CONFIRMED:"已确认",CANCELLED:"已取消"};
-  select.innerHTML=currentEvents.map(function(item){return '<option value="'+esc(item.event_id)+'"'+(item.event_id===currentEventId?' selected':'')+'>'+esc(item.event_date+' · '+(lifecycleNames[item.lifecycle_status]||"草稿")+' · '+item.name)+'</option>';}).join("");
+  select.innerHTML=currentEvents.map(function(item){return '<option value="'+esc(item.event_id)+'"'+(item.event_id===currentEventId?' selected':'')+'>'+esc(item.event_date+' · '+(isHistoricalActivity(item) ? "已结束 · 历史记录" : (lifecycleNames[item.lifecycle_status]||"草稿"))+' · '+item.name)+'</option>';}).join("");
   var item=currentEvents.find(function(row){return row.event_id===currentEventId;});
   var stateNames={open:"签到中",upcoming:"未开始",ended:"已结束",closed:"已手动关闭"};
   var statsText=currentData && currentData.event && String(currentData.event.event_id||"")===String(currentEventId||"") ? " · "+currentData.total+"人报名 · "+currentData.checked+"人签到" : "";
-  document.getElementById("eventMeta").textContent=item ? item.event_date+" · "+(item.activity_type_name||activityTypeLabel(item.activity_type))+" · "+({DRAFT:"草稿",CONFIRMED:"已确认举办",CANCELLED:"已取消"}[item.lifecycle_status]||"草稿")+" · "+(stateNames[item.checkin_status]||"")+statsText : "暂无活动";
+  document.getElementById("eventMeta").textContent=item ? item.event_date+" · "+(item.activity_type_name||activityTypeLabel(item.activity_type))+" · "+(isHistoricalActivity(item) ? "已结束 · 历史记录" : ({DRAFT:"草稿",CONFIRMED:"已确认举办",CANCELLED:"已取消"}[item.lifecycle_status]||"草稿"))+" · "+(stateNames[item.checkin_status]||"")+statsText : "暂无活动";
   var lifecycle=item&&item.lifecycle_status||"DRAFT";
+  var historical=isHistoricalActivity(item);
   var groupTargets = lifecycleTargetEvents(item);
   var groupNotice = groupTargets.length > 1 ? "当前为三场次活动组，生命周期操作将同时作用于：" + groupTargets.map(function(row){return row.session_name || row.name;}).join("、") + "。" : "";
-  document.getElementById("eventLifecycleActions").textContent=item ? (lifecycle==="CONFIRMED" ? "已确认举办；如需停止公开签到，请使用上方“手动关闭签到”。" : lifecycle==="CANCELLED" ? "已取消，不会进入学员公开签到页。" : "草稿不会进入学员公开签到页，请先确认举办。") + (groupNotice ? " " + groupNotice : "") : "";
+  document.getElementById("eventLifecycleActions").textContent=item ? (historical ? "历史活动为只读，仅可查看统计、名单和导出结果。" : (lifecycle==="CONFIRMED" ? "已确认举办；如需停止公开签到，请使用上方“手动关闭签到”。" : lifecycle==="CANCELLED" ? "已取消，不会进入学员公开签到页。" : "草稿不会进入学员公开签到页，请先确认举办。")) + (groupNotice && !historical ? " " + groupNotice : "") : "";
   document.getElementById("confirmEventBtn").disabled=!item||lifecycle==="CONFIRMED";
   document.getElementById("cancelEventBtn").disabled=!item||lifecycle==="CANCELLED";
   document.getElementById("draftEventBtn").disabled=!item||lifecycle==="DRAFT";
-  setLifecycleButtonVisibility("", lifecycle);
   var btn=document.getElementById("eventStatusBtn");
   btn.textContent=item && item.manual_status==="active" ? "手动关闭签到" : "恢复按时间开放";
+  btn.style.display=historical ? "none" : "";
+  setLifecycleButtonVisibility("", historical ? "" : lifecycle);
   document.getElementById("confirmEventBtn").dataset.stateDisabled=String(!item||lifecycle==="CONFIRMED");
   document.getElementById("cancelEventBtn").dataset.stateDisabled=String(!item||lifecycle==="CANCELLED");
   document.getElementById("draftEventBtn").dataset.stateDisabled=String(!item||lifecycle==="DRAFT");
@@ -1120,10 +1153,12 @@ async function exportExcel() {
   btn.disabled = false; btn.textContent = "导出签到名单（Excel）";
 }
 
-function renderTab() {
+function buildAttendanceTabHtml(tabName, readOnly) {
   if (!currentData) return;
+  tabName = tabName || currentTab;
+  readOnly = Boolean(readOnly);
   var h = "";
-  if (currentTab === "groups") {
+  if (tabName === "groups") {
     var gt = currentData.group_type || "分中心";
     h = '<div class="section"><h3>&#x1f3e2; '+gt+'签到进展</h3><div class="group-bars">';
     var groups = currentData.groups || {};
@@ -1136,7 +1171,7 @@ function renderTab() {
         '<span class="g-num">'+d.checked+'/'+d.total+'</span></div>';
     });
     h += '</div></div>';
-  } else if (currentTab === "missing") {
+  } else if (tabName === "missing") {
     var groupField = currentData.group_field || ({"分中心":"center","班级":"class_name","小组":"group_name"}[currentData.group_type] || "center");
     var groupLabel = currentData.group_type || "分组";
     var missing = currentData.not_checked || [];
@@ -1175,17 +1210,17 @@ function renderTab() {
         h += '<div class="missing-person">'+
           '<div class="person-line"><span class="person-name">'+esc(n.name)+'</span><span class="status-badge '+esc(status)+'">'+esc(n.attendance_status_label||"未签到")+'</span><a class="phone-link" href="tel:'+esc(n.phone)+'">'+esc(n.phone||"无手机号")+'</a></div>'+
           (meta.length ? '<div class="person-meta">'+esc(meta.join(" · "))+'</div>' : '')+
-          '<div class="status-actions">'+
+          (readOnly ? '' : '<div class="status-actions">'+
             '<button class="mini-btn '+(status==="pending"?'active':'')+'" data-id="'+esc(n.registration_id)+'" data-status="pending" onclick="setAttendanceStatus(this)">未签到</button>'+
             (allowLate ? '<button class="mini-btn late '+(status==="late"?'active':'')+'" data-id="'+esc(n.registration_id)+'" data-status="late" onclick="setAttendanceStatus(this)">迟到</button>' : '')+
             '<button class="mini-btn leave '+(status==="leave"?'active':'')+'" data-id="'+esc(n.registration_id)+'" data-status="leave" onclick="setAttendanceStatus(this)">请假</button>'+
             '<button class="mini-btn delete" data-id="'+esc(n.registration_id)+'" onclick="deleteRegistration(this)">删除报名</button>'+
-          '</div></div>';
+          '</div>')+'</div>';
       });
       h += '</div>';
     });
     h += '</div>';
-  } else if (currentTab === "recent") {
+  } else if (tabName === "recent") {
     h = '<div class="section"><h3>&#x2705; 最近签到</h3>';
     currentData.recent.forEach(function(r) {
       var extra="";
@@ -1194,7 +1229,26 @@ function renderTab() {
       h += '<div class="list-item"><div><span class="li-name">'+esc(r.name)+'</span><span class="li-meta">'+extra+' · '+esc(r.center||r.class_name||r.group_name||"")+'</span></div><span class="li-meta">'+esc(r.checked_at||"")+'</span></div>';
     });
   }
-  document.getElementById("tabContent").innerHTML = h || '<div style="text-align:center;padding:40px;color:#64748b">暂无数据</div>';
+  return h || '<div style="text-align:center;padding:40px;color:#64748b">暂无数据</div>';
+}
+
+function renderTab() {
+  if (!currentData) return;
+  document.getElementById("tabContent").innerHTML = buildAttendanceTabHtml(currentTab, false);
+}
+
+var activityHistoryTab = "missing";
+
+function renderActivityHistoryTab() {
+  var target=document.getElementById("activityHistoryTabContent");
+  if(target && currentData) target.innerHTML=buildAttendanceTabHtml(activityHistoryTab,true);
+}
+
+function switchActivityHistoryTab(tab, button) {
+  activityHistoryTab=tab;
+  var tabs=document.querySelectorAll("#activityHistoryTabBar .tab");
+  Array.prototype.forEach.call(tabs,function(item){item.classList.toggle("active",item===button);});
+  renderActivityHistoryTab();
 }
 
 function switchTab(t) {
