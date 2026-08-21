@@ -799,6 +799,58 @@ function lifecycleTargetEvents(item) {
   return currentEvents.filter(function(row){return String(row.event_group_id||"")===String(item.event_group_id||"");}).sort(function(a,b){return Number(a.session_order||0)-Number(b.session_order||0);});
 }
 
+function mergeActivitySummary(item, updatesById) {
+  if(!item) return item;
+  var sessions=(item.sessions||[item]).map(function(row){return updatesById.get(String(row.event_id||"")) || row;});
+  var changed=sessions.some(function(row,index){return row!==((item.sessions||[item])[index]);});
+  if(!changed) return item;
+  var primary=sessions.find(function(row){return Number(row.session_order||0)===1;}) || sessions[0];
+  return Object.assign({}, item, primary, {sessions:sessions, session_count:sessions.length, is_group:sessions.length>1 || item.is_group});
+}
+
+function applyActivityMutationEvents(events) {
+  var rows=Array.isArray(events) ? events.filter(Boolean) : (events ? [events] : []);
+  if(!rows.length) return;
+  var updatesById=new Map(rows.map(function(row){return [String(row.event_id||""),row];}));
+  currentEvents=currentEvents.map(function(row){return updatesById.get(String(row.event_id||"")) || row;});
+  if(activityDetailItem) activityDetailItem=mergeActivitySummary(activityDetailItem,updatesById);
+  activityItems=activityItems.map(function(item){return mergeActivitySummary(item,updatesById);});
+  todayItems=todayItems.map(function(item){return mergeActivitySummary(item,updatesById);});
+  if(todaySelectedItem) todaySelectedItem=mergeActivitySummary(todaySelectedItem,updatesById);
+  currentData=null;
+  renderActivityList();
+  renderEventSelector();
+  if(activityDetailItem) renderActivityDetail(activityDetailItem);
+}
+
+async function refreshActivityStateAfterMutation() {
+  await loadData();
+  if(currentWorkspace === "activity") await loadActivityPage(activityPage);
+}
+
+function mutationButtonFor(action) {
+  var activity=currentWorkspace === "activity" && activityDetailItem;
+  var ids=activity ? {
+    status:"activityStatusBtn", CONFIRMED:"activityConfirmBtn", CANCELLED:"activityCancelBtn", DRAFT:"activityDraftBtn"
+  } : {
+    status:"eventStatusBtn", CONFIRMED:"confirmEventBtn", CANCELLED:"cancelEventBtn", DRAFT:"draftEventBtn"
+  };
+  return document.getElementById(ids[action]);
+}
+
+function setMutationButtonBusy(button, busy, text) {
+  if(!button) return;
+  if(busy){
+    button.dataset.previousText=button.textContent;
+    button.disabled=true;
+    button.textContent=text;
+  }else{
+    if(button.dataset.previousText) button.textContent=button.dataset.previousText;
+    delete button.dataset.previousText;
+    setUnsafeActionAvailability();
+  }
+}
+
 function setUnsafeActionAvailability() {
   var safe = !!adminToken && versionConsistent && systemHealthy;
   ["eventStatusBtn","confirmEventBtn","cancelEventBtn","draftEventBtn","resetCheckinsBtn","clearAllBtn","activityStatusBtn","activityConfirmBtn","activityCancelBtn","activityDraftBtn","activityResetBtn","activityClearBtn"].forEach(function(id){
@@ -865,8 +917,18 @@ async function toggleEventStatus(){
   var item=currentEvents.find(function(row){return row.event_id===currentEventId;}); if(!item)return;
   var next=item.manual_status==="active"?"closed":"active";
   if(!confirm(next==="closed"?"关闭后，该活动将不能继续签到，确定关闭吗？":"确定重新开放该活动签到吗？"))return;
-  await adminFetch("/event_update",{method:"POST",body:JSON.stringify({event_id:currentEventId,status:next})});
-  await loadData();
+  var button=mutationButtonFor("status");
+  setMutationButtonBusy(button,true,next==="closed"?"关闭中…":"恢复中…");
+  var msg=lifecycleMessageElement();
+  try{
+    var response=await adminFetch("/event_update",{method:"POST",body:JSON.stringify({event_id:currentEventId,status:next})});
+    var result=await response.json();
+    if(!result.ok) throw new Error(result.msg||"更新签到状态失败");
+    applyActivityMutationEvents(result.event);
+    showMsg(msg,result.msg||"签到状态已更新","success");
+    await refreshActivityStateAfterMutation();
+  }catch(e){showMsg(msg,"操作失败："+(e.message||"更新签到状态失败"),"error");}
+  finally{setMutationButtonBusy(button,false);}
 }
 
 async function updateEventLifecycle(next){
@@ -879,13 +941,17 @@ async function updateEventLifecycle(next){
   var groupMessage=targets.length>1 ? "\n\n此操作将同时作用于上述全部场次。" : "";
   if(!confirm("确定"+labels[next]+"“"+targetName+"”吗？"+groupMessage+(next==="CANCELLED"?"\n取消后不会出现在学员公开签到页，也不能继续维护报名记录。":"")))return;
   var msg=lifecycleMessageElement();
+  var button=mutationButtonFor(next);
+  setMutationButtonBusy(button,true,labels[next]+"中…");
   try{
     var r=await adminFetch("/event_lifecycle_update",{method:"POST",body:JSON.stringify({event_id:currentEventId,lifecycle_status:next,reason:"后台人工操作"})});
     var d=await r.json();
     if(!d.ok)throw new Error(d.msg||"更新失败");
+    applyActivityMutationEvents(d.events);
     showMsg(msg,d.msg||"活动状态已更新","success");
-    await loadData();
-  }catch(e){showMsg(msg,e.message||"更新失败","error");}
+    await refreshActivityStateAfterMutation();
+  }catch(e){showMsg(msg,"操作失败："+(e.message||"更新失败"),"error");}
+  finally{setMutationButtonBusy(button,false);}
 }
 
 async function changeAdminPassword(){
