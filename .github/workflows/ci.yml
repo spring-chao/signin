@@ -1,0 +1,31 @@
+name: signin-ci
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+jobs:
+  regression:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Check JavaScript syntax
+        run: |
+          node --check cloudfunc/index.js
+          node --check tests/checkin_api.test.js
+          node --check tests/admin_import_parser.test.js
+
+      - name: Run API regression tests
+        run: node tests/checkin_api.test.js
+
+      - name: Run import parser regression tests
+        run: node tests/admin_import_parser.test.js

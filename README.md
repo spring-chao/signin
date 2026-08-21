@@ -167,7 +167,7 @@ tcb hosting delete /v3/admin.html -e {你的环境ID}
 | `/api/attendance_status` | POST | 后台标记未签到、迟到或请假 |
 | `/api/upload` | POST | 管理后台导入 Excel |
 | `/api/reset` | POST | 清空签到记录 |
-| `/api/clear_all` | POST | 清空全部数据 |
+| `/api/clear_all` | POST | 永久删除当前活动；三场班会按 `event_group_id` 删除整个活动组并写入删除审计 |
 | `/api/event_lifecycle_update` | POST | 后台确认、取消或退回活动草稿 |
 
 ### 签到请求示例

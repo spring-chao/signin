@@ -264,7 +264,7 @@ input:checked+.slider:before{transform:translateX(20px)}
 </div>
 <script>
 var API = "https://shengheshu-d2g2zyyl99f6c6fc2-1453587887.ap-shanghai.app.tcloudbase.com/api";
-var adminToken = "", refreshTimer = null, eventListTimer = null, versionConsistent = false;
+var adminToken = "", refreshTimer = null, eventListTimer = null, versionCheckTimer = null, versionCheckInFlight = null, versionConsistent = false;
 var currentTab = "groups", currentData = null, currentEvents = [], currentEventId = "", excelData = null, uploadGroupField = "", uploadPreview = null, uploadPreviewTimer = null, opsRosterOptions = [];
 document.getElementById("eventDateInput").value = new Date().toLocaleDateString("en-CA", {timeZone:"Asia/Shanghai"});
 syncDefaultCheckinTimes();
@@ -289,12 +289,15 @@ function esc(value) {
 
 async function adminFetch(path, options) {
   options = options || {};
+  var method = String(options.method || "GET").toUpperCase();
+  if (method !== "GET" && !(await ensureVersionConsistent())) throw new Error("前后端版本未通过一致性校验，高风险操作已禁用");
   options.headers = Object.assign({}, options.headers || {}, authHeaders(!!options.body));
   var response = await fetch(API + path, options);
   if (response.status === 401) {
     adminToken = "";
     if (refreshTimer) clearInterval(refreshTimer);
     if (eventListTimer) clearInterval(eventListTimer);
+    if (versionCheckTimer) clearInterval(versionCheckTimer);
     document.getElementById("mainPanel").style.display="none";
     document.getElementById("loginCard").style.display="block";
     throw new Error("登录已失效，请重新登录");
@@ -314,12 +317,14 @@ async function doLogin() {
     adminToken = result.token;
     document.getElementById("loginCard").style.display="none";
     document.getElementById("mainPanel").style.display="block";
-    await loadVersionInfo();
+    await ensureVersionConsistent();
     await loadData();
     if (refreshTimer) clearInterval(refreshTimer);
     if (eventListTimer) clearInterval(eventListTimer);
+    if (versionCheckTimer) clearInterval(versionCheckTimer);
     refreshTimer = setInterval(refreshCurrentStats, 5000);
     eventListTimer = setInterval(loadData, 45000);
+    versionCheckTimer = setInterval(ensureVersionConsistent, 60000);
   } catch (e) { showMsg(m,"登录失败："+e.message,"error"); }
 }
 
@@ -373,6 +378,12 @@ function renderEventSelector() {
   document.getElementById("draftEventBtn").disabled=!item||lifecycle==="DRAFT";
   var btn=document.getElementById("eventStatusBtn");
   btn.textContent=item && item.manual_status==="active" ? "手动关闭签到" : "恢复按时间开放";
+  document.getElementById("confirmEventBtn").dataset.stateDisabled=String(!item||lifecycle==="CONFIRMED");
+  document.getElementById("cancelEventBtn").dataset.stateDisabled=String(!item||lifecycle==="CANCELLED");
+  document.getElementById("draftEventBtn").dataset.stateDisabled=String(!item||lifecycle==="DRAFT");
+  btn.dataset.stateDisabled=String(!item);
+  document.getElementById("resetCheckinsBtn").dataset.stateDisabled=String(!item);
+  document.getElementById("clearAllBtn").dataset.stateDisabled=String(!item);
   document.getElementById("manualAddBtn").disabled=!item || item.lifecycle_status==="CANCELLED" || ["upcoming","open"].indexOf(item.checkin_status)===-1;
   setUnsafeActionAvailability();
 }
@@ -385,7 +396,7 @@ function lifecycleTargetEvents(item) {
 function setUnsafeActionAvailability() {
   var safe = !!adminToken && versionConsistent;
   ["eventStatusBtn","confirmEventBtn","cancelEventBtn","draftEventBtn","resetCheckinsBtn","clearAllBtn"].forEach(function(id){
-    var element=document.getElementById(id); if(element) element.disabled=element.disabled || !safe;
+    var element=document.getElementById(id); if(element) element.disabled=element.dataset.stateDisabled==="true" || !safe;
   });
 }
 
@@ -405,16 +416,22 @@ async function loadVersionInfo(){
     if(versionConsistent){
       document.getElementById("versionInfo").innerHTML='<span style="color:#4ade80">✅ '+esc(text+' · 前后端一致')+'</span>';
     }else{
-      document.getElementById("versionInfo").innerHTML='<span style="color:#f87171">⚠️ '+esc(text+' · 前后端版本不一致，修改操作已禁用')+'</span>';
+      document.getElementById("versionInfo").innerHTML='<span style="color:#f87171">⚠️ '+esc(text+' · 前后端版本不一致，高风险操作已禁用')+'</span>';
     }
     setUnsafeActionAvailability();
     return versionConsistent;
   }catch(e){
     versionConsistent=false;
-    document.getElementById("versionInfo").innerHTML='<span style="color:#f87171">⚠️ 前后端版本校验失败，修改操作已禁用</span>';
+    document.getElementById("versionInfo").innerHTML='<span style="color:#f87171">⚠️ 前后端版本校验失败，高风险操作已禁用</span>';
     setUnsafeActionAvailability();
     return false;
   }
+}
+
+function ensureVersionConsistent(){
+  if(versionCheckInFlight) return versionCheckInFlight;
+  versionCheckInFlight=loadVersionInfo().finally(function(){versionCheckInFlight=null;});
+  return versionCheckInFlight;
 }
 
 async function selectAdminEvent(){
@@ -424,7 +441,7 @@ async function selectAdminEvent(){
 }
 
 async function toggleEventStatus(){
-  if(!versionConsistent){showMsg(document.getElementById("eventLifecycleMsg"),"前后端版本未通过一致性校验，暂不能修改活动状态","error");return;}
+  if(!(await ensureVersionConsistent())){showMsg(document.getElementById("eventLifecycleMsg"),"前后端版本未通过一致性校验，高风险操作已禁用","error");return;}
   var item=currentEvents.find(function(row){return row.event_id===currentEventId;}); if(!item)return;
   var next=item.manual_status==="active"?"closed":"active";
   if(!confirm(next==="closed"?"关闭后，该活动将不能继续签到，确定关闭吗？":"确定重新开放该活动签到吗？"))return;
@@ -433,7 +450,7 @@ async function toggleEventStatus(){
 }
 
 async function updateEventLifecycle(next){
-  if(!versionConsistent){showMsg(document.getElementById("eventLifecycleMsg"),"前后端版本未通过一致性校验，暂不能修改活动生命周期","error");return;}
+  if(!(await ensureVersionConsistent())){showMsg(document.getElementById("eventLifecycleMsg"),"前后端版本未通过一致性校验，高风险操作已禁用","error");return;}
   var item=currentEvents.find(function(row){return row.event_id===currentEventId;});
   if(!item)return;
   var labels={DRAFT:"退回草稿",CONFIRMED:"确认举办",CANCELLED:"取消活动"};
@@ -471,6 +488,7 @@ async function changeAdminPassword(){
     adminToken="";
     if(refreshTimer)clearInterval(refreshTimer);
     if(eventListTimer)clearInterval(eventListTimer);
+    if(versionCheckTimer)clearInterval(versionCheckTimer);
     document.getElementById("mainPanel").style.display="none";
     document.getElementById("loginCard").style.display="block";
     showMsg(document.getElementById("loginMsg"),"密码已修改，请使用新密码重新登录","success");
@@ -1164,7 +1182,7 @@ function showMsg(el, text, type) {
 }
 
 async function resetCheckins() {
-  if(!versionConsistent){showMsg(document.getElementById("clearMsg"),"前后端版本未通过一致性校验，暂不能清空签到","error");return;}
+  if(!(await ensureVersionConsistent())){showMsg(document.getElementById("clearMsg"),"前后端版本未通过一致性校验，高风险操作已禁用","error");return;}
   if (!confirm("确定清空当前活动的签到记录？")) return;
   var msg = document.getElementById("clearMsg");
   try {
@@ -1176,11 +1194,15 @@ async function resetCheckins() {
 }
 
 async function clearAll() {
-  if(!versionConsistent){showMsg(document.getElementById("clearMsg"),"前后端版本未通过一致性校验，暂不能删除活动数据","error");return;}
+  if(!(await ensureVersionConsistent())){showMsg(document.getElementById("clearMsg"),"前后端版本未通过一致性校验，高风险操作已禁用","error");return;}
   var item=currentEvents.find(function(row){return row.event_id===currentEventId;});
   if(!item){showMsg(document.getElementById("clearMsg"),"请先选择当前活动","error");return;}
-  if (!confirm("第一次确认：将删除当前活动“"+item.name+"”的全部报名和签到记录。\n\n其他活动不会受到影响。是否继续？")) return;
-  if (!confirm("第二次确认：活动“"+item.name+"”及其报名、签到数据删除后不可恢复。\n\n确定永久删除吗？")) return;
+  var targets=lifecycleTargetEvents(item);
+  var isGroup=targets.length>1;
+  var targetLabel=isGroup ? "三场活动组（"+targets.map(function(row){return row.session_name||row.name;}).join("、")+"）" : "当前活动“"+item.name+"”";
+  var scopeText=isGroup ? "这是一个三场班会活动组，上午、下午、空巴及其全部报名和签到记录都会一起删除。" : "将删除当前活动的全部报名和签到记录。";
+  if (!confirm("第一次确认：将永久删除"+targetLabel+"。\n\n"+scopeText+"\n其他活动不会受到影响。是否继续？")) return;
+  if (!confirm("第二次确认："+targetLabel+"及其报名、签到数据删除后不可恢复。\n\n确定永久删除吗？")) return;
   var msg = document.getElementById("clearMsg");
   try {
     var r = await adminFetch("/clear_all", {method:"POST",body:JSON.stringify({event_id:currentEventId})});

@@ -546,6 +546,16 @@ async function request(path, method, body, token, extraHeaders) {
   }, token);
   assert.equal(konpaLate.data.ok, false, "空巴不应设置迟到状态");
 
+  db.collections.checkins.push({ _id: "checkin-cascade", batch_id: "cascade-2", registration_id: db.collections.registrations.find(row => row.phone === "13800000022" && row.batch_id === "cascade-2")._id, checked_at: new Date().toISOString() });
+  const deletedCascadeGroup = await request("/clear_all", "POST", { event_id: "cascade-1" }, token);
+  assert.equal(deletedCascadeGroup.data.ok, true, "删除三场班会时应删除整个活动组");
+  assert.equal(deletedCascadeGroup.data.deleted_count, 3);
+  assert.deepEqual(deletedCascadeGroup.data.deleted_event_ids.sort(), ["cascade-1", "cascade-2", "cascade-3"]);
+  assert(!db.collections.events.some(row => row.event_group_id === "cascade-group"), "三场班会的全部活动记录都必须删除");
+  assert(!db.collections.registrations.some(row => ["cascade-1", "cascade-2", "cascade-3"].includes(row.batch_id)), "三场班会的全部报名都必须删除");
+  assert(!db.collections.checkins.some(row => ["cascade-1", "cascade-2", "cascade-3"].includes(row.batch_id)), "三场班会的全部签到都必须删除");
+  assert.equal(db.collections.event_audit_logs.filter(row => row.action === "event.deleted" && row.event_group_id === "cascade-group").length, 3, "三场删除必须为每个场次写入删除审计");
+
   const defaultDate = "2099-03-03";
   const defaultSessions = await request("/create_class_meeting_sessions", "POST", {
     event_date: defaultDate,

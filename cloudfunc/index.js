@@ -755,6 +755,20 @@ exports.main = async (event, context) => {
     });
   }
 
+  async function writeEventDeletionAudit(eventItem, reason) {
+    await db.collection("event_audit_logs").add({
+      action: "event.deleted",
+      event_id: String(eventItem.event_id || eventItem._id || ""),
+      event_group_id: String(eventItem.event_group_id || ""),
+      previous_status: lifecycleStatus(eventItem),
+      next_status: "DELETED",
+      reason: String(reason || "后台人工永久删除").trim(),
+      source_system: eventItem.source_system || "MANUAL_ADMIN",
+      actor: "admin_token",
+      occurred_at: new Date().toISOString()
+    });
+  }
+
   function validateLifecycleConfirmation(eventItem) {
     const eventDate = validEventDate(eventItem && eventItem.event_date);
     if (!eventDate) return "活动日期必须为 YYYY-MM-DD";
@@ -1560,16 +1574,29 @@ exports.main = async (event, context) => {
     try {
       const selectedEvent = await getRequestedEvent(data.event_id);
       if (!selectedEvent) return { statusCode: 200, headers: h, body: JSON.stringify({ ok: false, msg: "请先选择要删除的当前活动" }) };
-      const eventId = String(selectedEvent.event_id || selectedEvent._id || "");
-      const delRegs = await deleteDocs("registrations", await rowsForBatch("registrations", eventId, 5000));
-      const delCks = await deleteDocs("checkins", await rowsForBatch("checkins", eventId, 5000));
-      await db.collection("events").doc(selectedEvent._id).remove();
-      const remainingEvents = (await getAll("events", 500)).sort((a, b) => String(b.event_date || "").localeCompare(String(a.event_date || "")));
+      const allEvents = await getEvents();
+      const eventGroupId = String(selectedEvent.event_group_id || "").trim();
+      const targetEvents = eventGroupId
+        ? allEvents.filter(item => String(item.event_group_id || "") === eventGroupId)
+        : [selectedEvent];
+      const deletedEventIds = [];
+      let delRegs = 0;
+      let delCks = 0;
+      for (const target of targetEvents) {
+        const eventId = String(target.event_id || target._id || "");
+        delRegs += await deleteDocs("registrations", await rowsForBatch("registrations", eventId, 5000));
+        delCks += await deleteDocs("checkins", await rowsForBatch("checkins", eventId, 5000));
+        await db.collection("events").doc(target._id).remove();
+        await writeEventDeletionAudit(target, eventGroupId ? "后台人工永久删除三场活动组" : "后台人工永久删除单场活动");
+        deletedEventIds.push(eventId);
+      }
+      const remainingEvents = await getEvents();
       const nextEvent = remainingEvents[0] || null;
       await setConfig("event_name", nextEvent ? nextEvent.name : "盛和塾签到");
       await setConfig("group_field", nextEvent ? (nextEvent.group_field || "") : "");
       await setConfig("active_batch_id", nextEvent ? String(nextEvent.event_id || nextEvent._id || "") : "");
-      return { statusCode: 200, headers: h, body: JSON.stringify({ ok: true, deleted_event_id: eventId, msg: "当前活动“" + String(selectedEvent.name || "") + "”已删除（报名" + delRegs + "条，签到" + delCks + "条）；其他活动未受影响" }) };
+      const groupText = targetEvents.length > 1 ? "活动组（" + targetEvents.map(item => String(item.session_name || item.name || "活动")).join("、") + "）" : "当前活动“" + String(selectedEvent.name || "") + "”";
+      return { statusCode: 200, headers: h, body: JSON.stringify({ ok: true, deleted_event_id: deletedEventIds[0] || "", deleted_event_ids: deletedEventIds, deleted_event_group_id: eventGroupId, deleted_count: deletedEventIds.length, msg: groupText + "已删除（报名" + delRegs + "条，签到" + delCks + "条）；其他活动未受影响" }) };
     } catch (e) {
       return { statusCode: 200, headers: h, body: JSON.stringify({ ok: false, msg: "操作失败: " + (e.message || "") }) };
     }
