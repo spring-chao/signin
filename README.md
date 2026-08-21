@@ -162,6 +162,7 @@ tcb hosting delete /v3/admin.html -e {你的环境ID}
 |------|------|------|
 | `/api/event` | GET | 获取当前活动名称和报名人数 |
 | `/api/version` | GET | 获取生产版本、Git commit 和部署时间 |
+| `/api/health` | GET | 检查签到核心数据集合是否可读；后台高风险操作依赖此检查 |
 | `/api/admin_events` | GET | 管理后台活动元数据分页查询；支持 `page`、`page_size`、`keyword`、`lifecycle_status`、`activity_type`、`date_from`、`date_to` |
 | `/api/checkin` | POST | 签到（姓名+手机号） |
 | `/api/stats` | GET | 签到统计数据 |

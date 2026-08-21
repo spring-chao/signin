@@ -132,6 +132,22 @@ input:checked+.slider:before{transform:translateX(20px)}
 .activity-range-actions .btn{padding:7px 12px;font-size:12px}
 .activity-range-hint{font-size:11px;color:#64748b}
 .activity-list{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
+.activity-workspace-grid{display:grid;grid-template-columns:minmax(300px,.9fr) minmax(0,1.35fr);gap:16px;align-items:start}
+.activity-detail-layout{display:grid;gap:12px}
+.session-picker{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin:12px 0}
+.session-card{display:block;width:100%;padding:11px;text-align:left;border:1px solid rgba(255,255,255,.1);border-radius:10px;background:rgba(255,255,255,.035);color:#e2e8f0;cursor:pointer;transition:border-color .2s,background .2s,transform .2s}
+.session-card:hover,.session-card.selected{border-color:#60a5fa;background:rgba(59,130,246,.16);transform:translateY(-1px)}
+.session-card .session-name{font-weight:700;font-size:13px;margin-bottom:5px}
+.session-card .session-state{font-size:11px;color:#94a3b8;line-height:1.6}
+.session-card.selected .session-state{color:#bfdbfe}
+.activity-detail-toolbar{display:flex;gap:8px;flex-wrap:wrap}
+.activity-detail-toolbar .btn{flex:1;min-width:120px}
+.danger-zone>summary{cursor:pointer;font-weight:700;color:#fca5a5;list-style:none}
+.danger-zone>summary::-webkit-details-marker{display:none}
+.danger-zone>summary:before{content:"▶";display:inline-block;margin-right:7px;font-size:11px;transition:transform .2s}
+.danger-zone[open]>summary:before{transform:rotate(90deg)}
+.danger-zone>summary+h3{display:none}
+.health-details{margin-top:8px;font-size:12px;line-height:1.7;color:#94a3b8}
 .activity-card{display:block;width:100%;padding:14px;text-align:left;border:1px solid rgba(255,255,255,.08);border-radius:12px;background:rgba(255,255,255,.035);color:#e2e8f0;cursor:pointer;transition:border-color .2s,background .2s}
 .activity-card:hover,.activity-card.selected{border-color:#3b82f6;background:rgba(59,130,246,.1)}
 .activity-card .activity-date{font-size:11px;color:#64748b;margin-bottom:6px}
@@ -145,8 +161,9 @@ input:checked+.slider:before{transform:translateX(20px)}
 .empty-state{padding:28px 12px;text-align:center;color:#64748b;font-size:13px;border:1px dashed rgba(255,255,255,.1);border-radius:12px}
 .danger-zone{margin-top:16px;padding:14px;border:1px solid rgba(239,68,68,.28);border-radius:12px;background:rgba(239,68,68,.06)}
 .danger-zone h3{color:#fca5a5}
-@media(max-width:900px){.activity-toolbar{grid-template-columns:repeat(3,minmax(0,1fr))}.activity-toolbar .keyword-field{grid-column:span 3}.activity-toolbar .search-field{grid-column:span 3}.activity-list{grid-template-columns:1fr}}
+@media(max-width:900px){.activity-toolbar{grid-template-columns:repeat(3,minmax(0,1fr))}.activity-toolbar .keyword-field{grid-column:span 3}.activity-toolbar .search-field{grid-column:span 3}.activity-list{grid-template-columns:1fr}.activity-workspace-grid{grid-template-columns:1fr}.session-picker{grid-template-columns:repeat(3,minmax(0,1fr))}}
 @media(max-width:768px){.container{max-width:100%;padding:12px}.workspace-nav{top:4px}.workspace-nav button{padding:10px 6px;font-size:13px}.form-grid{grid-template-columns:1fr}.overview{gap:6px}.ov-item{padding:12px 5px}.ov-item .num{font-size:26px}.activity-toolbar{grid-template-columns:1fr}.activity-toolbar .keyword-field,.activity-toolbar .search-field{grid-column:auto}}
+@media(max-width:520px){.session-picker{grid-template-columns:1fr}.activity-detail-toolbar .btn{flex-basis:100%}}
 </style>
 </head>
 <body>
@@ -206,18 +223,19 @@ input:checked+.slider:before{transform:translateX(20px)}
         <button class="tab" onclick="switchTab('recent')">已签到</button>
       </div>
       <div id="tabContent"></div>
-      <div id="dangerSection" class="danger-zone">
-        <h3>⚠️ 当前活动危险操作</h3>
+      <details id="dangerSection" class="danger-zone">
+        <summary>⚠️ 当前活动危险操作</summary>
         <div class="form-help">清空签到会保留报名记录；永久删除会按三场班会活动组一并删除报名、签到和活动记录，并写入审计日志。</div>
         <div class="btn-group">
           <button class="btn danger" id="resetCheckinsBtn" onclick="resetCheckins()">&#x1f504; 清空签到</button>
           <button class="btn danger" id="clearAllBtn" onclick="clearAll()">&#x1f5d1; 删除当前活动全部数据</button>
         </div>
         <div class="msg" id="clearMsg"></div>
-      </div>
+      </details>
     </div>
 
     <div id="activityWorkspace" class="workspace-panel">
+      <div class="activity-workspace-grid">
       <div id="activityListSection" class="section workspace-card">
         <h3>活动管理</h3>
         <div class="activity-toolbar">
@@ -238,12 +256,13 @@ input:checked+.slider:before{transform:translateX(20px)}
       </div>
 
       <div id="activityDetailSection" class="section workspace-card" style="display:none">
+        <div class="activity-detail-layout">
         <h3>活动详情</h3>
         <div id="activityDetailMeta" class="form-help"></div>
-        <div id="activityDetailSessions" class="form-help"></div>
+        <div id="activityDetailSessions" class="session-picker" aria-label="选择签到场次"></div>
         <div class="overview" id="activityDetailStats"></div>
         <button class="btn primary full" id="activityOpenTodayBtn" onclick="openActivityInToday()" style="display:none">打开今日签到</button>
-        <div class="btn-group">
+        <div class="activity-detail-toolbar">
           <button class="btn" id="activityStatusBtn" onclick="toggleEventStatus()">切换签到状态</button>
           <button class="btn success" id="activityConfirmBtn" onclick="updateEventLifecycle('CONFIRMED')">确认举办</button>
           <button class="btn danger" id="activityCancelBtn" onclick="updateEventLifecycle('CANCELLED')">取消活动</button>
@@ -251,14 +270,16 @@ input:checked+.slider:before{transform:translateX(20px)}
         </div>
         <div class="msg" id="activityDetailMsg"></div>
         <button class="btn success full" id="activityExportBtn" onclick="exportExcel()">&#x1f4e5; 导出当前活动名单</button>
-        <div class="danger-zone">
-          <h3>⚠️ 当前活动危险操作</h3>
+        <details class="danger-zone">
+          <summary>⚠️ 当前活动危险操作</summary>
           <div class="form-help">历史活动的清空签到和永久删除也必须在这里明确操作。</div>
           <div class="btn-group">
             <button class="btn danger" id="activityResetBtn" onclick="resetCheckins()">&#x1f504; 清空签到</button>
             <button class="btn danger" id="activityClearBtn" onclick="clearAll()">&#x1f5d1; 删除当前活动全部数据</button>
           </div>
+        </details>
         </div>
+      </div>
       </div>
 
       <div id="activityCreateSection" class="section">
@@ -355,6 +376,7 @@ input:checked+.slider:before{transform:translateX(20px)}
       <div id="settingsVersionSection" class="section workspace-card">
         <h3>版本与健康状态</h3>
         <div id="versionInfo"></div>
+        <div id="healthInfo" class="health-details">正在读取系统健康状态…</div>
         <div class="form-help" style="margin-top:8px">前后端 commit 不一致时，高风险操作会自动禁用。</div>
       </div>
     </div>
@@ -363,7 +385,7 @@ input:checked+.slider:before{transform:translateX(20px)}
 </div>
 <script>
 var API = "https://shengheshu-d2g2zyyl99f6c6fc2-1453587887.ap-shanghai.app.tcloudbase.com/api";
-var adminToken = "", refreshTimer = null, eventListTimer = null, versionCheckTimer = null, versionCheckInFlight = null, versionConsistent = false;
+var adminToken = "", refreshTimer = null, eventListTimer = null, versionCheckTimer = null, versionCheckInFlight = null, versionConsistent = false, systemHealthy = false;
 var currentTab = "groups", currentData = null, currentEvents = [], currentEventId = "", excelData = null, uploadGroupField = "", uploadPreview = null, uploadPreviewTimer = null, opsRosterOptions = [], opsRosterQuality = null;
 var currentWorkspace = "today", activityItems = [], activityPage = 1, activityPageSize = 20, activityHasMore = false, todayItems = [], todaySelectedItem = null, activityDetailItem = null;
 document.getElementById("eventDateInput").value = new Date().toLocaleDateString("en-CA", {timeZone:"Asia/Shanghai"});
@@ -391,7 +413,7 @@ function esc(value) {
 async function adminFetch(path, options) {
   options = options || {};
   var method = String(options.method || "GET").toUpperCase();
-  if (method !== "GET" && !(await ensureVersionConsistent())) throw new Error("前后端版本未通过一致性校验，高风险操作已禁用");
+  if (method !== "GET" && !(await ensureVersionConsistent())) throw new Error("版本或系统健康检查未通过，高风险操作已禁用");
   options.headers = Object.assign({}, options.headers || {}, authHeaders(!!options.body));
   var response = await fetch(API + path, options);
   if (response.status === 401) {
@@ -496,6 +518,18 @@ function activityTypeLabel(type) {
   return {course:"课程",class_meeting:"班会/班级学习会",group_meeting:"小组学习会",national_report:"全国报告会",center_quarterly_report:"分中心季度报告会",staff_training:"班主任辅导员培训会",board_meeting:"理事会",study_tour:"游学",other:"其他"}[type] || type || "其他";
 }
 
+function setLifecycleButtonVisibility(prefix, lifecycle) {
+  var visibility = {
+    Confirm: lifecycle !== "CONFIRMED",
+    Cancel: lifecycle !== "CANCELLED",
+    Draft: lifecycle !== "DRAFT"
+  };
+  Object.keys(visibility).forEach(function(name){
+    var button=document.getElementById(prefix+name+"Btn");
+    if(button) button.style.display=visibility[name] ? "" : "none";
+  });
+}
+
 function renderActivityList() {
   var list=document.getElementById("activityList");
   if(!list) return;
@@ -530,7 +564,16 @@ function renderActivityDetail(item) {
   var stateNames={open:"签到中",upcoming:"未开始",ended:"已结束",closed:"已手动关闭"};
   var sessions=item.sessions||[item];
   document.getElementById("activityDetailMeta").textContent=(item.event_date||"")+" · "+(item.activity_type_name||activityTypeLabel(item.activity_type))+" · "+(lifecycleNames[item.lifecycle_status]||"草稿");
-  document.getElementById("activityDetailSessions").textContent="场次："+sessions.map(function(row){return (row.session_name||"单场")+"（"+(stateNames[row.checkin_status]||"")+"）";}).join("、");
+  var sessionPicker=document.getElementById("activityDetailSessions");
+  sessionPicker.innerHTML=sessions.map(function(row){
+    var selected=String(row.event_id||"")===String(currentEventId||"");
+    return '<button type="button" class="session-card'+(selected?' selected':'')+'" data-session-event-id="'+esc(row.event_id)+'" aria-pressed="'+(selected?'true':'false')+'">'+
+      '<div class="session-name">'+esc(row.session_name||"单场活动")+(selected?' · 当前':'')+'</div>'+
+      '<div class="session-state">'+esc(stateNames[row.checkin_status]||"未开始")+' · '+esc(row.checkin_start_at ? formatChinaDateTime(row.checkin_start_at,{month:"2-digit",day:"2-digit",hour:"2-digit",minute:"2-digit",hour12:false}) : "时间待定")+'</div></button>';
+  }).join("");
+  Array.prototype.forEach.call(sessionPicker.querySelectorAll(".session-card"),function(button){
+    button.addEventListener("click",function(){selectActivitySession(button.getAttribute("data-session-event-id"));});
+  });
   var stats=document.getElementById("activityDetailStats");
   stats.innerHTML=currentData && currentData.event && String(currentData.event.event_id||"")===String(currentEventId||"") ?
     '<div class="ov-item"><div class="num green">'+currentData.checked+'</div><div class="label">已签到</div></div><div class="ov-item"><div class="num blue">'+currentData.total+'</div><div class="label">报名总数</div></div><div class="ov-item"><div class="num yellow">'+currentData.rate+'%</div><div class="label">签到率</div></div>' : '<div class="form-help">正在读取当前活动统计…</div>';
@@ -545,6 +588,7 @@ function renderActivityDetail(item) {
   document.getElementById("activityResetBtn").dataset.stateDisabled="false";
   document.getElementById("activityClearBtn").dataset.stateDisabled="false";
   document.getElementById("activityOpenTodayBtn").style.display=item.event_date===chinaDateKey() ? "block" : "none";
+  setLifecycleButtonVisibility("activity", lifecycle);
   setUnsafeActionAvailability();
 }
 
@@ -611,11 +655,25 @@ async function selectActivityCard(eventId) {
   currentEventId=String(item.event_id);
   currentEvents=(item.sessions||[item]).slice();
   currentData=null;
+  renderActivityList();
   renderActivityDetail(item);
   switchWorkspace("activity");
   try{
     await refreshCurrentStats();
   }catch(e){document.getElementById("lastUpdate").textContent=e.message||"活动切换失败";}
+}
+
+async function selectActivitySession(eventId) {
+  if(!activityDetailItem) return;
+  var session=currentEvents.find(function(row){return String(row.event_id)===String(eventId);});
+  if(!session) return;
+  currentEventId=String(session.event_id);
+  currentData=null;
+  renderActivityList();
+  renderActivityDetail(activityDetailItem);
+  try{
+    await refreshCurrentStats();
+  }catch(e){document.getElementById("lastUpdate").textContent=e.message||"场次切换失败";}
 }
 
 async function openActivityInToday(){
@@ -664,6 +722,7 @@ function renderEventSelector() {
   document.getElementById("confirmEventBtn").disabled=!item||lifecycle==="CONFIRMED";
   document.getElementById("cancelEventBtn").disabled=!item||lifecycle==="CANCELLED";
   document.getElementById("draftEventBtn").disabled=!item||lifecycle==="DRAFT";
+  setLifecycleButtonVisibility("", lifecycle);
   var btn=document.getElementById("eventStatusBtn");
   btn.textContent=item && item.manual_status==="active" ? "手动关闭签到" : "恢复按时间开放";
   document.getElementById("confirmEventBtn").dataset.stateDisabled=String(!item||lifecycle==="CONFIRMED");
@@ -682,7 +741,7 @@ function lifecycleTargetEvents(item) {
 }
 
 function setUnsafeActionAvailability() {
-  var safe = !!adminToken && versionConsistent;
+  var safe = !!adminToken && versionConsistent && systemHealthy;
   ["eventStatusBtn","confirmEventBtn","cancelEventBtn","draftEventBtn","resetCheckinsBtn","clearAllBtn","activityStatusBtn","activityConfirmBtn","activityCancelBtn","activityDraftBtn","activityResetBtn","activityClearBtn"].forEach(function(id){
     var element=document.getElementById(id); if(element) element.disabled=element.dataset.stateDisabled==="true" || !safe;
   });
@@ -691,14 +750,18 @@ function setUnsafeActionAvailability() {
 async function loadVersionInfo(){
   try{
     versionConsistent=false;
+    systemHealthy=false;
     document.getElementById("versionInfo").textContent="正在校验前后端版本…";
+    document.getElementById("healthInfo").textContent="正在检查系统数据集合…";
     var results=await Promise.all([
       fetch(API+"/version",{cache:"no-store"}).then(function(r){return r.json();}),
-      fetch(new URL("/build-info.json?check="+Date.now(),window.location.origin),{cache:"no-store"}).then(function(r){return r.json();})
+      fetch(new URL("/build-info.json?check="+Date.now(),window.location.origin),{cache:"no-store"}).then(function(r){return r.json();}),
+      fetch(API+"/health?check="+Date.now(),{cache:"no-store"}).then(function(r){return r.json();})
     ]);
-    var backend=results[0],frontend=results[1];
+    var backend=results[0],frontend=results[1],health=results[2];
     var backendCommit=String(backend.commit||"").trim(), frontendCommit=String(frontend.commit||"").trim();
     versionConsistent=Boolean(backend.ok===true && backendCommit && backendCommit!=="unknown" && frontendCommit && frontendCommit!=="unknown" && backendCommit===frontendCommit);
+    systemHealthy=Boolean(health && health.ok===true);
     var shortCommit=backendCommit && backendCommit!=="unknown" ? backendCommit.slice(0,7) : "unknown";
     var text="生产版本："+(backend.version||"unknown")+" · 后端 "+shortCommit+" · 前端 "+(frontendCommit&&frontendCommit!=="unknown"?frontendCommit.slice(0,7):"unknown");
     if(versionConsistent){
@@ -706,11 +769,17 @@ async function loadVersionInfo(){
     }else{
       document.getElementById("versionInfo").innerHTML='<span style="color:#f87171">⚠️ '+esc(text+' · 前后端版本不一致，高风险操作已禁用')+'</span>';
     }
+    var failedCollections=(health && Array.isArray(health.collections) ? health.collections : []).filter(function(row){return !row.ok;}).map(function(row){return row.collection;});
+    document.getElementById("healthInfo").innerHTML=systemHealthy ?
+      '<span style="color:#4ade80">✅ 核心数据集合正常，审计日志可写</span>' :
+      '<span style="color:#f87171">⚠️ 系统数据集合检查未通过，高风险操作已禁用'+(failedCollections.length?'：'+esc(failedCollections.join("、")):'')+'</span>';
     setUnsafeActionAvailability();
-    return versionConsistent;
+    return versionConsistent && systemHealthy;
   }catch(e){
     versionConsistent=false;
+    systemHealthy=false;
     document.getElementById("versionInfo").innerHTML='<span style="color:#f87171">⚠️ 前后端版本校验失败，高风险操作已禁用</span>';
+    document.getElementById("healthInfo").innerHTML='<span style="color:#f87171">⚠️ 系统健康检查失败，高风险操作已禁用</span>';
     setUnsafeActionAvailability();
     return false;
   }
@@ -733,7 +802,7 @@ function lifecycleMessageElement(){return currentWorkspace === "activity" && act
 function clearMessageElement(){return currentWorkspace === "activity" && activityDetailItem ? document.getElementById("activityDetailMsg") : document.getElementById("clearMsg");}
 
 async function toggleEventStatus(){
-  if(!(await ensureVersionConsistent())){showMsg(lifecycleMessageElement(),"前后端版本未通过一致性校验，高风险操作已禁用","error");return;}
+  if(!(await ensureVersionConsistent())){showMsg(lifecycleMessageElement(),"版本或系统健康检查未通过，高风险操作已禁用","error");return;}
   var item=currentEvents.find(function(row){return row.event_id===currentEventId;}); if(!item)return;
   var next=item.manual_status==="active"?"closed":"active";
   if(!confirm(next==="closed"?"关闭后，该活动将不能继续签到，确定关闭吗？":"确定重新开放该活动签到吗？"))return;
@@ -742,7 +811,7 @@ async function toggleEventStatus(){
 }
 
 async function updateEventLifecycle(next){
-  if(!(await ensureVersionConsistent())){showMsg(lifecycleMessageElement(),"前后端版本未通过一致性校验，高风险操作已禁用","error");return;}
+  if(!(await ensureVersionConsistent())){showMsg(lifecycleMessageElement(),"版本或系统健康检查未通过，高风险操作已禁用","error");return;}
   var item=currentEvents.find(function(row){return row.event_id===currentEventId;});
   if(!item)return;
   var labels={DRAFT:"退回草稿",CONFIRMED:"确认举办",CANCELLED:"取消活动"};
@@ -1583,7 +1652,7 @@ function showMsg(el, text, type) {
 }
 
 async function resetCheckins() {
-  if(!(await ensureVersionConsistent())){showMsg(clearMessageElement(),"前后端版本未通过一致性校验，高风险操作已禁用","error");return;}
+  if(!(await ensureVersionConsistent())){showMsg(clearMessageElement(),"版本或系统健康检查未通过，高风险操作已禁用","error");return;}
   if (!confirm("确定清空当前活动的签到记录？")) return;
   var msg = clearMessageElement();
   try {
@@ -1595,7 +1664,7 @@ async function resetCheckins() {
 }
 
 async function clearAll() {
-  if(!(await ensureVersionConsistent())){showMsg(clearMessageElement(),"前后端版本未通过一致性校验，高风险操作已禁用","error");return;}
+  if(!(await ensureVersionConsistent())){showMsg(clearMessageElement(),"版本或系统健康检查未通过，高风险操作已禁用","error");return;}
   var item=currentEvents.find(function(row){return row.event_id===currentEventId;});
   if(!item){showMsg(clearMessageElement(),"请先选择当前活动","error");return;}
   var targets=lifecycleTargetEvents(item);

@@ -17,6 +17,7 @@ const ADMIN_TOKEN_TTL_MS = 12 * 60 * 60 * 1000;
 const LOGIN_RATE_LIMIT_WINDOW_MS = 15 * 60 * 1000;
 const LOGIN_RATE_LIMIT_MAX_FAILURES = 5;
 const loginFailures = new Map();
+const REQUIRED_COLLECTIONS = ["config", "events", "registrations", "checkins", "event_audit_logs"];
 const ACTIVITY_TYPES = {
   national_report: "全国报告会",
   center_quarterly_report: "分中心季度报告会",
@@ -45,6 +46,45 @@ function readableOpsError(payload, fallback) {
     return detail.msg || detail.message || JSON.stringify(detail);
   }
   return String(detail || fallback);
+}
+
+function isMissingCollectionError(error, collectionName) {
+  const text = String(error && (error.message || error.errMsg || error.code || error) || "").toLowerCase();
+  const name = String(collectionName || "").toLowerCase();
+  const mentionsCollection = !name || text.includes(name);
+  return mentionsCollection && (
+    text.includes("not exist") ||
+    text.includes("does not exist") ||
+    text.includes("not found") ||
+    text.includes("不存在") ||
+    text.includes("未找到")
+  );
+}
+
+async function checkRequiredCollections(db) {
+  const checks = await Promise.all(REQUIRED_COLLECTIONS.map(async collectionName => {
+    try {
+      await db.collection(collectionName).limit(1).get();
+      return { collection: collectionName, ok: true };
+    } catch (error) {
+      return {
+        collection: collectionName,
+        ok: false,
+        reason: isMissingCollectionError(error, collectionName) ? "COLLECTION_MISSING" : "UNAVAILABLE"
+      };
+    }
+  }));
+  return {
+    ok: checks.every(item => item.ok),
+    collections: checks
+  };
+}
+
+function adminOperationErrorMessage(error, operation) {
+  if (isMissingCollectionError(error, "event_audit_logs")) {
+    return "系统初始化未完成：活动审计日志库尚未创建，本次" + String(operation || "操作") + "未生效。请联系管理员完成系统初始化。";
+  }
+  return String(error && (error.message || error.errMsg) || "操作失败");
 }
 
 function buildOpsRosterParams(data, scope) {
@@ -288,7 +328,10 @@ exports._test = {
   rosterIdentity,
   findClassOption,
   resolveOpsConnection,
-  isScheduledAttendanceSyncEvent
+  isScheduledAttendanceSyncEvent,
+  isMissingCollectionError,
+  checkRequiredCollections,
+  adminOperationErrorMessage
 };
 
 exports.main = async (event, context) => {
@@ -337,6 +380,29 @@ exports.main = async (event, context) => {
         service: String(BUILD_INFO.service || "signin")
       })
     };
+  }
+
+  if (p === "/health" && method === "GET") {
+    try {
+      const health = await checkRequiredCollections(db);
+      return {
+        statusCode: health.ok ? 200 : 503,
+        headers: h,
+        body: JSON.stringify({
+          ok: health.ok,
+          service: String(BUILD_INFO.service || "signin"),
+          version: String(BUILD_INFO.version || "unknown"),
+          commit: String(BUILD_INFO.commit || "unknown"),
+          collections: health.collections
+        })
+      };
+    } catch (error) {
+      return {
+        statusCode: 503,
+        headers: h,
+        body: JSON.stringify({ ok: false, service: String(BUILD_INFO.service || "signin"), collections: [], msg: "系统健康检查失败" })
+      };
+    }
   }
 
   function requestJson(urlText, headers, method, body, timeoutMs) {
@@ -1123,7 +1189,7 @@ exports.main = async (event, context) => {
       }
       return { statusCode: 200, headers: h, body: JSON.stringify({ ok: true, lifecycle_status: requestedStatus, event_group_id: targetEvents[0].event_group_id || "", events: targetEvents.map(item => publicEvent({ ...item, ...changes })), msg: requestedStatus === "CONFIRMED" ? "活动已确认举办" : requestedStatus === "CANCELLED" ? "活动已取消，不会进入公开签到" : "活动已退回草稿" }) };
     } catch (e) {
-      return { statusCode: 200, headers: h, body: JSON.stringify({ ok: false, msg: "更新活动生命周期失败: " + (e.message || "") }) };
+      return { statusCode: 200, headers: h, body: JSON.stringify({ ok: false, msg: "更新活动生命周期失败：" + adminOperationErrorMessage(e, "活动生命周期更新") }) };
     }
   }
 
