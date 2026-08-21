@@ -7,13 +7,16 @@ const html = fs.readFileSync(path.join(__dirname, "..", "public", "admin.html"),
 const match = html.match(/<script>([\s\S]*)<\/script>\s*<\/body>/);
 if (!match) throw new Error("admin inline script not found");
 [
-  "workspaceTodayBtn", "workspaceActivityBtn", "workspaceSettingsBtn",
-  "activityList", "activityKeyword", "activityLifecycleFilter", "activityTypeFilter",
+  "workspaceTodayBtn", "workspaceActivityBtn", "workspaceSettingsBtn", "todayWorkspace", "activityWorkspace", "settingsWorkspace",
+  "todayEmptyState", "activityList", "activityDetailSection", "activityOpenTodayBtn", "activityKeyword", "activityLifecycleFilter", "activityTypeFilter",
   "activityDateFrom", "activityDateTo", "activityPrevBtn", "activityNextBtn",
   "settingsDisplaySection", "settingsPasswordSection", "dangerSection"
 ].forEach(id => assert(html.includes('id="' + id + '"'), "后台工作区缺少元素: " + id));
 assert(html.includes("function switchWorkspace"), "后台必须提供工作区切换逻辑");
 assert(html.includes("function loadActivityPage"), "后台必须提供活动分页加载逻辑");
+assert(/id="todayWorkspace"[\s\S]*id="todayManualSection"[\s\S]*id="dangerSection"/.test(html), "今日签到内容必须位于 todayWorkspace");
+assert(/id="activityWorkspace"[\s\S]*id="activityListSection"[\s\S]*id="activityDetailSection"[\s\S]*id="activityCreateSection"/.test(html), "活动管理内容必须位于 activityWorkspace");
+assert(/id="settingsWorkspace"[\s\S]*id="settingsDisplaySection"[\s\S]*id="settingsVersionSection"/.test(html), "系统设置内容必须位于 settingsWorkspace");
 
 const elementStub = {
   addEventListener() {},

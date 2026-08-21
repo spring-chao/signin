@@ -154,65 +154,26 @@ input:checked+.slider:before{transform:translateX(20px)}
       <button id="workspaceActivityBtn" onclick="switchWorkspace('activity')">活动管理</button>
       <button id="workspaceSettingsBtn" onclick="switchWorkspace('settings')">系统设置</button>
     </nav>
-
-    <div id="activityListSection" class="section workspace-card">
-      <h3>活动管理</h3>
-      <div class="activity-toolbar">
-        <div class="keyword-field"><label for="activityKeyword">搜索活动名称</label><input id="activityKeyword" type="search" placeholder="输入活动名称关键词"></div>
-        <div><label for="activityLifecycleFilter">状态</label><select id="activityLifecycleFilter"><option value="">全部状态</option><option value="CONFIRMED">已确认</option><option value="DRAFT">草稿</option><option value="CANCELLED">已取消</option></select></div>
-        <div><label for="activityTypeFilter">类型</label><select id="activityTypeFilter"><option value="">全部类型</option><option value="course">课程</option><option value="class_meeting">班会/班级学习会</option><option value="group_meeting">小组学习会</option><option value="national_report">全国报告会</option><option value="center_quarterly_report">分中心季度报告会</option><option value="staff_training">班主任辅导员培训会</option><option value="board_meeting">理事会</option><option value="study_tour">游学</option><option value="other">其他</option></select></div>
-        <div><label for="activityDateFrom">开始日期</label><input id="activityDateFrom" type="date"></div>
-        <div><label for="activityDateTo">结束日期</label><input id="activityDateTo" type="date"></div>
-        <div class="search-field"><button class="btn primary full" id="activitySearchBtn" onclick="loadActivityPage(1)">搜索</button></div>
-      </div>
-      <div id="activityList" class="activity-list"></div>
-      <div class="pager"><button class="btn" id="activityPrevBtn" onclick="loadActivityPage(activityPage-1)">上一页</button><span id="activityPageInfo">第 1 页</span><button class="btn" id="activityNextBtn" onclick="loadActivityPage(activityPage+1)">下一页</button></div>
-    </div>
-
     <div id="todayWorkspace" class="workspace-panel active">
-    <div id="managementSection" class="section workspace-card">
-      <h3>📅 当前管理活动</h3>
-      <div class="form-grid">
-        <div class="form-field"><label for="eventSelect">选择活动</label><select id="eventSelect" onchange="selectAdminEvent()"></select></div>
-        <div class="form-field"><label>活动状态</label><button class="btn" id="eventStatusBtn" onclick="toggleEventStatus()">切换状态</button></div>
+      <div id="todayEmptyState" class="empty-state" style="display:none">今日暂无可签到活动，请到“活动管理”查看历史活动或创建活动。</div>
+      <div id="managementSection" class="section workspace-card">
+        <h3>📅 今日签到活动</h3>
+        <div class="form-grid">
+          <div class="form-field"><label for="eventSelect">选择今天的活动</label><select id="eventSelect" onchange="selectAdminEvent()"></select></div>
+          <div class="form-field"><label>活动状态</label><button class="btn" id="eventStatusBtn" onclick="toggleEventStatus()">切换状态</button></div>
+        </div>
+        <div class="form-help" id="eventMeta"></div>
+        <div class="form-help" id="eventLifecycleActions" style="margin-top:10px"></div>
+        <div class="btn-group" style="margin-top:10px">
+          <button class="btn success" id="confirmEventBtn" onclick="updateEventLifecycle('CONFIRMED')">确认举办</button>
+          <button class="btn danger" id="cancelEventBtn" onclick="updateEventLifecycle('CANCELLED')">取消活动</button>
+          <button class="btn" id="draftEventBtn" onclick="updateEventLifecycle('DRAFT')">退回草稿</button>
+        </div>
+        <div class="msg" id="eventLifecycleMsg"></div>
       </div>
-      <div class="form-help" id="eventMeta"></div>
-      <div class="form-help" id="eventLifecycleActions" style="margin-top:10px"></div>
-      <div class="btn-group" style="margin-top:10px">
-        <button class="btn success" id="confirmEventBtn" onclick="updateEventLifecycle('CONFIRMED')">确认举办</button>
-        <button class="btn danger" id="cancelEventBtn" onclick="updateEventLifecycle('CANCELLED')">取消活动</button>
-        <button class="btn" id="draftEventBtn" onclick="updateEventLifecycle('DRAFT')">退回草稿</button>
-      </div>
-      <div class="msg" id="eventLifecycleMsg"></div>
-    </div>
-    <div class="overview" id="overview"></div>
-    </div>
+      <div class="overview" id="overview"></div>
 
-    <div id="settingsDisplaySection" class="section workspace-card">
-      <h3>&#x2699;&#xfe0f; 签到页显示设置</h3>
-      <div class="toggle-row">
-        <div><div class="t-label">显示组别</div><div class="t-desc">签到完成后显示"大会现场：第X组"</div></div>
-        <label class="switch"><input type="checkbox" id="toggleGroup" onchange="saveToggle()"><span class="slider"></span></label>
-      </div>
-      <div class="toggle-row" style="border-bottom:none">
-        <div><div class="t-label">显示空巴桌号</div><div class="t-desc">签到完成后显示"空巴晚宴：第X桌"</div></div>
-        <label class="switch"><input type="checkbox" id="toggleDinner" onchange="saveToggle()"><span class="slider"></span></label>
-      </div>
-      <div class="msg" id="toggleMsg"></div>
-    </div>
-
-    <div id="settingsPasswordSection" class="section workspace-card">
-      <h3>&#x1f510; 修改后台密码</h3>
-      <div class="form-grid">
-        <div class="form-field"><label for="newAdminPassword">新密码</label><input id="newAdminPassword" type="password" autocomplete="new-password" placeholder="10至128位，含字母和数字"></div>
-        <div class="form-field"><label for="confirmAdminPassword">确认新密码</label><input id="confirmAdminPassword" type="password" autocomplete="new-password" placeholder="再次输入新密码"></div>
-      </div>
-      <div class="form-help">密码修改后，所有已登录的后台会话都会失效，需要使用新密码重新登录。</div>
-      <button class="btn primary full" id="changePasswordBtn" onclick="changeAdminPassword()">保存新密码</button>
-      <div class="msg" id="changePasswordMsg"></div>
-    </div>
-
-    <div id="todayManualSection" class="section workspace-card">
+      <div id="todayManualSection" class="section workspace-card">
       <h3>&#x2795; 新增临时报名</h3>
       <div class="form-grid">
         <div class="form-field"><label for="manualName">姓名 <span>（必填）</span></label><input id="manualName" type="text" maxlength="50" placeholder="学长姓名"></div>
@@ -226,9 +187,65 @@ input:checked+.slider:before{transform:translateX(20px)}
       <div class="form-help">分中心支持模糊识别并统一为六个标准名称，例如“园区”会自动归为“园区分中心”；未识别内容进入未分组。三场班会中，上午新增会自动同步至下午和空巴，下午新增会自动同步至空巴。</div>
       <button class="btn primary full" id="manualAddBtn" onclick="addManualRegistration()">确认新增报名</button>
       <div class="msg" id="manualAddMsg"></div>
+      </div>
+
+      <div class="tabs" id="tabBar">
+        <button class="tab active" onclick="switchTab('groups')">分组进展</button>
+        <button class="tab" onclick="switchTab('missing')">未签到</button>
+        <button class="tab" onclick="switchTab('recent')">已签到</button>
+      </div>
+      <div id="tabContent"></div>
+      <div id="dangerSection" class="danger-zone">
+        <h3>⚠️ 当前活动危险操作</h3>
+        <div class="form-help">清空签到会保留报名记录；永久删除会按三场班会活动组一并删除报名、签到和活动记录，并写入审计日志。</div>
+        <div class="btn-group">
+          <button class="btn danger" id="resetCheckinsBtn" onclick="resetCheckins()">&#x1f504; 清空签到</button>
+          <button class="btn danger" id="clearAllBtn" onclick="clearAll()">&#x1f5d1; 删除当前活动全部数据</button>
+        </div>
+        <div class="msg" id="clearMsg"></div>
+      </div>
     </div>
 
-    <div id="activityCreateSection" class="section">
+    <div id="activityWorkspace" class="workspace-panel">
+      <div id="activityListSection" class="section workspace-card">
+        <h3>活动管理</h3>
+        <div class="activity-toolbar">
+          <div class="keyword-field"><label for="activityKeyword">搜索活动名称</label><input id="activityKeyword" type="search" placeholder="输入活动名称关键词"></div>
+          <div><label for="activityLifecycleFilter">状态</label><select id="activityLifecycleFilter"><option value="">全部状态</option><option value="CONFIRMED">已确认</option><option value="DRAFT">草稿</option><option value="CANCELLED">已取消</option></select></div>
+          <div><label for="activityTypeFilter">类型</label><select id="activityTypeFilter"><option value="">全部类型</option><option value="course">课程</option><option value="class_meeting">班会/班级学习会</option><option value="group_meeting">小组学习会</option><option value="national_report">全国报告会</option><option value="center_quarterly_report">分中心季度报告会</option><option value="staff_training">班主任辅导员培训会</option><option value="board_meeting">理事会</option><option value="study_tour">游学</option><option value="other">其他</option></select></div>
+          <div><label for="activityDateFrom">开始日期</label><input id="activityDateFrom" type="date"></div>
+          <div><label for="activityDateTo">结束日期</label><input id="activityDateTo" type="date"></div>
+          <div class="search-field"><button class="btn primary full" id="activitySearchBtn" onclick="loadActivityPage(1)">搜索</button></div>
+        </div>
+        <div id="activityList" class="activity-list"></div>
+        <div class="pager"><button class="btn" id="activityPrevBtn" onclick="loadActivityPage(activityPage-1)">上一页</button><span id="activityPageInfo">第 1 页</span><button class="btn" id="activityNextBtn" onclick="loadActivityPage(activityPage+1)">下一页</button></div>
+      </div>
+
+      <div id="activityDetailSection" class="section workspace-card" style="display:none">
+        <h3>活动详情</h3>
+        <div id="activityDetailMeta" class="form-help"></div>
+        <div id="activityDetailSessions" class="form-help"></div>
+        <div class="overview" id="activityDetailStats"></div>
+        <button class="btn primary full" id="activityOpenTodayBtn" onclick="openActivityInToday()" style="display:none">打开今日签到</button>
+        <div class="btn-group">
+          <button class="btn" id="activityStatusBtn" onclick="toggleEventStatus()">切换签到状态</button>
+          <button class="btn success" id="activityConfirmBtn" onclick="updateEventLifecycle('CONFIRMED')">确认举办</button>
+          <button class="btn danger" id="activityCancelBtn" onclick="updateEventLifecycle('CANCELLED')">取消活动</button>
+          <button class="btn" id="activityDraftBtn" onclick="updateEventLifecycle('DRAFT')">退回草稿</button>
+        </div>
+        <div class="msg" id="activityDetailMsg"></div>
+        <button class="btn success full" id="activityExportBtn" onclick="exportExcel()">&#x1f4e5; 导出当前活动名单</button>
+        <div class="danger-zone">
+          <h3>⚠️ 当前活动危险操作</h3>
+          <div class="form-help">历史活动的清空签到和永久删除也必须在这里明确操作。</div>
+          <div class="btn-group">
+            <button class="btn danger" id="activityResetBtn" onclick="resetCheckins()">&#x1f504; 清空签到</button>
+            <button class="btn danger" id="activityClearBtn" onclick="clearAll()">&#x1f5d1; 删除当前活动全部数据</button>
+          </div>
+        </div>
+      </div>
+
+      <div id="activityCreateSection" class="section">
       <h3>&#x1f4e4; 新增活动（Excel 或运营名单）</h3>
       <div class="form-field">
         <label for="eventNameInput">活动名称 <span>（选填，留空则读取上传文件名）</span></label>
@@ -286,39 +303,52 @@ input:checked+.slider:before{transform:translateX(20px)}
       <div id="uploadPreview" class="upload-preview"></div>
       <button class="btn primary full" id="upBtn" onclick="uploadData()" style="display:none">确认新增活动并导入</button>
       <div class="msg" id="uploadMsg"></div>
+      </div>
+
+      <div id="activityExportSection" class="section">
+        <button class="btn success full" onclick="exportExcel()">&#x1f4e5; 导出当前活动名单</button>
+        <div class="msg" id="exportMsg"></div>
+      </div>
     </div>
 
-    <!-- Export button -->
-    <div id="activityExportSection" class="section">
-      <button class="btn success full" onclick="exportExcel()">&#x1f4e5; 导出签到名单（Excel）</button>
-      <div class="msg" id="exportMsg"></div>
-    </div>
+    <div id="settingsWorkspace" class="workspace-panel">
+      <div id="settingsDisplaySection" class="section workspace-card">
+        <h3>&#x2699;&#xfe0f; 签到页显示设置</h3>
+        <div class="toggle-row">
+          <div><div class="t-label">显示组别</div><div class="t-desc">签到完成后显示"大会现场：第X组"</div></div>
+          <label class="switch"><input type="checkbox" id="toggleGroup" onchange="saveToggle()"><span class="slider"></span></label>
+        </div>
+        <div class="toggle-row" style="border-bottom:none">
+          <div><div class="t-label">显示空巴桌号</div><div class="t-desc">签到完成后显示"空巴晚宴：第X桌"</div></div>
+          <label class="switch"><input type="checkbox" id="toggleDinner" onchange="saveToggle()"><span class="slider"></span></label>
+        </div>
+        <div class="msg" id="toggleMsg"></div>
+      </div>
 
-    <div class="tabs" id="tabBar">
-      <button class="tab active" onclick="switchTab('groups')">分组进展</button>
-      <button class="tab" onclick="switchTab('missing')">未签到</button>
-      <button class="tab" onclick="switchTab('recent')">已签到</button>
+      <div id="settingsPasswordSection" class="section workspace-card">
+        <h3>&#x1f510; 修改后台密码</h3>
+        <div class="form-grid">
+          <div class="form-field"><label for="newAdminPassword">新密码</label><input id="newAdminPassword" type="password" autocomplete="new-password" placeholder="10至128位，含字母和数字"></div>
+          <div class="form-field"><label for="confirmAdminPassword">确认新密码</label><input id="confirmAdminPassword" type="password" autocomplete="new-password" placeholder="再次输入新密码"></div>
+        </div>
+        <div class="form-help">密码修改后，所有已登录的后台会话都会失效，需要使用新密码重新登录。</div>
+        <button class="btn primary full" id="changePasswordBtn" onclick="changeAdminPassword()">保存新密码</button>
+        <div class="msg" id="changePasswordMsg"></div>
+      </div>
+      <div id="settingsVersionSection" class="section workspace-card">
+        <h3>版本与健康状态</h3>
+        <div id="versionInfo"></div>
+        <div class="form-help" style="margin-top:8px">前后端 commit 不一致时，高风险操作会自动禁用。</div>
+      </div>
     </div>
-    <div id="tabContent"></div>
-    <div id="dangerSection" class="danger-zone">
-      <h3>⚠️ 当前活动危险操作</h3>
-      <div class="form-help">清空签到会保留报名记录；永久删除会按三场班会活动组一并删除报名、签到和活动记录，并写入审计日志。</div>
-    <div class="btn-group">
-      <button class="btn danger" id="resetCheckinsBtn" onclick="resetCheckins()">&#x1f504; 清空签到</button>
-      <button class="btn danger" id="clearAllBtn" onclick="clearAll()">&#x1f5d1; 删除当前活动全部数据</button>
-    </div>
-    <div class="msg" id="clearMsg"></div>
-    </div>
-    </div>
-    <div id="settingsWorkspace" class="workspace-panel"></div>
   </div>
-  <div class="footer"><a href="index.html">&larr; 返回签到页</a><div id="versionInfo" style="margin-top:8px"></div></div>
+  <div class="footer"><a href="index.html">&larr; 返回签到页</a></div>
 </div>
 <script>
 var API = "https://shengheshu-d2g2zyyl99f6c6fc2-1453587887.ap-shanghai.app.tcloudbase.com/api";
 var adminToken = "", refreshTimer = null, eventListTimer = null, versionCheckTimer = null, versionCheckInFlight = null, versionConsistent = false;
 var currentTab = "groups", currentData = null, currentEvents = [], currentEventId = "", excelData = null, uploadGroupField = "", uploadPreview = null, uploadPreviewTimer = null, opsRosterOptions = [];
-var currentWorkspace = "today", activityItems = [], activityPage = 1, activityPageSize = 20, activityHasMore = false;
+var currentWorkspace = "today", activityItems = [], activityPage = 1, activityPageSize = 20, activityHasMore = false, todayItems = [], todaySelectedItem = null, activityDetailItem = null;
 document.getElementById("eventDateInput").value = new Date().toLocaleDateString("en-CA", {timeZone:"Asia/Shanghai"});
 syncDefaultCheckinTimes();
 
@@ -393,35 +423,51 @@ async function loadData() {
       activityHasMore = Boolean(ed.has_more);
       renderActivityList();
     }
-    var selectedItem = ed.selected_item || null;
-    currentEvents = selectedItem && selectedItem.sessions ? selectedItem.sessions.slice() : [];
-    if (!currentEvents.length) {
-      var fallbackItem = (ed.items || ed.events || [])[0];
-      currentEvents = fallbackItem && fallbackItem.sessions ? fallbackItem.sessions.slice() : (fallbackItem ? [fallbackItem] : []);
+    todayItems = ed.today_items || [];
+    todaySelectedItem = ed.today_selected_item || null;
+    if (currentWorkspace === "today") {
+      currentEvents = todaySelectedItem && todaySelectedItem.sessions ? todaySelectedItem.sessions.slice() : [];
+      if (!currentEvents.some(function(item){return item.event_id===currentEventId;})) currentEventId = ed.today_selected_event_id || (currentEvents[0] && currentEvents[0].event_id) || "";
+      if (!currentEventId) currentData = null;
+      updateTodayAvailability();
+      renderEventSelector();
+      if (!currentEventId) { document.getElementById("eventTitle").textContent="今日暂无签到活动"; return; }
+      await refreshCurrentStats();
+    } else if (activityDetailItem) {
+      renderActivityDetail(activityDetailItem);
+      await refreshCurrentStats();
     }
-    if (!currentEventId || !currentEvents.some(function(item){return item.event_id===currentEventId;})) currentEventId = ed.selected_event_id || (currentEvents[0] && currentEvents[0].event_id) || "";
-    renderEventSelector();
-    if (!currentEventId) { document.getElementById("eventTitle").textContent="请先新增活动"; return; }
-    await refreshCurrentStats();
   } catch(e) { document.getElementById("lastUpdate").textContent = e.message || "加载失败"; }
 }
 
 function switchWorkspace(name) {
   currentWorkspace = name || "today";
+  if(currentWorkspace === "today" && activityDetailItem){
+    activityDetailItem=null; currentData=null; currentEventId=""; currentEvents=[];
+  }
   var navNames = {today:"workspaceTodayBtn", activity:"workspaceActivityBtn", settings:"workspaceSettingsBtn"};
   Object.keys(navNames).forEach(function(key){
     var button=document.getElementById(navNames[key]);
     if(button) button.classList.toggle("active", key===currentWorkspace);
   });
-  var sections = {
-    today:["managementSection","overview","todayManualSection","tabBar","tabContent","dangerSection","clearMsg"],
-    activity:["activityListSection","activityCreateSection","activityExportSection"],
-    settings:["settingsDisplaySection","settingsPasswordSection"]
-  };
-  ["managementSection","overview","todayManualSection","tabBar","tabContent","dangerSection","clearMsg","activityListSection","activityCreateSection","activityExportSection","settingsDisplaySection","settingsPasswordSection"].forEach(function(id){
-    var node=document.getElementById(id); if(node) node.style.display=sections[currentWorkspace].indexOf(id)>=0 ? "" : "none";
+  ["todayWorkspace","activityWorkspace","settingsWorkspace"].forEach(function(id){
+    var workspace=document.getElementById(id); if(workspace) workspace.classList.toggle("active", id === currentWorkspace+"Workspace");
   });
+  updateTodayAvailability();
   if(currentWorkspace === "activity" && !activityItems.length) loadActivityPage(1);
+  if(currentWorkspace === "today" && adminToken && !currentEventId) loadData();
+}
+
+function updateTodayAvailability() {
+  var hasToday=Boolean(todaySelectedItem && currentEvents.length && currentEventId);
+  var empty=document.getElementById("todayEmptyState");
+  if(empty){
+    empty.textContent=todayItems.length ? "今日没有正在签到或即将开始的活动，请到“活动管理”查看今日场次和历史活动。" : "今日暂无签到活动，请到“活动管理”查看历史活动或创建活动。";
+    empty.style.display=hasToday ? "none" : "block";
+  }
+  ["managementSection","overview","todayManualSection","tabBar","tabContent","dangerSection"].forEach(function(id){
+    var node=document.getElementById(id); if(node) node.style.display=hasToday ? "" : "none";
+  });
 }
 
 function activityLifecycleLabel(status) {
@@ -457,6 +503,35 @@ function renderActivityList() {
   document.getElementById("activityNextBtn").disabled=!activityHasMore;
 }
 
+function renderActivityDetail(item) {
+  var section=document.getElementById("activityDetailSection");
+  if(!section) return;
+  if(!item){section.style.display="none";return;}
+  section.style.display="block";
+  var lifecycleNames={DRAFT:"草稿",CONFIRMED:"已确认举办",CANCELLED:"已取消"};
+  var stateNames={open:"签到中",upcoming:"未开始",ended:"已结束",closed:"已手动关闭"};
+  var sessions=item.sessions||[item];
+  document.getElementById("activityDetailMeta").textContent=(item.event_date||"")+" · "+(item.activity_type_name||activityTypeLabel(item.activity_type))+" · "+(lifecycleNames[item.lifecycle_status]||"草稿");
+  document.getElementById("activityDetailSessions").textContent="场次："+sessions.map(function(row){return (row.session_name||"单场")+"（"+(stateNames[row.checkin_status]||"")+"）";}).join("、");
+  var stats=document.getElementById("activityDetailStats");
+  stats.innerHTML=currentData && currentData.event && String(currentData.event.event_id||"")===String(currentEventId||"") ?
+    '<div class="ov-item"><div class="num green">'+currentData.checked+'</div><div class="label">已签到</div></div><div class="ov-item"><div class="num blue">'+currentData.total+'</div><div class="label">报名总数</div></div><div class="ov-item"><div class="num yellow">'+currentData.rate+'%</div><div class="label">签到率</div></div>' : '<div class="form-help">正在读取当前活动统计…</div>';
+  var current=currentEvents.find(function(row){return row.event_id===currentEventId;})||item;
+  var lifecycle=current.lifecycle_status||item.lifecycle_status||"DRAFT";
+  var statusButton=document.getElementById("activityStatusBtn");
+  statusButton.textContent=current.manual_status==="active" ? "手动关闭签到" : "恢复按时间开放";
+  document.getElementById("activityConfirmBtn").dataset.stateDisabled=String(lifecycle==="CONFIRMED");
+  document.getElementById("activityCancelBtn").dataset.stateDisabled=String(lifecycle==="CANCELLED");
+  document.getElementById("activityDraftBtn").dataset.stateDisabled=String(lifecycle==="DRAFT");
+  statusButton.dataset.stateDisabled="false";
+  document.getElementById("activityResetBtn").dataset.stateDisabled="false";
+  document.getElementById("activityClearBtn").dataset.stateDisabled="false";
+  document.getElementById("activityOpenTodayBtn").style.display=item.event_date===chinaDateKey() ? "block" : "none";
+  setUnsafeActionAvailability();
+}
+
+function chinaDateKey(){return new Date().toLocaleDateString("en-CA",{timeZone:"Asia/Shanghai"});}
+
 function activityQueryString(page) {
   var params=new URLSearchParams();
   params.set("page",String(page)); params.set("page_size",String(activityPageSize));
@@ -485,12 +560,24 @@ async function loadActivityPage(page) {
 async function selectActivityCard(eventId) {
   var item=activityItems.find(function(row){return String(row.event_id)===String(eventId);});
   if(!item) return;
+  activityDetailItem=item;
   currentEventId=String(item.event_id);
+  currentEvents=(item.sessions||[item]).slice();
+  currentData=null;
+  renderActivityDetail(item);
+  switchWorkspace("activity");
+  try{
+    await refreshCurrentStats();
+  }catch(e){document.getElementById("lastUpdate").textContent=e.message||"活动切换失败";}
+}
+
+async function openActivityInToday(){
+  if(!activityDetailItem || activityDetailItem.event_date!==chinaDateKey()) return;
   try{
     await adminFetch("/event_update",{method:"POST",body:JSON.stringify({event_id:currentEventId,select:true})});
+    activityDetailItem=null; currentEventId=""; currentEvents=[];
     switchWorkspace("today");
-    await loadData();
-  }catch(e){document.getElementById("lastUpdate").textContent=e.message||"活动切换失败";}
+  }catch(e){document.getElementById("lastUpdate").textContent=e.message||"打开今日签到失败";}
 }
 
 async function refreshCurrentStats() {
@@ -511,6 +598,7 @@ async function refreshCurrentStats() {
     var tabs = document.querySelectorAll("#tabBar .tab");
     if (tabs.length > 0) tabs[0].textContent = gt;
     renderTab();
+    if(currentWorkspace === "activity" && activityDetailItem) renderActivityDetail(activityDetailItem);
   } catch(e) { document.getElementById("lastUpdate").textContent = e.message || "统计加载失败"; }
 }
 
@@ -520,7 +608,7 @@ function renderEventSelector() {
   select.innerHTML=currentEvents.map(function(item){return '<option value="'+esc(item.event_id)+'"'+(item.event_id===currentEventId?' selected':'')+'>'+esc(item.event_date+' · '+(lifecycleNames[item.lifecycle_status]||"草稿")+' · '+item.name)+'</option>';}).join("");
   var item=currentEvents.find(function(row){return row.event_id===currentEventId;});
   var stateNames={open:"签到中",upcoming:"未开始",ended:"已结束",closed:"已手动关闭"};
-  var statsText=currentData && String(currentData.event_id||"")===String(currentEventId||"") ? " · "+currentData.total+"人报名 · "+currentData.checked+"人签到" : "";
+  var statsText=currentData && currentData.event && String(currentData.event.event_id||"")===String(currentEventId||"") ? " · "+currentData.total+"人报名 · "+currentData.checked+"人签到" : "";
   document.getElementById("eventMeta").textContent=item ? item.event_date+" · "+(item.activity_type_name||activityTypeLabel(item.activity_type))+" · "+({DRAFT:"草稿",CONFIRMED:"已确认举办",CANCELLED:"已取消"}[item.lifecycle_status]||"草稿")+" · "+(stateNames[item.checkin_status]||"")+statsText : "暂无活动";
   var lifecycle=item&&item.lifecycle_status||"DRAFT";
   var groupTargets = lifecycleTargetEvents(item);
@@ -548,7 +636,7 @@ function lifecycleTargetEvents(item) {
 
 function setUnsafeActionAvailability() {
   var safe = !!adminToken && versionConsistent;
-  ["eventStatusBtn","confirmEventBtn","cancelEventBtn","draftEventBtn","resetCheckinsBtn","clearAllBtn"].forEach(function(id){
+  ["eventStatusBtn","confirmEventBtn","cancelEventBtn","draftEventBtn","resetCheckinsBtn","clearAllBtn","activityStatusBtn","activityConfirmBtn","activityCancelBtn","activityDraftBtn","activityResetBtn","activityClearBtn"].forEach(function(id){
     var element=document.getElementById(id); if(element) element.disabled=element.dataset.stateDisabled==="true" || !safe;
   });
 }
@@ -589,12 +677,16 @@ function ensureVersionConsistent(){
 
 async function selectAdminEvent(){
   currentEventId=document.getElementById("eventSelect").value;
+  activityDetailItem=null;
   await adminFetch("/event_update",{method:"POST",body:JSON.stringify({event_id:currentEventId,select:true})});
   await loadData();
 }
 
+function lifecycleMessageElement(){return currentWorkspace === "activity" && activityDetailItem ? document.getElementById("activityDetailMsg") : document.getElementById("eventLifecycleMsg");}
+function clearMessageElement(){return currentWorkspace === "activity" && activityDetailItem ? document.getElementById("activityDetailMsg") : document.getElementById("clearMsg");}
+
 async function toggleEventStatus(){
-  if(!(await ensureVersionConsistent())){showMsg(document.getElementById("eventLifecycleMsg"),"前后端版本未通过一致性校验，高风险操作已禁用","error");return;}
+  if(!(await ensureVersionConsistent())){showMsg(lifecycleMessageElement(),"前后端版本未通过一致性校验，高风险操作已禁用","error");return;}
   var item=currentEvents.find(function(row){return row.event_id===currentEventId;}); if(!item)return;
   var next=item.manual_status==="active"?"closed":"active";
   if(!confirm(next==="closed"?"关闭后，该活动将不能继续签到，确定关闭吗？":"确定重新开放该活动签到吗？"))return;
@@ -603,7 +695,7 @@ async function toggleEventStatus(){
 }
 
 async function updateEventLifecycle(next){
-  if(!(await ensureVersionConsistent())){showMsg(document.getElementById("eventLifecycleMsg"),"前后端版本未通过一致性校验，高风险操作已禁用","error");return;}
+  if(!(await ensureVersionConsistent())){showMsg(lifecycleMessageElement(),"前后端版本未通过一致性校验，高风险操作已禁用","error");return;}
   var item=currentEvents.find(function(row){return row.event_id===currentEventId;});
   if(!item)return;
   var labels={DRAFT:"退回草稿",CONFIRMED:"确认举办",CANCELLED:"取消活动"};
@@ -611,7 +703,7 @@ async function updateEventLifecycle(next){
   var targetName=targets.length>1 ? item.name+"（"+targets.map(function(row){return row.session_name||row.name;}).join("、")+"）" : item.name;
   var groupMessage=targets.length>1 ? "\n\n此操作将同时作用于上述全部场次。" : "";
   if(!confirm("确定"+labels[next]+"“"+targetName+"”吗？"+groupMessage+(next==="CANCELLED"?"\n取消后不会出现在学员公开签到页，也不能继续维护报名记录。":"")))return;
-  var msg=document.getElementById("eventLifecycleMsg");
+  var msg=lifecycleMessageElement();
   try{
     var r=await adminFetch("/event_lifecycle_update",{method:"POST",body:JSON.stringify({event_id:currentEventId,lifecycle_status:next,reason:"后台人工操作"})});
     var d=await r.json();
@@ -1335,9 +1427,9 @@ function showMsg(el, text, type) {
 }
 
 async function resetCheckins() {
-  if(!(await ensureVersionConsistent())){showMsg(document.getElementById("clearMsg"),"前后端版本未通过一致性校验，高风险操作已禁用","error");return;}
+  if(!(await ensureVersionConsistent())){showMsg(clearMessageElement(),"前后端版本未通过一致性校验，高风险操作已禁用","error");return;}
   if (!confirm("确定清空当前活动的签到记录？")) return;
-  var msg = document.getElementById("clearMsg");
+  var msg = clearMessageElement();
   try {
     var r = await adminFetch("/reset", {method:"POST",body:JSON.stringify({event_id:currentEventId})});
     var d = await r.json();
@@ -1347,22 +1439,29 @@ async function resetCheckins() {
 }
 
 async function clearAll() {
-  if(!(await ensureVersionConsistent())){showMsg(document.getElementById("clearMsg"),"前后端版本未通过一致性校验，高风险操作已禁用","error");return;}
+  if(!(await ensureVersionConsistent())){showMsg(clearMessageElement(),"前后端版本未通过一致性校验，高风险操作已禁用","error");return;}
   var item=currentEvents.find(function(row){return row.event_id===currentEventId;});
-  if(!item){showMsg(document.getElementById("clearMsg"),"请先选择当前活动","error");return;}
+  if(!item){showMsg(clearMessageElement(),"请先选择当前活动","error");return;}
   var targets=lifecycleTargetEvents(item);
   var isGroup=targets.length>1;
   var targetLabel=isGroup ? "三场活动组（"+targets.map(function(row){return row.session_name||row.name;}).join("、")+"）" : "当前活动“"+item.name+"”";
   var scopeText=isGroup ? "这是一个三场班会活动组，上午、下午、空巴及其全部报名和签到记录都会一起删除。" : "将删除当前活动的全部报名和签到记录。";
   if (!confirm("第一次确认：将永久删除"+targetLabel+"。\n\n"+scopeText+"\n其他活动不会受到影响。是否继续？")) return;
   if (!confirm("第二次确认："+targetLabel+"及其报名、签到数据删除后不可恢复。\n\n确定永久删除吗？")) return;
-  var msg = document.getElementById("clearMsg");
+   var msg = clearMessageElement();
   try {
     var r = await adminFetch("/clear_all", {method:"POST",body:JSON.stringify({event_id:currentEventId})});
     var d = await r.json();
     if(d.ok) currentEventId="";
     showMsg(msg, d.msg || (d.ok ? "当前活动已删除" : "删除失败"), d.ok ? "success" : "error");
-    if (d.ok) loadData();
+     if (d.ok) {
+       if (currentWorkspace === "activity") {
+         activityDetailItem=null; currentData=null; currentEventId="";
+         await loadActivityPage(activityPage);
+         renderActivityDetail(null);
+       }
+       loadData();
+     }
   } catch(e) { showMsg(msg, "清空失败："+e.message, "error"); }
 }
 

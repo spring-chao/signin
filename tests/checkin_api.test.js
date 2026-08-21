@@ -508,6 +508,12 @@ async function request(path, method, body, token, extraHeaders) {
   const earlyRegistration = await request("/registration", "POST", { event_id: "batch-3", name: "临时学员", phone: "13800000007" }, token);
   assert.equal(earlyRegistration.data.ok, true, "活动开始前应允许后台维护临时报名名单");
   assert(db.collections.registrations.some(row => row.batch_id === "batch-3" && row.phone === "13800000007"));
+  const selectHistorical = await request("/event_update", "POST", { event_id: "batch-3", select: true }, token);
+  assert.equal(selectHistorical.data.ok, true);
+  const todayWorkspaceData = await request("/admin_events?page=1&page_size=20", "GET", undefined, token);
+  assert.notEqual(todayWorkspaceData.data.today_selected_event_id, "batch-3", "选择未来活动后，今日工作台不得切换到非今日活动");
+  assert(todayWorkspaceData.data.today_selected_item && todayWorkspaceData.data.today_selected_item.event_date === today, "今日工作台必须返回今天的活动候选");
+  await request("/event_update", "POST", { event_id: "batch-1", select: true }, token);
 
   db.collections.events.push({ _id: "event-4", event_id: "batch-4", name: "已结束课程", event_date: "2000-01-01", activity_type: "course", status: "active", lifecycle_status: "CONFIRMED", checkin_start_at: "2000-01-01T00:00:00.000Z", checkin_end_at: "2000-01-01T12:00:00.000Z" });
   const endedRegistration = await request("/registration", "POST", { event_id: "batch-4", name: "结束后学员", phone: "13800000006" }, token);
@@ -675,6 +681,75 @@ async function request(path, method, body, token, extraHeaders) {
   const keywordPage = await request("/admin_events?page=1&page_size=20&keyword=" + encodeURIComponent("历史分页活动 619") + "&date_from=2080-01-01&date_to=2080-12-31", "GET", undefined, token);
   assert.equal(keywordPage.data.items.length, 1, "活动名称和日期筛选必须在后端生效");
   assert.equal(keywordPage.data.items[0].event_id, "pagination-batch-619");
+
+  const sameDayEvents = Array.from({ length: 60 }, (_, index) => ({
+    _id: "same-day-event-" + index,
+    event_id: "same-day-batch-" + index,
+    name: "同日稳定排序活动 " + index,
+    event_date: "2078-06-06",
+    activity_type: "course",
+    status: "active",
+    lifecycle_status: "DRAFT",
+    created_at: `2078-06-06T${String(Math.floor(index / 60)).padStart(2, "0")}:${String(index).padStart(2, "0")}:00.000Z`
+  }));
+  db.collections.events.push(...sameDayEvents);
+  const sameDayPages = [];
+  for (const page of [1, 2, 3]) {
+    const result = await request(`/admin_events?page=${page}&page_size=20&date_from=2078-06-06&date_to=2078-06-06`, "GET", undefined, token);
+    sameDayPages.push(...result.data.items.map(item => item.event_id));
+  }
+  assert.equal(sameDayPages.length, 60, "同一天的 60 个活动应完整分页");
+  assert.equal(new Set(sameDayPages).size, 60, "同一天跨页活动不得重复");
+
+  const boundarySingles = Array.from({ length: 19 }, (_, index) => ({
+    _id: "boundary-single-before-" + index,
+    event_id: "boundary-single-before-" + index,
+    name: "分页边界普通活动前 " + index,
+    event_date: "2077-05-05",
+    activity_type: "course",
+    status: "active",
+    lifecycle_status: "DRAFT",
+    created_at: `2077-05-05T02:${String(index).padStart(2, "0")}:00.000Z`
+  })).concat(Array.from({ length: 5 }, (_, index) => ({
+    _id: "boundary-single-after-" + index,
+    event_id: "boundary-single-after-" + index,
+    name: "分页边界普通活动后 " + index,
+    event_date: "2077-05-05",
+    activity_type: "course",
+    status: "active",
+    lifecycle_status: "DRAFT",
+    created_at: `2077-05-05T00:${String(index).padStart(2, "0")}:00.000Z`
+  })));
+  const boundaryGroup = [1, 2, 3].map(order => ({
+    _id: "boundary-group-event-" + order,
+    event_id: "boundary-group-batch-" + order,
+    event_group_id: "boundary-group",
+    session_order: order,
+    session_name: ["上午", "下午", "晚上空巴"][order - 1],
+    name: "跨页边界班会 - " + ["上午", "下午", "晚上空巴"][order - 1],
+    event_date: "2077-05-05",
+    activity_type: "class_meeting",
+    status: "active",
+    lifecycle_status: "DRAFT",
+    created_at: "2077-05-05T01:00:00.000Z"
+  }));
+  db.collections.events.push(...boundarySingles, ...boundaryGroup, {
+    _id: "legacy-draft-event",
+    event_id: "legacy-draft-event",
+    name: "缺少生命周期的历史活动",
+    event_date: "2076-04-04",
+    activity_type: "course",
+    status: "active"
+  });
+  const boundaryPage1 = await request("/admin_events?page=1&page_size=20&date_from=2077-05-05&date_to=2077-05-05", "GET", undefined, token);
+  const boundaryPage2 = await request("/admin_events?page=2&page_size=20&date_from=2077-05-05&date_to=2077-05-05", "GET", undefined, token);
+  const boundaryRows = boundaryPage1.data.items.concat(boundaryPage2.data.items);
+  assert.equal(boundaryRows.filter(item => item.event_group_id === "boundary-group").length, 1, "三场班会跨分页边界时只能出现一次");
+  assert.equal(boundaryRows.find(item => item.event_group_id === "boundary-group").session_count, 3);
+  assert.equal(new Set(boundaryRows.map(item => item.event_id)).size, boundaryRows.length, "跨页逻辑活动不得重复或遗漏");
+  const legacyDraftPage = await request("/admin_events?page=1&page_size=20&lifecycle_status=DRAFT&keyword=" + encodeURIComponent("缺少生命周期") , "GET", undefined, token);
+  assert.equal(legacyDraftPage.data.items.length, 1, "缺少 lifecycle_status 的旧活动应按草稿筛选出现");
+  assert.equal(legacyDraftPage.data.items[0].lifecycle_status, "DRAFT");
 
   const pagedGroup = [1, 2, 3].map(order => ({
     _id: "paged-group-event-" + order,

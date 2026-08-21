@@ -608,6 +608,69 @@ exports.main = async (event, context) => {
     return where;
   }
 
+  function hasEventQueryCondition(condition) {
+    return Boolean(condition && typeof condition === "object" && Object.keys(condition).length);
+  }
+
+  function logicalActivityAnchorCondition(command) {
+    if (!command || typeof command.or !== "function" || typeof command.exists !== "function") return null;
+    return command.or(
+      { event_group_id: command.exists(false) },
+      { event_group_id: "" },
+      { session_order: 1 }
+    );
+  }
+
+  function eventListQueryCondition(filters, includeLogicalAnchors) {
+    const command = db.command;
+    if (!command) return eventListWhere(filters || {});
+    const lifecycle = String(filters && filters.lifecycle_status || "").trim().toUpperCase();
+    const activityType = String(filters && filters.activity_type || "").trim();
+    const keyword = String(filters && filters.keyword || "").trim();
+    const conditions = [];
+    if (lifecycle && lifecycle !== "ALL") {
+      if (lifecycle === "DRAFT" && typeof command.exists === "function") {
+        conditions.push(command.or(
+          { lifecycle_status: "DRAFT" },
+          { lifecycle_status: command.exists(false) }
+        ));
+      } else if (!(lifecycle === "DRAFT" && typeof command.exists !== "function")) {
+        conditions.push({ lifecycle_status: lifecycle });
+      }
+    }
+    if (activityType && activityType !== "ALL") conditions.push({ activity_type: activityType });
+    const dateFilter = eventDateQueryFilter(filters);
+    if (dateFilter) conditions.push({ event_date: dateFilter });
+    if (keyword && typeof db.RegExp === "function") {
+      conditions.push({ name: db.RegExp({ regexp: escapeRegExp(keyword), options: "i" }) });
+    }
+    if (includeLogicalAnchors) {
+      const logicalCondition = logicalActivityAnchorCondition(command);
+      if (logicalCondition) conditions.push(logicalCondition);
+    }
+    if (!conditions.length) return {};
+    return conditions.length === 1 ? conditions[0] : command.and(...conditions);
+  }
+
+  function compareEventListOrder(a, b) {
+    return String(b && b.event_date || "").localeCompare(String(a && a.event_date || "")) ||
+      String(b && b.created_at || "").localeCompare(String(a && a.created_at || "")) ||
+      String(b && b._id || b && b.event_id || "").localeCompare(String(a && a._id || a && a.event_id || ""));
+  }
+
+  function isLogicalActivityAnchor(item) {
+    const groupId = String(item && item.event_group_id || "").trim();
+    return !groupId || Number(item && item.session_order || 0) === 1;
+  }
+
+  function orderEventListQuery(query) {
+    let ordered = query.orderBy("event_date", "desc");
+    if (ordered && typeof ordered.orderBy === "function") {
+      ordered = ordered.orderBy("created_at", "desc").orderBy("_id", "desc");
+    }
+    return ordered;
+  }
+
   function matchesEventListFilter(item, filters) {
     const lifecycle = String(filters && filters.lifecycle_status || "").trim().toUpperCase();
     const activityType = String(filters && filters.activity_type || "").trim();
@@ -625,20 +688,30 @@ exports.main = async (event, context) => {
     await ensureLegacyEvent();
     const page = Math.max(1, Math.min(parseInt(filters && filters.page || "1", 10) || 1, 100000));
     const pageSize = Math.max(1, Math.min(parseInt(filters && filters.page_size || "20", 10) || 20, 50));
-    const where = eventListWhere(filters || {});
+    let where = eventListQueryCondition(filters || {}, true);
+    const lifecycle = String(filters && filters.lifecycle_status || "").trim().toUpperCase();
+    if (!db.command && lifecycle === "DRAFT" && where && typeof where === "object") {
+      where = { ...where };
+      delete where.lifecycle_status;
+    }
     let query = db.collection("events");
-    if (Object.keys(where).length) query = query.where(where);
+    if (hasEventQueryCondition(where)) query = query.where(where);
     const keyword = String(filters && filters.keyword || "").trim();
-    const needsClientFiltering = !db.command || (keyword && typeof db.RegExp !== "function");
+    const needsClientFiltering = !db.command || typeof db.command.exists !== "function" ||
+      (keyword && typeof db.RegExp !== "function") ||
+      (lifecycle === "DRAFT" && (!db.command || typeof db.command.exists !== "function"));
     if (needsClientFiltering) {
       // The local regression double does not implement CloudBase commands or
       // regex queries. Filter before slicing so page boundaries remain valid.
-      const result = await query.orderBy("event_date", "desc").limit(10000).get();
-      const filtered = (result.data || []).filter(item => matchesEventListFilter(item, filters || {}));
+      const result = await orderEventListQuery(query).limit(10000).get();
+      const filtered = (result.data || [])
+        .filter(item => matchesEventListFilter(item, filters || {}))
+        .filter(isLogicalActivityAnchor)
+        .sort(compareEventListOrder);
       const offset = (page - 1) * pageSize;
       return { rows: filtered.slice(offset, offset + pageSize), page, pageSize, hasMore: filtered.length > offset + pageSize };
     }
-    const result = await query.orderBy("event_date", "desc").skip((page - 1) * pageSize).limit(pageSize + 1).get();
+    const result = await orderEventListQuery(query).skip((page - 1) * pageSize).limit(pageSize + 1).get();
     const rows = result.data || [];
     return { rows: rows.slice(0, pageSize), page, pageSize, hasMore: rows.length > pageSize };
   }
@@ -647,11 +720,11 @@ exports.main = async (event, context) => {
     await ensureLegacyEvent();
     const today = chinaDate();
     const filters = { date_from: today, date_to: today };
-    const where = eventListWhere(filters);
+    const where = eventListQueryCondition(filters, false);
     let query = db.collection("events");
-    if (Object.keys(where).length) query = query.where(where);
-    const result = await query.orderBy("event_date", "desc").limit(1000).get();
-    const rows = result.data || [];
+    if (hasEventQueryCondition(where)) query = query.where(where);
+    const result = await orderEventListQuery(query).limit(1000).get();
+    const rows = (result.data || []).sort(compareEventListOrder);
     return (!db.command ? rows.filter(item => matchesEventListFilter(item, filters)) : rows);
   }
 
@@ -659,8 +732,8 @@ exports.main = async (event, context) => {
     await ensureLegacyEvent();
     const key = validEventDate(eventDate);
     if (!key) return [];
-    const result = await db.collection("events").where({ event_date: key }).orderBy("created_at", "desc").limit(1000).get();
-    return result.data || [];
+    const result = await db.collection("events").where({ event_date: key }).orderBy("created_at", "desc").orderBy("_id", "desc").limit(1000).get();
+    return (result.data || []).sort((a, b) => String(b.created_at || "").localeCompare(String(a.created_at || "")) || String(b._id || "").localeCompare(String(a._id || "")));
   }
 
   function logicalActivityName(item) {
@@ -686,6 +759,35 @@ exports.main = async (event, context) => {
       session_count: sorted.length,
       sessions
     };
+  }
+
+  async function summarizeEventRows(rows) {
+    const summaries = [];
+    const seenGroups = new Set();
+    for (const item of rows || []) {
+      const groupId = String(item.event_group_id || "");
+      if (groupId && seenGroups.has(groupId)) continue;
+      const groupRows = groupId ? await getEventGroupById(groupId) : [item];
+      if (groupId) seenGroups.add(groupId);
+      const summary = summarizeEventGroup(groupRows);
+      if (summary) summaries.push(summary);
+    }
+    return summaries;
+  }
+
+  function summaryHasEvent(summary, eventId) {
+    return Boolean(summary && (summary.event_id === eventId || (summary.sessions || []).some(item => item.event_id === eventId)));
+  }
+
+  function summaryHasLifecycle(summary, lifecycle) {
+    return Boolean(summary && (summary.sessions || [summary]).some(item => item.lifecycle_status === lifecycle));
+  }
+
+  function todaySummaryPriority(summary) {
+    const sessions = summary && summary.sessions || [summary];
+    if (sessions.some(item => item.lifecycle_status !== "CANCELLED" && item.checkin_status === "open")) return 0;
+    if (sessions.some(item => item.lifecycle_status !== "CANCELLED" && item.checkin_status === "upcoming")) return 1;
+    return 2;
   }
 
   async function getRequestedEvent(eventId) {
@@ -1285,20 +1387,15 @@ exports.main = async (event, context) => {
         date_from: query.date_from,
         date_to: query.date_to
       });
-      const summaries = [];
-      const seenGroups = new Set();
-      for (const item of pageResult.rows) {
-        const groupId = String(item.event_group_id || "");
-        if (groupId && seenGroups.has(groupId)) continue;
-        const rows = groupId ? await getEventGroupById(groupId) : [item];
-        if (groupId) seenGroups.add(groupId);
-        const summary = summarizeEventGroup(rows);
-        if (summary) summaries.push(summary);
-      }
+      const summaries = await summarizeEventRows(pageResult.rows);
+      const today = chinaDate();
+      const todayPage = await queryEventPage({ page: 1, page_size: 50, date_from: today, date_to: today });
+      const todayItems = await summarizeEventRows(todayPage.rows);
       const selectedEventId = await getConfig("active_batch_id", "");
       let selectedItem = null;
+      let selectedEvent = null;
       if (selectedEventId) {
-        const selectedEvent = await getEventById(selectedEventId);
+        selectedEvent = await getEventById(selectedEventId);
         if (selectedEvent) {
           const selectedRows = selectedEvent.event_group_id
             ? await getEventGroupById(selectedEvent.event_group_id)
@@ -1306,6 +1403,21 @@ exports.main = async (event, context) => {
           selectedItem = summarizeEventGroup(selectedRows);
         }
       }
+      const selectedTodayItem = selectedEvent && String(selectedEvent.event_date || "") === today && selectedItem && !summaryHasLifecycle(selectedItem, "CANCELLED") && todaySummaryPriority(selectedItem) < 2
+        ? selectedItem
+        : null;
+      const todayCandidates = todayItems
+        .filter(item => !summaryHasLifecycle(item, "CANCELLED") && todaySummaryPriority(item) < 2)
+        .sort((a, b) => todaySummaryPriority(a) - todaySummaryPriority(b) || compareEventListOrder(a, b));
+      const todaySelectedItem = selectedTodayItem || todayCandidates[0] || null;
+      const todaySelectedSessions = todaySelectedItem ? (todaySelectedItem.sessions || [todaySelectedItem]) : [];
+      const todaySelectedEventId = todaySelectedItem
+        ? (selectedTodayItem && selectedEventId && summaryHasEvent(todaySelectedItem, selectedEventId)
+          ? selectedEventId
+          : ((todaySelectedSessions.find(item => item.checkin_status === "open") ||
+            todaySelectedSessions.find(item => item.checkin_status === "upcoming") ||
+            todaySelectedSessions[0]).event_id))
+        : "";
       return { statusCode: 200, headers: h, body: JSON.stringify({
         ok: true,
         items: summaries,
@@ -1316,6 +1428,9 @@ exports.main = async (event, context) => {
         has_more: pageResult.hasMore,
         selected_event_id: selectedEventId,
         selected_item: selectedItem,
+        today_items: todayItems,
+        today_selected_event_id: todaySelectedEventId,
+        today_selected_item: todaySelectedItem,
         activity_types: ACTIVITY_TYPES
       }) };
     } catch (e) {
