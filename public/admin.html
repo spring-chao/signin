@@ -128,12 +128,16 @@ input:checked+.slider:before{transform:translateX(20px)}
 .activity-toolbar{display:grid;grid-template-columns:minmax(220px,2fr) repeat(4,minmax(120px,1fr)) auto;gap:8px;align-items:end;margin-bottom:14px}
 .activity-toolbar input,.activity-toolbar select{width:100%;padding:10px 11px;border-radius:9px;border:1px solid rgba(255,255,255,.12);background:rgba(255,255,255,.05);color:#fff;font-size:13px;outline:none}
 .activity-toolbar label{display:block;color:#64748b;font-size:11px;margin-bottom:5px}
+.activity-toolbar .search-field{min-width:90px}
+.activity-toolbar .search-field .btn{min-width:90px;white-space:nowrap}
+.activity-filter-section{margin-bottom:16px}
 .activity-range-actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:-4px 0 14px}
 .activity-range-actions .btn{padding:7px 12px;font-size:12px}
 .activity-range-hint{font-size:11px;color:#64748b}
-.activity-list{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
+.activity-list{display:grid;grid-template-columns:1fr;gap:10px}
 .activity-workspace-grid{display:grid;grid-template-columns:minmax(300px,.9fr) minmax(0,1.35fr);gap:16px;align-items:start}
 .activity-detail-layout{display:grid;gap:12px}
+.activity-detail-placeholder{min-height:220px;display:flex;align-items:center;justify-content:center}
 .session-picker{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin:12px 0}
 .session-card{display:block;width:100%;padding:11px;text-align:left;border:1px solid rgba(255,255,255,.1);border-radius:10px;background:rgba(255,255,255,.035);color:#e2e8f0;cursor:pointer;transition:border-color .2s,background .2s,transform .2s}
 .session-card:hover,.session-card.selected{border-color:#60a5fa;background:rgba(59,130,246,.16);transform:translateY(-1px)}
@@ -153,6 +157,7 @@ input:checked+.slider:before{transform:translateX(20px)}
 .activity-card .activity-date{font-size:11px;color:#64748b;margin-bottom:6px}
 .activity-card .activity-name{font-size:15px;font-weight:700;margin-bottom:8px}
 .activity-card .activity-meta{font-size:12px;color:#94a3b8;line-height:1.7}
+.activity-card .activity-current-selection{font-size:11px;color:#93c5fd;font-weight:700;margin-top:6px}
 .activity-card .activity-status{float:right;padding:3px 8px;border-radius:999px;font-size:10px;color:#bfdbfe;background:rgba(59,130,246,.16)}
 .activity-card .activity-status.cancelled{color:#fca5a5;background:rgba(239,68,68,.14)}
 .activity-card .activity-status.draft{color:#fcd34d;background:rgba(245,158,11,.14)}
@@ -235,8 +240,7 @@ input:checked+.slider:before{transform:translateX(20px)}
     </div>
 
     <div id="activityWorkspace" class="workspace-panel">
-      <div class="activity-workspace-grid">
-      <div id="activityListSection" class="section workspace-card">
+      <div id="activityFilterSection" class="section workspace-card activity-filter-section">
         <h3>活动管理</h3>
         <div class="activity-toolbar">
           <div class="keyword-field"><label for="activityKeyword">搜索活动名称</label><input id="activityKeyword" type="search" placeholder="输入活动名称关键词"></div>
@@ -251,13 +255,19 @@ input:checked+.slider:before{transform:translateX(20px)}
           <button type="button" class="btn" id="activityArchiveBtn" onclick="showArchivedActivities()">历史归档</button>
           <span id="activityRangeHint" class="activity-range-hint">当前活动：最近30天及未来活动</span>
         </div>
+      </div>
+
+      <div class="activity-workspace-grid">
+      <div id="activityListSection" class="section workspace-card">
+        <h3>活动列表</h3>
         <div id="activityList" class="activity-list"></div>
         <div class="pager"><button class="btn" id="activityPrevBtn" onclick="loadActivityPage(activityPage-1)">上一页</button><span id="activityPageInfo">第 1 页</span><button class="btn" id="activityNextBtn" onclick="loadActivityPage(activityPage+1)">下一页</button></div>
       </div>
 
-      <div id="activityDetailSection" class="section workspace-card" style="display:none">
-        <div class="activity-detail-layout">
-        <h3>活动详情</h3>
+      <div id="activityDetailSection" class="section workspace-card">
+        <div id="activityDetailPlaceholder" class="empty-state activity-detail-placeholder">请选择左侧活动查看详情</div>
+        <div id="activityDetailContent" class="activity-detail-layout" style="display:none">
+        <h3 id="activityDetailHeading">活动详情 · 当前选择</h3>
         <div id="activityDetailMeta" class="form-help"></div>
         <div id="activityDetailSessions" class="session-picker" aria-label="选择签到场次"></div>
         <div class="overview" id="activityDetailStats"></div>
@@ -377,7 +387,7 @@ input:checked+.slider:before{transform:translateX(20px)}
         <h3>版本与健康状态</h3>
         <div id="versionInfo"></div>
         <div id="healthInfo" class="health-details">正在读取系统健康状态…</div>
-        <div class="form-help" style="margin-top:8px">前后端 commit 不一致时，高风险操作会自动禁用。</div>
+        <div class="form-help" style="margin-top:8px">前后端 commit 不一致或核心数据集合不可访问时，高风险操作会自动禁用。</div>
       </div>
     </div>
   </div>
@@ -519,15 +529,52 @@ function activityTypeLabel(type) {
 }
 
 function setLifecycleButtonVisibility(prefix, lifecycle) {
+  var ids = prefix ? {
+    Confirm: "activityConfirmBtn",
+    Cancel: "activityCancelBtn",
+    Draft: "activityDraftBtn"
+  } : {
+    Confirm: "confirmEventBtn",
+    Cancel: "cancelEventBtn",
+    Draft: "draftEventBtn"
+  };
   var visibility = {
-    Confirm: lifecycle !== "CONFIRMED",
-    Cancel: lifecycle !== "CANCELLED",
-    Draft: lifecycle !== "DRAFT"
+    Confirm: Boolean(lifecycle) && lifecycle !== "CONFIRMED",
+    Cancel: Boolean(lifecycle) && lifecycle !== "CANCELLED",
+    Draft: Boolean(lifecycle) && lifecycle !== "DRAFT"
   };
   Object.keys(visibility).forEach(function(name){
-    var button=document.getElementById(prefix+name+"Btn");
+    var button=document.getElementById(ids[name]);
     if(button) button.style.display=visibility[name] ? "" : "none";
   });
+}
+
+function activityItemContainsEvent(item, eventId) {
+  var key=String(eventId||"");
+  if(!key || !item) return false;
+  return String(item.event_id||"")===key || (item.sessions||[]).some(function(row){return String(row.event_id||"")===key;});
+}
+
+function clearActivitySelectionIfMissing(items) {
+  if(!activityDetailItem) return;
+  var selectedId=currentEventId || activityDetailItem.event_id;
+  var stillVisible=(items||[]).some(function(item){return activityItemContainsEvent(item,selectedId);});
+  if(stillVisible) return;
+  activityDetailItem=null;
+  currentData=null;
+  currentEventId="";
+  currentEvents=[];
+  renderActivityList();
+  renderActivityDetail(null);
+}
+
+function sessionTimeLabel(row) {
+  var format={hour:"2-digit",minute:"2-digit",hour12:false};
+  var start=row && row.checkin_start_at ? formatChinaDateTime(row.checkin_start_at,format) : "";
+  var end=row && row.checkin_end_at ? formatChinaDateTime(row.checkin_end_at,format) : "";
+  if(start && end) return "签到 "+start+"–"+end;
+  if(start) return "签到 "+start;
+  return "签到时间待定";
 }
 
 function renderActivityList() {
@@ -539,12 +586,12 @@ function renderActivityList() {
       var statusClass=String(item.lifecycle_status||"").toLowerCase();
       var sessions=(item.sessions||[]).map(function(row){return row.session_name||row.name;}).filter(Boolean);
       var sessionText=sessions.length>1 ? sessions.join(" / ") : (sessions[0]||"单场活动");
-      var selected=String(item.event_id||"")===String(currentEventId||"");
+      var selected=activityItemContainsEvent(item,currentEventId);
       return '<button type="button" class="activity-card'+(selected?' selected':'')+'" data-event-id="'+esc(item.event_id)+'">'+
         '<div class="activity-date">'+esc(item.event_date||"")+' <span class="activity-status '+statusClass+'">'+esc(activityLifecycleLabel(item.lifecycle_status))+(item.is_group?' · '+esc(item.session_count||sessions.length)+'场':'')+'</span></div>'+
         '<div class="activity-name">'+esc(item.logical_name||item.name||"")+'</div>'+
         '<div class="activity-meta">'+esc(activityTypeLabel(item.activity_type))+' · '+esc(sessionText)+'</div>'+
-        '<div class="activity-meta">点击查看当前活动统计和管理</div></button>';
+        (selected ? '<div class="activity-current-selection">✓ 当前选择</div>' : '<div class="activity-meta">点击查看当前活动统计和管理</div>')+'</button>';
     }).join("");
     Array.prototype.forEach.call(list.querySelectorAll(".activity-card"),function(button){
       button.addEventListener("click",function(){selectActivityCard(button.getAttribute("data-event-id"));});
@@ -558,8 +605,19 @@ function renderActivityList() {
 function renderActivityDetail(item) {
   var section=document.getElementById("activityDetailSection");
   if(!section) return;
-  if(!item){section.style.display="none";return;}
+  var placeholder=document.getElementById("activityDetailPlaceholder");
+  var content=document.getElementById("activityDetailContent");
+  var heading=document.getElementById("activityDetailHeading");
   section.style.display="block";
+  if(!item){
+    if(placeholder) placeholder.style.display="flex";
+    if(content) content.style.display="none";
+    if(heading) heading.textContent="活动详情";
+    return;
+  }
+  if(placeholder) placeholder.style.display="none";
+  if(content) content.style.display="grid";
+  if(heading) heading.textContent="活动详情 · 当前选择";
   var lifecycleNames={DRAFT:"草稿",CONFIRMED:"已确认举办",CANCELLED:"已取消"};
   var stateNames={open:"签到中",upcoming:"未开始",ended:"已结束",closed:"已手动关闭"};
   var sessions=item.sessions||[item];
@@ -569,7 +627,7 @@ function renderActivityDetail(item) {
     var selected=String(row.event_id||"")===String(currentEventId||"");
     return '<button type="button" class="session-card'+(selected?' selected':'')+'" data-session-event-id="'+esc(row.event_id)+'" aria-pressed="'+(selected?'true':'false')+'">'+
       '<div class="session-name">'+esc(row.session_name||"单场活动")+(selected?' · 当前':'')+'</div>'+
-      '<div class="session-state">'+esc(stateNames[row.checkin_status]||"未开始")+' · '+esc(row.checkin_start_at ? formatChinaDateTime(row.checkin_start_at,{month:"2-digit",day:"2-digit",hour:"2-digit",minute:"2-digit",hour12:false}) : "时间待定")+'</div></button>';
+      '<div class="session-state">'+esc(stateNames[row.checkin_status]||"未开始")+' · '+esc(sessionTimeLabel(row))+'</div></button>';
   }).join("");
   Array.prototype.forEach.call(sessionPicker.querySelectorAll(".session-card"),function(button){
     button.addEventListener("click",function(){selectActivitySession(button.getAttribute("data-session-event-id"));});
@@ -642,6 +700,7 @@ async function loadActivityPage(page) {
     activityItems=result.items||result.events||[];
     activityPage=Number(result.page||page);
     activityHasMore=Boolean(result.has_more);
+    clearActivitySelectionIfMissing(activityItems);
     renderActivityList();
   }catch(e){
     document.getElementById("activityList").innerHTML='<div class="empty-state">'+esc(e.message||"活动列表加载失败")+'</div>';
@@ -771,7 +830,7 @@ async function loadVersionInfo(){
     }
     var failedCollections=(health && Array.isArray(health.collections) ? health.collections : []).filter(function(row){return !row.ok;}).map(function(row){return row.collection;});
     document.getElementById("healthInfo").innerHTML=systemHealthy ?
-      '<span style="color:#4ade80">✅ 核心数据集合正常，审计日志可写</span>' :
+      '<span style="color:#4ade80">✅ 核心数据集合可访问</span>' :
       '<span style="color:#f87171">⚠️ 系统数据集合检查未通过，高风险操作已禁用'+(failedCollections.length?'：'+esc(failedCollections.join("、")):'')+'</span>';
     setUnsafeActionAvailability();
     return versionConsistent && systemHealthy;
