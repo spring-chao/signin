@@ -9,7 +9,7 @@
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
 body{font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;background:#0f172a;color:#e2e8f0;min-height:100vh}
-.container{max-width:600px;margin:0 auto;padding:16px}
+.container{max-width:1180px;margin:0 auto;padding:16px}
 .header{text-align:center;padding:20px 0}
 .header h1{font-size:18px;margin-bottom:4px}
 .header .sub{font-size:12px;color:#64748b}
@@ -111,7 +111,31 @@ input:checked+.slider:before{transform:translateX(20px)}
 .col-map .warn{color:#fbbf24}
 .footer{text-align:center;padding:20px;font-size:12px;color:#475569}
 .footer a{color:#64748b;text-decoration:none}
-@media(max-width:480px){.form-grid{grid-template-columns:1fr}.overview{gap:6px}.ov-item{padding:12px 5px}.ov-item .num{font-size:26px}}
+.workspace-nav{display:flex;gap:8px;margin:0 0 16px;padding:6px;background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.08);border-radius:14px;position:sticky;top:8px;z-index:5;backdrop-filter:blur(12px)}
+.workspace-nav button{flex:1;padding:11px 14px;border:0;border-radius:10px;background:transparent;color:#94a3b8;font-size:14px;font-weight:700;cursor:pointer}
+.workspace-nav button.active{background:#2563eb;color:#fff;box-shadow:0 4px 14px rgba(37,99,235,.25)}
+.workspace-panel{display:none}
+.workspace-panel.active{display:block}
+.workspace-card{background:rgba(255,255,255,.04);border-radius:12px;padding:16px;border:1px solid rgba(255,255,255,.06)}
+.activity-toolbar{display:grid;grid-template-columns:minmax(220px,2fr) repeat(4,minmax(120px,1fr)) auto;gap:8px;align-items:end;margin-bottom:14px}
+.activity-toolbar input,.activity-toolbar select{width:100%;padding:10px 11px;border-radius:9px;border:1px solid rgba(255,255,255,.12);background:rgba(255,255,255,.05);color:#fff;font-size:13px;outline:none}
+.activity-toolbar label{display:block;color:#64748b;font-size:11px;margin-bottom:5px}
+.activity-list{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
+.activity-card{display:block;width:100%;padding:14px;text-align:left;border:1px solid rgba(255,255,255,.08);border-radius:12px;background:rgba(255,255,255,.035);color:#e2e8f0;cursor:pointer;transition:border-color .2s,background .2s}
+.activity-card:hover,.activity-card.selected{border-color:#3b82f6;background:rgba(59,130,246,.1)}
+.activity-card .activity-date{font-size:11px;color:#64748b;margin-bottom:6px}
+.activity-card .activity-name{font-size:15px;font-weight:700;margin-bottom:8px}
+.activity-card .activity-meta{font-size:12px;color:#94a3b8;line-height:1.7}
+.activity-card .activity-status{float:right;padding:3px 8px;border-radius:999px;font-size:10px;color:#bfdbfe;background:rgba(59,130,246,.16)}
+.activity-card .activity-status.cancelled{color:#fca5a5;background:rgba(239,68,68,.14)}
+.activity-card .activity-status.draft{color:#fcd34d;background:rgba(245,158,11,.14)}
+.pager{display:flex;justify-content:center;align-items:center;gap:12px;margin-top:16px}
+.pager span{font-size:12px;color:#94a3b8;min-width:70px;text-align:center}
+.empty-state{padding:28px 12px;text-align:center;color:#64748b;font-size:13px;border:1px dashed rgba(255,255,255,.1);border-radius:12px}
+.danger-zone{margin-top:16px;padding:14px;border:1px solid rgba(239,68,68,.28);border-radius:12px;background:rgba(239,68,68,.06)}
+.danger-zone h3{color:#fca5a5}
+@media(max-width:900px){.activity-toolbar{grid-template-columns:repeat(3,minmax(0,1fr))}.activity-toolbar .keyword-field{grid-column:span 3}.activity-toolbar .search-field{grid-column:span 3}.activity-list{grid-template-columns:1fr}}
+@media(max-width:768px){.container{max-width:100%;padding:12px}.workspace-nav{top:4px}.workspace-nav button{padding:10px 6px;font-size:13px}.form-grid{grid-template-columns:1fr}.overview{gap:6px}.ov-item{padding:12px 5px}.ov-item .num{font-size:26px}.activity-toolbar{grid-template-columns:1fr}.activity-toolbar .keyword-field,.activity-toolbar .search-field{grid-column:auto}}
 </style>
 </head>
 <body>
@@ -125,7 +149,28 @@ input:checked+.slider:before{transform:translateX(20px)}
     <div class="msg" id="loginMsg"></div>
   </div>
   <div id="mainPanel" style="display:none">
-    <div class="section" style="background:rgba(255,255,255,.04);border-radius:12px;padding:16px;border:1px solid rgba(255,255,255,.06)">
+    <nav class="workspace-nav" aria-label="后台工作区">
+      <button id="workspaceTodayBtn" class="active" onclick="switchWorkspace('today')">今日签到</button>
+      <button id="workspaceActivityBtn" onclick="switchWorkspace('activity')">活动管理</button>
+      <button id="workspaceSettingsBtn" onclick="switchWorkspace('settings')">系统设置</button>
+    </nav>
+
+    <div id="activityListSection" class="section workspace-card">
+      <h3>活动管理</h3>
+      <div class="activity-toolbar">
+        <div class="keyword-field"><label for="activityKeyword">搜索活动名称</label><input id="activityKeyword" type="search" placeholder="输入活动名称关键词"></div>
+        <div><label for="activityLifecycleFilter">状态</label><select id="activityLifecycleFilter"><option value="">全部状态</option><option value="CONFIRMED">已确认</option><option value="DRAFT">草稿</option><option value="CANCELLED">已取消</option></select></div>
+        <div><label for="activityTypeFilter">类型</label><select id="activityTypeFilter"><option value="">全部类型</option><option value="course">课程</option><option value="class_meeting">班会/班级学习会</option><option value="group_meeting">小组学习会</option><option value="national_report">全国报告会</option><option value="center_quarterly_report">分中心季度报告会</option><option value="staff_training">班主任辅导员培训会</option><option value="board_meeting">理事会</option><option value="study_tour">游学</option><option value="other">其他</option></select></div>
+        <div><label for="activityDateFrom">开始日期</label><input id="activityDateFrom" type="date"></div>
+        <div><label for="activityDateTo">结束日期</label><input id="activityDateTo" type="date"></div>
+        <div class="search-field"><button class="btn primary full" id="activitySearchBtn" onclick="loadActivityPage(1)">搜索</button></div>
+      </div>
+      <div id="activityList" class="activity-list"></div>
+      <div class="pager"><button class="btn" id="activityPrevBtn" onclick="loadActivityPage(activityPage-1)">上一页</button><span id="activityPageInfo">第 1 页</span><button class="btn" id="activityNextBtn" onclick="loadActivityPage(activityPage+1)">下一页</button></div>
+    </div>
+
+    <div id="todayWorkspace" class="workspace-panel active">
+    <div id="managementSection" class="section workspace-card">
       <h3>📅 当前管理活动</h3>
       <div class="form-grid">
         <div class="form-field"><label for="eventSelect">选择活动</label><select id="eventSelect" onchange="selectAdminEvent()"></select></div>
@@ -141,8 +186,9 @@ input:checked+.slider:before{transform:translateX(20px)}
       <div class="msg" id="eventLifecycleMsg"></div>
     </div>
     <div class="overview" id="overview"></div>
+    </div>
 
-    <div class="section" style="background:rgba(255,255,255,.04);border-radius:12px;padding:16px;border:1px solid rgba(255,255,255,.06)">
+    <div id="settingsDisplaySection" class="section workspace-card">
       <h3>&#x2699;&#xfe0f; 签到页显示设置</h3>
       <div class="toggle-row">
         <div><div class="t-label">显示组别</div><div class="t-desc">签到完成后显示"大会现场：第X组"</div></div>
@@ -155,7 +201,7 @@ input:checked+.slider:before{transform:translateX(20px)}
       <div class="msg" id="toggleMsg"></div>
     </div>
 
-    <div class="section" style="background:rgba(255,255,255,.04);border-radius:12px;padding:16px;border:1px solid rgba(255,255,255,.06)">
+    <div id="settingsPasswordSection" class="section workspace-card">
       <h3>&#x1f510; 修改后台密码</h3>
       <div class="form-grid">
         <div class="form-field"><label for="newAdminPassword">新密码</label><input id="newAdminPassword" type="password" autocomplete="new-password" placeholder="10至128位，含字母和数字"></div>
@@ -166,7 +212,7 @@ input:checked+.slider:before{transform:translateX(20px)}
       <div class="msg" id="changePasswordMsg"></div>
     </div>
 
-    <div class="section" style="background:rgba(255,255,255,.04);border-radius:12px;padding:16px;border:1px solid rgba(255,255,255,.06)">
+    <div id="todayManualSection" class="section workspace-card">
       <h3>&#x2795; 新增临时报名</h3>
       <div class="form-grid">
         <div class="form-field"><label for="manualName">姓名 <span>（必填）</span></label><input id="manualName" type="text" maxlength="50" placeholder="学长姓名"></div>
@@ -182,7 +228,7 @@ input:checked+.slider:before{transform:translateX(20px)}
       <div class="msg" id="manualAddMsg"></div>
     </div>
 
-    <div class="section">
+    <div id="activityCreateSection" class="section">
       <h3>&#x1f4e4; 新增活动（Excel 或运营名单）</h3>
       <div class="form-field">
         <label for="eventNameInput">活动名称 <span>（选填，留空则读取上传文件名）</span></label>
@@ -243,7 +289,7 @@ input:checked+.slider:before{transform:translateX(20px)}
     </div>
 
     <!-- Export button -->
-    <div class="section">
+    <div id="activityExportSection" class="section">
       <button class="btn success full" onclick="exportExcel()">&#x1f4e5; 导出签到名单（Excel）</button>
       <div class="msg" id="exportMsg"></div>
     </div>
@@ -254,11 +300,17 @@ input:checked+.slider:before{transform:translateX(20px)}
       <button class="tab" onclick="switchTab('recent')">已签到</button>
     </div>
     <div id="tabContent"></div>
+    <div id="dangerSection" class="danger-zone">
+      <h3>⚠️ 当前活动危险操作</h3>
+      <div class="form-help">清空签到会保留报名记录；永久删除会按三场班会活动组一并删除报名、签到和活动记录，并写入审计日志。</div>
     <div class="btn-group">
       <button class="btn danger" id="resetCheckinsBtn" onclick="resetCheckins()">&#x1f504; 清空签到</button>
       <button class="btn danger" id="clearAllBtn" onclick="clearAll()">&#x1f5d1; 删除当前活动全部数据</button>
     </div>
     <div class="msg" id="clearMsg"></div>
+    </div>
+    </div>
+    <div id="settingsWorkspace" class="workspace-panel"></div>
   </div>
   <div class="footer"><a href="index.html">&larr; 返回签到页</a><div id="versionInfo" style="margin-top:8px"></div></div>
 </div>
@@ -266,6 +318,7 @@ input:checked+.slider:before{transform:translateX(20px)}
 var API = "https://shengheshu-d2g2zyyl99f6c6fc2-1453587887.ap-shanghai.app.tcloudbase.com/api";
 var adminToken = "", refreshTimer = null, eventListTimer = null, versionCheckTimer = null, versionCheckInFlight = null, versionConsistent = false;
 var currentTab = "groups", currentData = null, currentEvents = [], currentEventId = "", excelData = null, uploadGroupField = "", uploadPreview = null, uploadPreviewTimer = null, opsRosterOptions = [];
+var currentWorkspace = "today", activityItems = [], activityPage = 1, activityPageSize = 20, activityHasMore = false;
 document.getElementById("eventDateInput").value = new Date().toLocaleDateString("en-CA", {timeZone:"Asia/Shanghai"});
 syncDefaultCheckinTimes();
 
@@ -317,6 +370,7 @@ async function doLogin() {
     adminToken = result.token;
     document.getElementById("loginCard").style.display="none";
     document.getElementById("mainPanel").style.display="block";
+    switchWorkspace("today");
     await ensureVersionConsistent();
     await loadData();
     if (refreshTimer) clearInterval(refreshTimer);
@@ -330,15 +384,113 @@ async function doLogin() {
 
 async function loadData() {
   try {
-    var er = await adminFetch("/admin_events");
+    var er = await adminFetch("/admin_events?page=1&page_size="+activityPageSize);
     var ed = await er.json();
     if (!ed.ok) throw new Error(ed.msg || "活动列表加载失败");
-    currentEvents = ed.events || [];
+    if (currentWorkspace !== "activity") {
+      activityItems = ed.items || ed.events || [];
+      activityPage = Number(ed.page || 1);
+      activityHasMore = Boolean(ed.has_more);
+      renderActivityList();
+    }
+    var selectedItem = ed.selected_item || null;
+    currentEvents = selectedItem && selectedItem.sessions ? selectedItem.sessions.slice() : [];
+    if (!currentEvents.length) {
+      var fallbackItem = (ed.items || ed.events || [])[0];
+      currentEvents = fallbackItem && fallbackItem.sessions ? fallbackItem.sessions.slice() : (fallbackItem ? [fallbackItem] : []);
+    }
     if (!currentEventId || !currentEvents.some(function(item){return item.event_id===currentEventId;})) currentEventId = ed.selected_event_id || (currentEvents[0] && currentEvents[0].event_id) || "";
     renderEventSelector();
     if (!currentEventId) { document.getElementById("eventTitle").textContent="请先新增活动"; return; }
     await refreshCurrentStats();
   } catch(e) { document.getElementById("lastUpdate").textContent = e.message || "加载失败"; }
+}
+
+function switchWorkspace(name) {
+  currentWorkspace = name || "today";
+  var navNames = {today:"workspaceTodayBtn", activity:"workspaceActivityBtn", settings:"workspaceSettingsBtn"};
+  Object.keys(navNames).forEach(function(key){
+    var button=document.getElementById(navNames[key]);
+    if(button) button.classList.toggle("active", key===currentWorkspace);
+  });
+  var sections = {
+    today:["managementSection","overview","todayManualSection","tabBar","tabContent","dangerSection","clearMsg"],
+    activity:["activityListSection","activityCreateSection","activityExportSection"],
+    settings:["settingsDisplaySection","settingsPasswordSection"]
+  };
+  ["managementSection","overview","todayManualSection","tabBar","tabContent","dangerSection","clearMsg","activityListSection","activityCreateSection","activityExportSection","settingsDisplaySection","settingsPasswordSection"].forEach(function(id){
+    var node=document.getElementById(id); if(node) node.style.display=sections[currentWorkspace].indexOf(id)>=0 ? "" : "none";
+  });
+  if(currentWorkspace === "activity" && !activityItems.length) loadActivityPage(1);
+}
+
+function activityLifecycleLabel(status) {
+  return {CONFIRMED:"已确认",DRAFT:"草稿",CANCELLED:"已取消"}[status] || "未知状态";
+}
+
+function activityTypeLabel(type) {
+  return {course:"课程",class_meeting:"班会/班级学习会",group_meeting:"小组学习会",national_report:"全国报告会",center_quarterly_report:"分中心季度报告会",staff_training:"班主任辅导员培训会",board_meeting:"理事会",study_tour:"游学",other:"其他"}[type] || type || "其他";
+}
+
+function renderActivityList() {
+  var list=document.getElementById("activityList");
+  if(!list) return;
+  if(!activityItems.length){list.innerHTML='<div class="empty-state">没有找到符合条件的活动</div>';}
+  else {
+    list.innerHTML=activityItems.map(function(item){
+      var statusClass=String(item.lifecycle_status||"").toLowerCase();
+      var sessions=(item.sessions||[]).map(function(row){return row.session_name||row.name;}).filter(Boolean);
+      var sessionText=sessions.length>1 ? sessions.join(" / ") : (sessions[0]||"单场活动");
+      var selected=String(item.event_id||"")===String(currentEventId||"");
+      return '<button type="button" class="activity-card'+(selected?' selected':'')+'" data-event-id="'+esc(item.event_id)+'">'+
+        '<div class="activity-date">'+esc(item.event_date||"")+' <span class="activity-status '+statusClass+'">'+esc(activityLifecycleLabel(item.lifecycle_status))+(item.is_group?' · '+esc(item.session_count||sessions.length)+'场':'')+'</span></div>'+
+        '<div class="activity-name">'+esc(item.logical_name||item.name||"")+'</div>'+
+        '<div class="activity-meta">'+esc(activityTypeLabel(item.activity_type))+' · '+esc(sessionText)+'</div>'+
+        '<div class="activity-meta">点击查看当前活动统计和管理</div></button>';
+    }).join("");
+    Array.prototype.forEach.call(list.querySelectorAll(".activity-card"),function(button){
+      button.addEventListener("click",function(){selectActivityCard(button.getAttribute("data-event-id"));});
+    });
+  }
+  document.getElementById("activityPageInfo").textContent="第 "+activityPage+" 页";
+  document.getElementById("activityPrevBtn").disabled=activityPage<=1;
+  document.getElementById("activityNextBtn").disabled=!activityHasMore;
+}
+
+function activityQueryString(page) {
+  var params=new URLSearchParams();
+  params.set("page",String(page)); params.set("page_size",String(activityPageSize));
+  var fields={keyword:"activityKeyword",lifecycle_status:"activityLifecycleFilter",activity_type:"activityTypeFilter",date_from:"activityDateFrom",date_to:"activityDateTo"};
+  Object.keys(fields).forEach(function(key){var value=document.getElementById(fields[key]).value.trim();if(value)params.set(key,value);});
+  return params.toString();
+}
+
+async function loadActivityPage(page) {
+  page=Math.max(1,Number(page)||1);
+  var button=document.getElementById("activitySearchBtn");
+  if(button) button.disabled=true;
+  try{
+    var response=await adminFetch("/admin_events?"+activityQueryString(page));
+    var result=await response.json();
+    if(!result.ok) throw new Error(result.msg||"活动列表加载失败");
+    activityItems=result.items||result.events||[];
+    activityPage=Number(result.page||page);
+    activityHasMore=Boolean(result.has_more);
+    renderActivityList();
+  }catch(e){
+    document.getElementById("activityList").innerHTML='<div class="empty-state">'+esc(e.message||"活动列表加载失败")+'</div>';
+  }finally{if(button)button.disabled=false;}
+}
+
+async function selectActivityCard(eventId) {
+  var item=activityItems.find(function(row){return String(row.event_id)===String(eventId);});
+  if(!item) return;
+  currentEventId=String(item.event_id);
+  try{
+    await adminFetch("/event_update",{method:"POST",body:JSON.stringify({event_id:currentEventId,select:true})});
+    switchWorkspace("today");
+    await loadData();
+  }catch(e){document.getElementById("lastUpdate").textContent=e.message||"活动切换失败";}
 }
 
 async function refreshCurrentStats() {
@@ -368,7 +520,8 @@ function renderEventSelector() {
   select.innerHTML=currentEvents.map(function(item){return '<option value="'+esc(item.event_id)+'"'+(item.event_id===currentEventId?' selected':'')+'>'+esc(item.event_date+' · '+(lifecycleNames[item.lifecycle_status]||"草稿")+' · '+item.name)+'</option>';}).join("");
   var item=currentEvents.find(function(row){return row.event_id===currentEventId;});
   var stateNames={open:"签到中",upcoming:"未开始",ended:"已结束",closed:"已手动关闭"};
-  document.getElementById("eventMeta").textContent=item ? item.event_date+" · "+item.activity_type_name+" · "+({DRAFT:"草稿",CONFIRMED:"已确认举办",CANCELLED:"已取消"}[item.lifecycle_status]||"草稿")+" · "+(stateNames[item.checkin_status]||"")+" · "+item.total+"人报名 · "+item.checked+"人签到" : "暂无活动";
+  var statsText=currentData && String(currentData.event_id||"")===String(currentEventId||"") ? " · "+currentData.total+"人报名 · "+currentData.checked+"人签到" : "";
+  document.getElementById("eventMeta").textContent=item ? item.event_date+" · "+(item.activity_type_name||activityTypeLabel(item.activity_type))+" · "+({DRAFT:"草稿",CONFIRMED:"已确认举办",CANCELLED:"已取消"}[item.lifecycle_status]||"草稿")+" · "+(stateNames[item.checkin_status]||"")+statsText : "暂无活动";
   var lifecycle=item&&item.lifecycle_status||"DRAFT";
   var groupTargets = lifecycleTargetEvents(item);
   var groupNotice = groupTargets.length > 1 ? "当前为三场次活动组，生命周期操作将同时作用于：" + groupTargets.map(function(row){return row.session_name || row.name;}).join("、") + "。" : "";

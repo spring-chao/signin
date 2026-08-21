@@ -6,6 +6,14 @@ const vm = require("vm");
 const html = fs.readFileSync(path.join(__dirname, "..", "public", "admin.html"), "utf8");
 const match = html.match(/<script>([\s\S]*)<\/script>\s*<\/body>/);
 if (!match) throw new Error("admin inline script not found");
+[
+  "workspaceTodayBtn", "workspaceActivityBtn", "workspaceSettingsBtn",
+  "activityList", "activityKeyword", "activityLifecycleFilter", "activityTypeFilter",
+  "activityDateFrom", "activityDateTo", "activityPrevBtn", "activityNextBtn",
+  "settingsDisplaySection", "settingsPasswordSection", "dangerSection"
+].forEach(id => assert(html.includes('id="' + id + '"'), "后台工作区缺少元素: " + id));
+assert(html.includes("function switchWorkspace"), "后台必须提供工作区切换逻辑");
+assert(html.includes("function loadActivityPage"), "后台必须提供活动分页加载逻辑");
 
 const elementStub = {
   addEventListener() {},

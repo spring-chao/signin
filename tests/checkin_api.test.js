@@ -645,6 +645,59 @@ async function request(path, method, body, token, extraHeaders) {
   if (previousApiKey === undefined) delete process.env.SIGNIN_SERVICE_API_KEY;
   else process.env.SIGNIN_SERVICE_API_KEY = previousApiKey;
 
+  const paginationSeed = Array.from({ length: 620 }, (_, index) => ({
+    _id: "pagination-event-" + index,
+    event_id: "pagination-batch-" + index,
+    name: "历史分页活动 " + index,
+    event_date: `2080-${String((index % 12) + 1).padStart(2, "0")}-${String((index % 28) + 1).padStart(2, "0")}`,
+    activity_type: index % 2 ? "course" : "group_meeting",
+    status: "active",
+    lifecycle_status: index % 3 === 0 ? "CONFIRMED" : "DRAFT",
+    checkin_start_at: "2080-01-01T00:00:00.000Z",
+    checkin_end_at: "2080-01-01T01:00:00.000Z"
+  }));
+  db.collections.events.push(...paginationSeed);
+  const firstPage = await request("/admin_events?page=1&page_size=20", "GET", undefined, token);
+  assert.equal(firstPage.data.ok, true);
+  assert.equal(firstPage.data.page, 1);
+  assert.equal(firstPage.data.page_size, 20);
+  assert(firstPage.data.items.length <= 20, "活动列表每页不得超过 page_size");
+  assert.equal(firstPage.data.has_more, true, "超过一页活动时必须返回 has_more");
+  assert(!Object.prototype.hasOwnProperty.call(firstPage.data.items[0], "total"), "活动列表不得为每条历史活动读取报名统计");
+  assert(!Object.prototype.hasOwnProperty.call(firstPage.data.items[0], "checked"), "活动列表不得为每条历史活动读取签到统计");
+  const twentiethPage = await request("/admin_events?page=20&page_size=20", "GET", undefined, token);
+  assert.equal(twentiethPage.data.items.length, 20, "第20页应能读取 620 条活动中的中间页");
+  const lastPage = await request("/admin_events?page=32&page_size=20", "GET", undefined, token);
+  assert(lastPage.data.items.length > 0 && lastPage.data.items.length <= 20, "最后一页应能读取活动尾部");
+  assert.equal(lastPage.data.has_more, false);
+  const filteredPage = await request("/admin_events?page=1&page_size=20&lifecycle_status=CONFIRMED&activity_type=course", "GET", undefined, token);
+  assert(filteredPage.data.items.every(item => item.lifecycle_status === "CONFIRMED" && item.activity_type === "course"), "活动列表筛选必须在后端生效");
+  const keywordPage = await request("/admin_events?page=1&page_size=20&keyword=" + encodeURIComponent("历史分页活动 619") + "&date_from=2080-01-01&date_to=2080-12-31", "GET", undefined, token);
+  assert.equal(keywordPage.data.items.length, 1, "活动名称和日期筛选必须在后端生效");
+  assert.equal(keywordPage.data.items[0].event_id, "pagination-batch-619");
+
+  const pagedGroup = [1, 2, 3].map(order => ({
+    _id: "paged-group-event-" + order,
+    event_id: "paged-group-batch-" + order,
+    event_group_id: "paged-group",
+    session_order: order,
+    session_name: ["上午", "下午", "晚上空巴"][order - 1],
+    name: "分页边界班会 - " + ["上午", "下午", "晚上空巴"][order - 1],
+    event_date: "2099-04-01",
+    activity_type: "course",
+    status: "active",
+    lifecycle_status: "DRAFT",
+    checkin_start_at: "2099-04-01T00:00:00.000Z",
+    checkin_end_at: "2099-04-01T01:00:00.000Z"
+  }));
+  db.collections.events.push(...pagedGroup);
+  const groupedList = await request("/admin_events?page=1&page_size=20&keyword=" + encodeURIComponent("分页边界班会"), "GET", undefined, token);
+  assert.equal(groupedList.data.items.length, 1, "三场班会在活动列表中应合并为一行");
+  assert.equal(groupedList.data.items[0].session_count, 3);
+  const pagedGroupLifecycle = await request("/event_lifecycle_update", "POST", { event_group_id: "paged-group", lifecycle_status: "CONFIRMED", reason: "跨分页回归" }, token);
+  assert.equal(pagedGroupLifecycle.data.ok, true, "活动组生命周期操作不得依赖当前分页结果");
+  assert(db.collections.events.filter(row => row.event_group_id === "paged-group").every(row => row.lifecycle_status === "CONFIRMED"));
+
   const configuredAdminHash = process.env.ADMIN_PASSWORD_HASH;
   delete process.env.ADMIN_PASSWORD_HASH;
   const unsafeLogin = await request("/admin_login", "POST", { password: TEST_ADMIN_PASSWORD });
