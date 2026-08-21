@@ -9,7 +9,7 @@ if (!match) throw new Error("admin inline script not found");
 [
   "workspaceTodayBtn", "workspaceActivityBtn", "workspaceSettingsBtn", "todayWorkspace", "activityWorkspace", "settingsWorkspace",
   "todayEmptyState", "activityList", "activityDetailSection", "activityOpenTodayBtn", "activityKeyword", "activityLifecycleFilter", "activityTypeFilter",
-  "activityDateFrom", "activityDateTo", "activityPrevBtn", "activityNextBtn",
+  "activityDateFrom", "activityDateTo", "activityRecentBtn", "activityArchiveBtn", "activityRangeHint", "activityPrevBtn", "activityNextBtn",
   "settingsDisplaySection", "settingsPasswordSection", "dangerSection"
 ].forEach(id => assert(html.includes('id="' + id + '"'), "后台工作区缺少元素: " + id));
 assert(html.includes("function switchWorkspace"), "后台必须提供工作区切换逻辑");
@@ -18,18 +18,21 @@ assert(/id="todayWorkspace"[\s\S]*id="todayManualSection"[\s\S]*id="dangerSectio
 assert(/id="activityWorkspace"[\s\S]*id="activityListSection"[\s\S]*id="activityDetailSection"[\s\S]*id="activityCreateSection"/.test(html), "活动管理内容必须位于 activityWorkspace");
 assert(/id="settingsWorkspace"[\s\S]*id="settingsDisplaySection"[\s\S]*id="settingsVersionSection"/.test(html), "系统设置内容必须位于 settingsWorkspace");
 
-const elementStub = {
-  addEventListener() {},
-  classList: { add() {}, remove() {} },
-  style: {},
-  value: "",
-  textContent: "",
-  innerHTML: ""
-};
+function makeElementStub() {
+  return {
+    addEventListener() {},
+    classList: { add() {}, remove() {}, toggle() {} },
+    style: {},
+    value: "",
+    textContent: "",
+    innerHTML: ""
+  };
+}
+const elements = {};
 const context = {
   console,
   document: {
-    getElementById() { return elementStub; },
+    getElementById(id) { return elements[id] || (elements[id] = makeElementStub()); },
     querySelectorAll() { return []; }
   },
   fetch: async () => { throw new Error("network not available in parser test"); },
@@ -98,5 +101,20 @@ assert.equal(
   "class-1",
   "班级下拉读取成功时应自动匹配 Excel 班级"
 );
+assert.equal(
+  elements.activityDateFrom.value,
+  context.chinaDateOffsetKey(-29),
+  "当前活动默认开始日期应为今天前29天"
+);
+assert.equal(elements.activityDateTo.value, "", "当前活动默认不应隐藏未来活动");
+context.showArchivedActivities();
+assert.equal(elements.activityDateFrom.value, "", "历史归档不应设置开始日期");
+assert.equal(
+  elements.activityDateTo.value,
+  context.chinaDateOffsetKey(-30),
+  "历史归档结束日期应为30天以前"
+);
+context.showRecentActivities();
+assert.equal(elements.activityDateTo.value, "", "切回当前活动后仍应包含未来活动");
 
 console.log("admin Excel parser regression tests passed");

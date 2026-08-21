@@ -229,9 +229,9 @@ input:checked+.slider:before{transform:translateX(20px)}
           <div class="search-field"><button class="btn primary full" id="activitySearchBtn" onclick="loadActivityPage(1)">搜索</button></div>
         </div>
         <div class="activity-range-actions">
-          <button type="button" class="btn" onclick="showRecentActivities()">最近30天</button>
-          <button type="button" class="btn" onclick="showArchivedActivities()">查看归档活动</button>
-          <span id="activityRangeHint" class="activity-range-hint">默认显示最近30天，归档数据仍保留在签到系统中</span>
+          <button type="button" class="btn" id="activityRecentBtn" onclick="showRecentActivities()">当前活动</button>
+          <button type="button" class="btn" id="activityArchiveBtn" onclick="showArchivedActivities()">历史归档</button>
+          <span id="activityRangeHint" class="activity-range-hint">当前活动：最近30天及未来活动</span>
         </div>
         <div id="activityList" class="activity-list"></div>
         <div class="pager"><button class="btn" id="activityPrevBtn" onclick="loadActivityPage(activityPage-1)">上一页</button><span id="activityPageInfo">第 1 页</span><button class="btn" id="activityNextBtn" onclick="loadActivityPage(activityPage+1)">下一页</button></div>
@@ -564,8 +564,8 @@ function setActivityRangeHint(text){
 function setRecentActivityRange(reload){
   var from=document.getElementById("activityDateFrom"),to=document.getElementById("activityDateTo");
   if(from) from.value=chinaDateOffsetKey(-29);
-  if(to) to.value=chinaDateKey();
-  setActivityRangeHint("默认显示最近30天，归档数据仍保留在签到系统中");
+  if(to) to.value="";
+  setActivityRangeHint("当前活动：最近30天及未来活动");
   if(reload) loadActivityPage(1);
 }
 
@@ -574,8 +574,8 @@ function showRecentActivities(){setRecentActivityRange(true);}
 function showArchivedActivities(){
   var from=document.getElementById("activityDateFrom"),to=document.getElementById("activityDateTo");
   if(from) from.value="";
-  if(to) to.value="";
-  setActivityRangeHint("当前显示全部历史活动；仅改变查看范围，不删除签到源数据");
+  if(to) to.value=chinaDateOffsetKey(-30);
+  setActivityRangeHint("历史归档：30天以前；仅改变查看范围，不删除签到源数据");
   loadActivityPage(1);
 }
 
