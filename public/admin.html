@@ -61,6 +61,14 @@ body{font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;backgr
 .msg.success{background:rgba(34,197,94,.15);color:#4ade80}
 .msg.error{background:rgba(239,68,68,.15);color:#f87171}
 .msg.info{background:rgba(59,130,246,.15);color:#60a5fa}
+.roster-quality{display:none;margin:8px 0 12px;padding:11px 12px;border-radius:9px;font-size:12px;line-height:1.6}
+.roster-quality.show{display:block}
+.roster-quality.good{background:rgba(34,197,94,.12);color:#86efac}
+.roster-quality.warn{background:rgba(245,158,11,.12);color:#fcd34d}
+.roster-quality .quality-title{font-weight:700;margin-bottom:5px}
+.roster-quality .quality-summary{color:#cbd5e1}
+.roster-quality .quality-issues{margin:6px 0 0;padding-left:18px;color:#fca5a5}
+.roster-quality .quality-note{margin-top:6px;color:#fcd34d}
 .tabs{display:flex;gap:8px;margin-bottom:12px}
 .tab{padding:8px 16px;border-radius:20px;font-size:13px;cursor:pointer;background:rgba(255,255,255,.05);color:#94a3b8;border:none;transition:all .2s}
 .tab.active{background:#3b82f6;color:#fff}
@@ -265,6 +273,7 @@ input:checked+.slider:before{transform:translateX(20px)}
           <div class="form-field"><label>&nbsp;</label><button type="button" class="btn success full" id="opsRosterBtn" onclick="loadOpsRosterMembers()">添加运营名单</button></div>
         </div>
         <div class="msg" id="opsRosterMsg"></div>
+        <div id="opsRosterQuality" class="roster-quality"></div>
       </div>
       <div id="threeSessionPanel" style="display:none;margin:4px 0 14px;padding:14px;border:1px solid rgba(59,130,246,.35);border-radius:12px;background:rgba(59,130,246,.08)">
         <div style="font-size:15px;font-weight:700;margin-bottom:6px">⏱ 班级学习会三次签到时间</div>
@@ -347,7 +356,7 @@ input:checked+.slider:before{transform:translateX(20px)}
 <script>
 var API = "https://shengheshu-d2g2zyyl99f6c6fc2-1453587887.ap-shanghai.app.tcloudbase.com/api";
 var adminToken = "", refreshTimer = null, eventListTimer = null, versionCheckTimer = null, versionCheckInFlight = null, versionConsistent = false;
-var currentTab = "groups", currentData = null, currentEvents = [], currentEventId = "", excelData = null, uploadGroupField = "", uploadPreview = null, uploadPreviewTimer = null, opsRosterOptions = [];
+var currentTab = "groups", currentData = null, currentEvents = [], currentEventId = "", excelData = null, uploadGroupField = "", uploadPreview = null, uploadPreviewTimer = null, opsRosterOptions = [], opsRosterQuality = null;
 var currentWorkspace = "today", activityItems = [], activityPage = 1, activityPageSize = 20, activityHasMore = false, todayItems = [], todaySelectedItem = null, activityDetailItem = null;
 document.getElementById("eventDateInput").value = new Date().toLocaleDateString("en-CA", {timeZone:"Asia/Shanghai"});
 syncDefaultCheckinTimes();
@@ -1006,6 +1015,87 @@ function findHeaderRow(rows) {
   return best;
 }
 
+function normalizeRosterPhone(value) {
+  return String(value || "").trim().replace(/\s/g, "").replace(/-/g, "");
+}
+
+function buildRosterQuality(rows) {
+  rows = Array.isArray(rows) ? rows : [];
+  var issues = [], validPhoneMap = {}, validNameCount = 0, validPhoneCount = 0;
+  rows.forEach(function(item, index) {
+    item = item || {};
+    var name = String(item.name || "").trim();
+    var phone = normalizeRosterPhone(item.phone);
+    var issueCodes = [];
+    if (name) validNameCount++;
+    else issueCodes.push("MISSING_NAME");
+    if (!phone) issueCodes.push("MISSING_PHONE");
+    else if (!/^1\d{10}$/.test(phone)) issueCodes.push("INVALID_PHONE");
+    else {
+      validPhoneCount++;
+      validPhoneMap[phone] = (validPhoneMap[phone] || 0) + 1;
+    }
+    if (issueCodes.length) issues.push({row_number:index+1, name:name||("第"+(index+1)+"行"), issue_codes:issueCodes});
+  });
+  if (!rows.length) issues.push({row_number:0, name:"名单", issue_codes:["EMPTY_ROSTER"]});
+  var sharedPhoneGroups = Object.keys(validPhoneMap).filter(function(phone){return validPhoneMap[phone]>1;});
+  var sharedPhoneMemberCount = sharedPhoneGroups.reduce(function(sum, phone){return sum+validPhoneMap[phone];}, 0);
+  return {
+    passed: issues.length===0,
+    member_count: rows.length,
+    valid_name_count: validNameCount,
+    valid_phone_count: validPhoneCount,
+    missing_name_count: issues.filter(function(item){return item.issue_codes.indexOf("MISSING_NAME")>=0;}).length,
+    missing_phone_count: issues.filter(function(item){return item.issue_codes.indexOf("MISSING_PHONE")>=0;}).length,
+    invalid_phone_count: issues.filter(function(item){return item.issue_codes.indexOf("INVALID_PHONE")>=0;}).length,
+    issue_count: issues.length,
+    issues: issues,
+    shared_phone_group_count: sharedPhoneGroups.length,
+    shared_phone_member_count: sharedPhoneMemberCount
+  };
+}
+
+function rosterIssueText(codes) {
+  return (Array.isArray(codes) ? codes : []).map(function(code) {
+    if (code === "EMPTY_ROSTER") return "名单为空";
+    if (code === "MISSING_NAME") return "缺少姓名";
+    if (code === "MISSING_PHONE") return "缺少手机号";
+    if (code === "INVALID_PHONE") return "手机号格式异常";
+    return code;
+  }).join("、");
+}
+
+function renderOpsRosterQuality(quality) {
+  var box = document.getElementById("opsRosterQuality");
+  if (!box || !quality) {
+    if (box) { box.className="roster-quality"; box.innerHTML=""; }
+    return;
+  }
+  var summary = "共 "+quality.member_count+" 人；✅手机号正常 "+quality.valid_phone_count+" 人";
+  if (quality.shared_phone_member_count) {
+    summary += "；ℹ️ "+quality.shared_phone_member_count+" 人共用联系电话（允许，不作为重复错误）";
+  }
+  if (quality.passed) {
+    box.className="roster-quality show good";
+    box.innerHTML='<div class="quality-title">✅ 名单资料完整，可以创建三场签到</div><div class="quality-summary">'+esc(summary)+'</div>';
+    return;
+  }
+  var issues = (quality.issues||[]).slice(0,30).map(function(item) {
+    return '<li>'+esc(item.name||("第"+item.row_number+"行"))+'：'+esc(rosterIssueText(item.issue_codes))+'</li>';
+  }).join("");
+  var more = (quality.issues||[]).length>30 ? '<div class="quality-note">其余问题请在运营平台修正后重新读取名单。</div>' : '';
+  box.className="roster-quality show warn";
+  box.innerHTML='<div class="quality-title">⚠️ 名单暂不能创建三场签到</div><div class="quality-summary">'+esc(summary)+'；问题 '+quality.issue_count+' 条。请先在运营平台补全姓名和手机号，再重新读取名单。</div><ul class="quality-issues">'+issues+'</ul>'+more;
+}
+
+function updateClassMeetingRosterGate() {
+  var btn=document.getElementById("createThreeSessionBtn");
+  if (!btn) return;
+  var blocked=document.getElementById("activityTypeInput").value==="class_meeting" && opsRosterQuality && !opsRosterQuality.passed;
+  btn.disabled=!!blocked;
+  btn.title=blocked ? "请先修正运营平台名单资料" : "";
+}
+
 function handleFile(e) {
   var file = e.target.files[0];
   if (!file) return;
@@ -1079,6 +1169,11 @@ function handleFile(e) {
           group_num: gn,
           dinner_table_num: dn
         });
+      }
+      if (document.getElementById("activityTypeInput").value==="class_meeting") {
+        opsRosterQuality=buildRosterQuality(excelData);
+        renderOpsRosterQuality(opsRosterQuality);
+        updateClassMeetingRosterGate();
       }
       showMsg(document.getElementById("uploadMsg"), "已解析 "+excelData.length+" 条记录，正在核对名单变化...", "info");
       await loadUploadPreview();
@@ -1161,12 +1256,19 @@ async function handleActivityTypeChange() {
   var type=document.getElementById("activityTypeInput").value;
   var panel=document.getElementById("opsRosterPanel");
   var isClass=type==="class_meeting";
+  opsRosterQuality=null;
+  renderOpsRosterQuality(null);
   document.getElementById("threeSessionPanel").style.display=isClass?"block":"none";
   document.getElementById("singleCheckinStartField").style.display=isClass?"none":"";
   document.getElementById("singleCheckinEndField").style.display=isClass?"none":"";
   document.getElementById("upBtn").style.display="none";
   if(type!=="class_meeting" && type!=="group_meeting"){panel.style.display="none";return;}
   panel.style.display="block";
+  if (isClass && excelData) {
+    opsRosterQuality=buildRosterQuality(excelData);
+    renderOpsRosterQuality(opsRosterQuality);
+    updateClassMeetingRosterGate();
+  }
   var isGroup=type==="group_meeting";
   document.getElementById("opsRosterTitle").textContent=isGroup?"从运营系统添加小组名单":"从运营系统添加班级名单";
   document.getElementById("opsRosterLabel").textContent=isGroup?"选择小组":"选择班级";
@@ -1218,6 +1320,11 @@ async function loadOpsRosterMembers() {
     var d=await r.json();
     if(!d.ok)throw new Error(d.msg||"读取名单失败");
     excelData=d.attendees||[];
+    opsRosterQuality=scope==="class"
+      ? (d.roster_quality||buildRosterQuality(excelData))
+      : null;
+    renderOpsRosterQuality(opsRosterQuality);
+    updateClassMeetingRosterGate();
     uploadGroupField=scope==="group"?"group_name":"class_name";
     document.getElementById("fileInput").value="";
     if(!document.getElementById("eventNameInput").value.trim()){
@@ -1232,13 +1339,17 @@ async function loadOpsRosterMembers() {
       uploadPreview=null;
       document.getElementById("uploadPreview").className="upload-preview";
       document.getElementById("upBtn").style.display="none";
-      showMsg(msg,"已加载 "+excelData.length+" 人，请核对三场签到时间后创建","success");
+      if (opsRosterQuality && !opsRosterQuality.passed) {
+        showMsg(msg,"已加载 "+excelData.length+" 人，但名单存在资料问题，暂不能创建三场签到","error");
+      } else {
+        showMsg(msg,"已加载 "+excelData.length+" 人，请核对三场签到时间后创建","success");
+      }
     }else{
       showMsg(msg,"已加载 "+excelData.length+" 人，正在生成活动预览","success");
       await loadUploadPreview();
     }
   }catch(e){showMsg(msg,e.message||"读取名单失败","error");}
-  finally{btn.disabled=false;btn.textContent="添加运营名单";}
+  finally{btn.textContent="添加运营名单";btn.disabled=false;updateClassMeetingRosterGate();}
 }
 
 function scheduleUploadPreview() {
@@ -1298,6 +1409,13 @@ async function createThreeSessionMeeting() {
   var fromExcel=!!(fileInput&&fileInput.files&&fileInput.files[0]);
   var selected=opsRosterOptions[Number(document.getElementById("opsRosterSelect").value)];
   if(!excelData || !excelData.length){showMsg(msg,"请先添加运营名单或上传 Excel 名单","error");return;}
+  opsRosterQuality=buildRosterQuality(excelData);
+  renderOpsRosterQuality(opsRosterQuality);
+  updateClassMeetingRosterGate();
+  if(!opsRosterQuality.passed){
+    showMsg(msg,"名单存在资料问题，不能创建三场签到；请先在运营平台修正后重新读取名单","error");
+    return;
+  }
   var identity=rosterIdentity(excelData);
   if(fromExcel&&identity.class_name){
     selected=findClassOption(opsRosterOptions,identity);

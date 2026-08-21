@@ -68,6 +68,62 @@ function normalizeOpsRosterData(result) {
   return { members: [], version: data && data.version ? data.version : null };
 }
 
+function normalizeRosterPhone(value) {
+  return String(value || "").trim().replace(/\s/g, "").replace(/-/g, "");
+}
+
+function validateClassMeetingRoster(members) {
+  const rows = Array.isArray(members) ? members : [];
+  const issues = [];
+  const validPhoneIndexes = new Map();
+  let validNameCount = 0;
+  let validPhoneCount = 0;
+
+  rows.forEach((member, index) => {
+    const item = member && typeof member === "object" ? member : {};
+    const name = String(item.name || "").trim();
+    const phone = normalizeRosterPhone(item.phone);
+    const issueCodes = [];
+    if (name) validNameCount += 1;
+    else issueCodes.push("MISSING_NAME");
+    if (!phone) issueCodes.push("MISSING_PHONE");
+    else if (!/^1\d{10}$/.test(phone)) issueCodes.push("INVALID_PHONE");
+    else {
+      validPhoneCount += 1;
+      const indexes = validPhoneIndexes.get(phone) || [];
+      indexes.push(index);
+      validPhoneIndexes.set(phone, indexes);
+    }
+    if (issueCodes.length) {
+      issues.push({
+        row_number: index + 1,
+        name: name || ("第" + (index + 1) + "行"),
+        issue_codes: issueCodes
+      });
+    }
+  });
+
+  if (!rows.length) {
+    issues.push({ row_number: 0, name: "名单", issue_codes: ["EMPTY_ROSTER"] });
+  }
+
+  const sharedPhoneGroups = [...validPhoneIndexes.values()].filter(indexes => indexes.length > 1);
+  const sharedPhoneMemberCount = sharedPhoneGroups.reduce((sum, indexes) => sum + indexes.length, 0);
+  return {
+    passed: issues.length === 0,
+    member_count: rows.length,
+    valid_name_count: validNameCount,
+    valid_phone_count: validPhoneCount,
+    missing_name_count: issues.filter(item => item.issue_codes.includes("MISSING_NAME")).length,
+    missing_phone_count: issues.filter(item => item.issue_codes.includes("MISSING_PHONE")).length,
+    invalid_phone_count: issues.filter(item => item.issue_codes.includes("INVALID_PHONE")).length,
+    issue_count: issues.length,
+    issues,
+    shared_phone_group_count: sharedPhoneGroups.length,
+    shared_phone_member_count: sharedPhoneMemberCount
+  };
+}
+
 function normalizeOpsRosterOptions(result) {
   const data = result && result.data;
   const options = data && !Array.isArray(data) ? data : result;
@@ -223,6 +279,8 @@ exports._test = {
   readableOpsError,
   buildOpsRosterParams,
   normalizeOpsRosterData,
+  normalizeRosterPhone,
+  validateClassMeetingRoster,
   normalizeOpsRosterOptions,
   validateOpsRosterData,
   validateOpsRosterOptions,
@@ -1490,7 +1548,7 @@ exports.main = async (event, context) => {
       const normalized = validateOpsRosterData(result, params);
       const attendees = normalized.members.map(item => ({
         name: item.name || "",
-        phone: item.phone || "",
+        phone: normalizeRosterPhone(item.phone),
         member_code: item.member_code || "",
         company: item.company_name || item.company || "",
         center: item.primary_org_name || item.center || "",
@@ -1499,11 +1557,13 @@ exports.main = async (event, context) => {
         group_num: null,
         dinner_table_num: null
       }));
+      const rosterQuality = validateClassMeetingRoster(attendees);
       return { statusCode: 200, headers: h, body: JSON.stringify({
         ok: true,
         scope,
         member_count: attendees.length,
         attendees,
+        roster_quality: rosterQuality,
         version: normalized.version
       }) };
     } catch (e) {
@@ -1888,7 +1948,22 @@ exports.main = async (event, context) => {
       const groupField = String(data.group_field || "class_name").trim();
       let orgUnitId = String(data.org_unit_id || "").trim();
       let classOrgUnitId = String(data.class_org_unit_id || "").trim();
-      const rosterMembers = Array.isArray(data.roster_members) ? data.roster_members : [];
+      if (!Array.isArray(data.roster_members)) {
+        return { statusCode: 200, headers: h, body: JSON.stringify({ ok: false, msg: "班级名单格式不正确，未创建签到活动" }) };
+      }
+      const rosterMembers = data.roster_members;
+      const rosterQuality = validateClassMeetingRoster(rosterMembers);
+      if (!rosterQuality.passed) {
+        const emptyRoster = rosterQuality.issues.some(item => item.issue_codes.includes("EMPTY_ROSTER"));
+        return { statusCode: 200, headers: h, body: JSON.stringify({
+          ok: false,
+          code: "ROSTER_QUALITY_INVALID",
+          msg: emptyRoster
+            ? "班级名单为空，不能创建三场签到；请先读取运营系统名单"
+            : "班级名单存在 " + rosterQuality.issue_count + " 条资料问题，不能创建三场签到；请先在运营平台补全姓名和手机号后重新读取名单",
+          roster_quality: rosterQuality
+        }) };
+      }
       const identity = rosterIdentity(rosterMembers);
       const requestedIdentity = {
         center: String(data.center_name || identity.center || "").trim(),
@@ -2001,7 +2076,7 @@ exports.main = async (event, context) => {
           for (const member of rosterMembers) {
             await db.collection("registrations").add({
               name: String(member.name || "").trim(),
-              phone: String(member.phone || "").trim().replace(/\s/g, "").replace(/-/g, ""),
+              phone: normalizeRosterPhone(member.phone),
               center: normalizeCenterValue(member.center || member.primary_org_name || ""),
               class_name: normalizeGroupValue(member.class_name || ""),
               group_name: normalizeGroupValue(member.group_name || ""),

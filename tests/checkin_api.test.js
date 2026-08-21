@@ -247,6 +247,19 @@ assert.throws(
   /名单数量校验失败/,
   "接口数量与返回名单不一致时必须停止导入"
 );
+const sharedPhoneRoster = api._test.validateClassMeetingRoster([
+  { name: "本人", phone: "13800000011" },
+  { name: "代报名员工", phone: "13800000011" }
+]);
+assert.equal(sharedPhoneRoster.passed, true, "共用联系电话不能阻断班会名单创建");
+assert.equal(sharedPhoneRoster.shared_phone_member_count, 2, "应记录共用联系电话人数供后台提示");
+const invalidPhoneRoster = api._test.validateClassMeetingRoster([
+  { name: "缺手机号", phone: "" },
+  { name: "格式错误", phone: "23800000012" }
+]);
+assert.equal(invalidPhoneRoster.passed, false, "缺失或非法手机号必须阻断班会名单");
+assert.equal(invalidPhoneRoster.missing_phone_count, 1);
+assert.equal(invalidPhoneRoster.invalid_phone_count, 1);
 assert.equal(
   api._test.isScheduledAttendanceSyncEvent({
     Type: "Timer",
@@ -567,7 +580,8 @@ async function request(path, method, body, token, extraHeaders) {
     event_date: defaultDate,
     event_name: "默认时间测试班会",
     org_unit_id: "center-default",
-    class_org_unit_id: "class-default"
+    class_org_unit_id: "class-default",
+    roster_members: [{ name: "默认名单学员", phone: "13800000013", class_name: "默认班" }]
   }, token);
   assert.equal(defaultSessions.data.ok, true);
   const defaultSessionRows = db.collections.events.filter(row => row.event_group_id === defaultSessions.data.event_group_id).sort((a, b) => a.session_order - b.session_order);
@@ -576,6 +590,26 @@ async function request(path, method, body, token, extraHeaders) {
     ["AFTERNOON", "2099-03-03T04:10:00.000Z", "2099-03-03T05:30:00.000Z", "2099-03-03T07:00:00.000Z", "2099-03-03T09:00:00.000Z"],
     ["KONPA", "2099-03-03T09:10:00.000Z", "2099-03-03T10:00:00.000Z", "2099-03-03T12:30:00.000Z", "2099-03-03T12:30:00.000Z"]
   ], "班会三场默认时间应使用新的运营时间口径");
+
+  const missingRosterSessions = await request("/create_class_meeting_sessions", "POST", {
+    event_date: "2099-03-03",
+    event_name: "缺少名单字段测试",
+    org_unit_id: "center-missing-roster",
+    class_org_unit_id: "class-missing-roster"
+  }, token);
+  assert.equal(missingRosterSessions.data.ok, false, "三场班会不得在缺少名单字段时创建");
+
+  const eventsBeforeInvalidRoster = db.collections.events.length;
+  const invalidRosterSessions = await request("/create_class_meeting_sessions", "POST", {
+    event_date: "2099-03-04",
+    event_name: "名单质量失败测试",
+    org_unit_id: "center-invalid-roster",
+    class_org_unit_id: "class-invalid-roster",
+    roster_members: [{ name: "资料待完善", phone: "" }]
+  }, token);
+  assert.equal(invalidRosterSessions.data.ok, false, "班会创建接口必须阻断缺少手机号的名单");
+  assert.equal(invalidRosterSessions.data.code, "ROSTER_QUALITY_INVALID");
+  assert.equal(db.collections.events.length, eventsBeforeInvalidRoster, "名单质量失败时不得创建任何场次");
 
   const deleteCurrentEvent = await request("/clear_all", "POST", { event_id: "batch-2" }, token);
   assert.equal(deleteCurrentEvent.data.ok, true);
@@ -610,6 +644,23 @@ async function request(path, method, body, token, extraHeaders) {
     db.collections.registrations.filter(row => row.event_group_id === createdSessions.data.event_group_id).length,
     3,
     "同一份名单必须复制到三个签到场次"
+  );
+  const sharedPhoneSessions = await request("/create_class_meeting_sessions", "POST", {
+    token,
+    event_date: "2099-03-05",
+    event_name: "共用联系电话测试班会",
+    org_unit_id: "center-shared-phone",
+    class_org_unit_id: "class-shared-phone",
+    roster_members: [
+      { name: "本人", phone: "13800000011", class_name: "测试班" },
+      { name: "代报名员工", phone: "13800000011", class_name: "测试班" }
+    ]
+  });
+  assert.equal(sharedPhoneSessions.data.ok, true, "共用联系电话不应阻断班会创建");
+  assert.equal(
+    db.collections.registrations.filter(row => row.event_group_id === sharedPhoneSessions.data.event_group_id).length,
+    6,
+    "共用联系电话名单仍应复制到三个签到场次"
   );
   const invalidSessionTimes = await request("/create_class_meeting_sessions", "POST", {
     token,
