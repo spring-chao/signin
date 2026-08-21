@@ -498,7 +498,7 @@ exports.main = async (event, context) => {
   }
 
   function canManageEventRegistrations(item) {
-    return ["upcoming", "open"].includes(eventTimeState(item));
+    return lifecycleStatus(item) !== "CANCELLED" && ["upcoming", "open"].includes(eventTimeState(item));
   }
 
   async function manualRegistrationTargetEvents(selectedEvent) {
@@ -1142,15 +1142,15 @@ exports.main = async (event, context) => {
   if (p === "/admin_events" && method === "GET") {
     try {
       const events = await getEvents();
-      const regs = await getAll("registrations", 5000);
-      const cks = await getAll("checkins", 5000);
       const selectedEventId = await getConfig("active_batch_id", "");
-      const rows = events.map(item => {
+      const rows = await Promise.all(events.map(async item => {
         const eventId = String(item.event_id || item._id || "");
-        const eventRegs = regs.filter(row => String(row.batch_id || "") === eventId);
-        const eventCks = cks.filter(row => String(row.batch_id || "") === eventId);
+        const [eventRegs, eventCks] = await Promise.all([
+          rowsForBatch("registrations", eventId, 5000),
+          rowsForBatch("checkins", eventId, 5000)
+        ]);
         return { ...publicEvent(item), total: eventRegs.length, checked: buildAttendanceState(eventRegs, eventCks).checkedIndexes.size };
-      });
+      }));
       return { statusCode: 200, headers: h, body: JSON.stringify({ ok: true, events: rows, selected_event_id: selectedEventId, activity_types: ACTIVITY_TYPES }) };
     } catch (e) {
       return { statusCode: 200, headers: h, body: JSON.stringify({ ok: false, msg: "读取活动失败: " + (e.message || "") }) };
@@ -1318,6 +1318,10 @@ exports.main = async (event, context) => {
       const allRegs = await getAll("registrations", 5000);
       const registration = allRegs.find(row => String(row._id || "") === registrationId);
       if (!registration) return { statusCode: 200, headers: h, body: JSON.stringify({ ok: false, msg: "未找到报名记录" }) };
+      const registrationEvent = await getEventById(registration.batch_id);
+      if (registrationEvent && lifecycleStatus(registrationEvent) === "CANCELLED") {
+        return { statusCode: 200, headers: h, body: JSON.stringify({ ok: false, msg: "活动已取消，不能删除或修改报名记录" }) };
+      }
       const regs = allRegs.filter(row => String(row.batch_id || "") === String(registration.batch_id || ""));
       const index = regs.findIndex(row => String(row._id || "") === registrationId);
       const cks = await rowsForBatch("checkins", registration.batch_id, 5000);
@@ -1344,6 +1348,9 @@ exports.main = async (event, context) => {
       const registration = allRegs.find(row => String(row._id || "") === registrationId);
       if (!registration) return { statusCode: 200, headers: h, body: JSON.stringify({ ok: false, msg: "未找到报名记录" }) };
       const registrationEvent = await getEventById(registration.batch_id);
+      if (registrationEvent && lifecycleStatus(registrationEvent) === "CANCELLED") {
+        return { statusCode: 200, headers: h, body: JSON.stringify({ ok: false, msg: "活动已取消，不能删除或修改报名记录" }) };
+      }
       if (registrationEvent && String(registrationEvent.session_code || "").toUpperCase() === "KONPA" && status === "late") {
         return { statusCode: 200, headers: h, body: JSON.stringify({ ok: false, msg: "晚上空巴不设置迟到状态，请以实际签到记录为准" }) };
       }

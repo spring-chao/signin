@@ -86,7 +86,7 @@ body{font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;backgr
 </div>
 <script>
 var API="https://shengheshu-d2g2zyyl99f6c6fc2-1453587887.ap-shanghai.app.tcloudbase.com/api";
-var pendingName="",pendingPhone="",pendingEventId="";
+var pendingName="",pendingPhone="",pendingEventId="",eventRefreshTimer=null;
 function formatChinaDateTime(value, options){
   var date=new Date(value);if(isNaN(date.getTime()))return "";
   return date.toLocaleString("zh-CN",Object.assign({timeZone:"Asia/Shanghai"},options||{}));
@@ -108,7 +108,13 @@ async function init(){
       eventsBox.innerHTML='<strong>'+title+'</strong><br>'+lines.join('<br>');
       eventsBox.classList.add('show');
     } else eventsBox.classList.remove('show');
-    if(Number(d.active_event_count||0)===0){document.getElementById("submitBtn").disabled=true;document.getElementById("submitBtn").textContent=nextEvent?"尚未到签到时间":"当前暂无开放签到的活动";document.getElementById("nameInput").disabled=true;document.getElementById("phoneInput").disabled=true;}
+    var hasActiveEvents=Number(d.active_event_count||0)>0;
+    document.getElementById("submitBtn").disabled=!hasActiveEvents;
+    document.getElementById("submitBtn").textContent=hasActiveEvents?"提交签到":(nextEvent?"尚未到签到时间":"当前暂无开放签到的活动");
+    document.getElementById("nameInput").disabled=!hasActiveEvents;
+    document.getElementById("phoneInput").disabled=!hasActiveEvents;
+    if(eventRefreshTimer)clearInterval(eventRefreshTimer);
+    eventRefreshTimer=nextEvent?setInterval(init,25000):null;
     document.getElementById("loadingArea").style.display="none";
     document.getElementById("mainArea").style.display="block";
   }catch(e){document.getElementById("loadingArea").innerHTML='<div style="color:#f87171">⚠️ 加载失败</div><div style="font-size:12px">请刷新重试</div>'}

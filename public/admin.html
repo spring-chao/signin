@@ -255,8 +255,8 @@ input:checked+.slider:before{transform:translateX(20px)}
     </div>
     <div id="tabContent"></div>
     <div class="btn-group">
-      <button class="btn danger" onclick="resetCheckins()">&#x1f504; 清空签到</button>
-      <button class="btn danger" onclick="clearAll()">&#x1f5d1; 删除当前活动全部数据</button>
+      <button class="btn danger" id="resetCheckinsBtn" onclick="resetCheckins()">&#x1f504; 清空签到</button>
+      <button class="btn danger" id="clearAllBtn" onclick="clearAll()">&#x1f5d1; 删除当前活动全部数据</button>
     </div>
     <div class="msg" id="clearMsg"></div>
   </div>
@@ -264,7 +264,7 @@ input:checked+.slider:before{transform:translateX(20px)}
 </div>
 <script>
 var API = "https://shengheshu-d2g2zyyl99f6c6fc2-1453587887.ap-shanghai.app.tcloudbase.com/api";
-var adminToken = "", refreshTimer = null;
+var adminToken = "", refreshTimer = null, eventListTimer = null, versionConsistent = false;
 var currentTab = "groups", currentData = null, currentEvents = [], currentEventId = "", excelData = null, uploadGroupField = "", uploadPreview = null, uploadPreviewTimer = null, opsRosterOptions = [];
 document.getElementById("eventDateInput").value = new Date().toLocaleDateString("en-CA", {timeZone:"Asia/Shanghai"});
 syncDefaultCheckinTimes();
@@ -294,6 +294,7 @@ async function adminFetch(path, options) {
   if (response.status === 401) {
     adminToken = "";
     if (refreshTimer) clearInterval(refreshTimer);
+    if (eventListTimer) clearInterval(eventListTimer);
     document.getElementById("mainPanel").style.display="none";
     document.getElementById("loginCard").style.display="block";
     throw new Error("登录已失效，请重新登录");
@@ -313,10 +314,12 @@ async function doLogin() {
     adminToken = result.token;
     document.getElementById("loginCard").style.display="none";
     document.getElementById("mainPanel").style.display="block";
-    loadVersionInfo();
+    await loadVersionInfo();
     await loadData();
     if (refreshTimer) clearInterval(refreshTimer);
-    refreshTimer = setInterval(loadData, 5000);
+    if (eventListTimer) clearInterval(eventListTimer);
+    refreshTimer = setInterval(refreshCurrentStats, 5000);
+    eventListTimer = setInterval(loadData, 45000);
   } catch (e) { showMsg(m,"登录失败："+e.message,"error"); }
 }
 
@@ -329,8 +332,16 @@ async function loadData() {
     if (!currentEventId || !currentEvents.some(function(item){return item.event_id===currentEventId;})) currentEventId = ed.selected_event_id || (currentEvents[0] && currentEvents[0].event_id) || "";
     renderEventSelector();
     if (!currentEventId) { document.getElementById("eventTitle").textContent="请先新增活动"; return; }
+    await refreshCurrentStats();
+  } catch(e) { document.getElementById("lastUpdate").textContent = e.message || "加载失败"; }
+}
+
+async function refreshCurrentStats() {
+  if (!adminToken || !currentEventId) return;
+  try {
     var r = await adminFetch("/stats?event_id="+encodeURIComponent(currentEventId));
     currentData = await r.json();
+    if (!currentData.ok && currentData.msg) throw new Error(currentData.msg);
     document.getElementById("eventTitle").textContent = currentData.event_name || "管理后台";
     document.getElementById("lastUpdate").textContent = formatChinaDateTime(new Date(),{hour:"2-digit",minute:"2-digit",second:"2-digit",hour12:false});
     document.getElementById("overview").innerHTML =
@@ -343,7 +354,7 @@ async function loadData() {
     var tabs = document.querySelectorAll("#tabBar .tab");
     if (tabs.length > 0) tabs[0].textContent = gt;
     renderTab();
-  } catch(e) { document.getElementById("lastUpdate").textContent = e.message || "加载失败"; }
+  } catch(e) { document.getElementById("lastUpdate").textContent = e.message || "统计加载失败"; }
 }
 
 function renderEventSelector() {
@@ -354,20 +365,56 @@ function renderEventSelector() {
   var stateNames={open:"签到中",upcoming:"未开始",ended:"已结束",closed:"已手动关闭"};
   document.getElementById("eventMeta").textContent=item ? item.event_date+" · "+item.activity_type_name+" · "+({DRAFT:"草稿",CONFIRMED:"已确认举办",CANCELLED:"已取消"}[item.lifecycle_status]||"草稿")+" · "+(stateNames[item.checkin_status]||"")+" · "+item.total+"人报名 · "+item.checked+"人签到" : "暂无活动";
   var lifecycle=item&&item.lifecycle_status||"DRAFT";
-  document.getElementById("eventLifecycleActions").textContent=item ? (lifecycle==="CONFIRMED" ? "已确认举办；如需停止公开签到，请使用上方“手动关闭签到”。" : lifecycle==="CANCELLED" ? "已取消，不会进入学员公开签到页。" : "草稿不会进入学员公开签到页，请先确认举办。") : "";
+  var groupTargets = lifecycleTargetEvents(item);
+  var groupNotice = groupTargets.length > 1 ? "当前为三场次活动组，生命周期操作将同时作用于：" + groupTargets.map(function(row){return row.session_name || row.name;}).join("、") + "。" : "";
+  document.getElementById("eventLifecycleActions").textContent=item ? (lifecycle==="CONFIRMED" ? "已确认举办；如需停止公开签到，请使用上方“手动关闭签到”。" : lifecycle==="CANCELLED" ? "已取消，不会进入学员公开签到页。" : "草稿不会进入学员公开签到页，请先确认举办。") + (groupNotice ? " " + groupNotice : "") : "";
   document.getElementById("confirmEventBtn").disabled=!item||lifecycle==="CONFIRMED";
   document.getElementById("cancelEventBtn").disabled=!item||lifecycle==="CANCELLED";
   document.getElementById("draftEventBtn").disabled=!item||lifecycle==="DRAFT";
   var btn=document.getElementById("eventStatusBtn");
   btn.textContent=item && item.manual_status==="active" ? "手动关闭签到" : "恢复按时间开放";
-  document.getElementById("manualAddBtn").disabled=!item || ["upcoming","open"].indexOf(item.checkin_status)===-1;
+  document.getElementById("manualAddBtn").disabled=!item || item.lifecycle_status==="CANCELLED" || ["upcoming","open"].indexOf(item.checkin_status)===-1;
+  setUnsafeActionAvailability();
+}
+
+function lifecycleTargetEvents(item) {
+  if (!item || !item.event_group_id) return item ? [item] : [];
+  return currentEvents.filter(function(row){return String(row.event_group_id||"")===String(item.event_group_id||"");}).sort(function(a,b){return Number(a.session_order||0)-Number(b.session_order||0);});
+}
+
+function setUnsafeActionAvailability() {
+  var safe = !!adminToken && versionConsistent;
+  ["eventStatusBtn","confirmEventBtn","cancelEventBtn","draftEventBtn","resetCheckinsBtn","clearAllBtn"].forEach(function(id){
+    var element=document.getElementById(id); if(element) element.disabled=element.disabled || !safe;
+  });
 }
 
 async function loadVersionInfo(){
   try{
-    var r=await fetch(API+"/version"),d=await r.json();
-    document.getElementById("versionInfo").textContent="生产版本："+(d.version||"unknown")+" · "+(d.commit&&d.commit!=="unknown"?d.commit.slice(0,7):"unknown")+" · "+(d.deployed_at&&d.deployed_at!=="unknown"?formatChinaDateTime(d.deployed_at):"未生成构建清单");
-  }catch(e){document.getElementById("versionInfo").textContent="生产版本：读取失败";}
+    versionConsistent=false;
+    document.getElementById("versionInfo").textContent="正在校验前后端版本…";
+    var results=await Promise.all([
+      fetch(API+"/version",{cache:"no-store"}).then(function(r){return r.json();}),
+      fetch(new URL("/build-info.json?check="+Date.now(),window.location.origin),{cache:"no-store"}).then(function(r){return r.json();})
+    ]);
+    var backend=results[0],frontend=results[1];
+    var backendCommit=String(backend.commit||"").trim(), frontendCommit=String(frontend.commit||"").trim();
+    versionConsistent=Boolean(backend.ok===true && backendCommit && backendCommit!=="unknown" && frontendCommit && frontendCommit!=="unknown" && backendCommit===frontendCommit);
+    var shortCommit=backendCommit && backendCommit!=="unknown" ? backendCommit.slice(0,7) : "unknown";
+    var text="生产版本："+(backend.version||"unknown")+" · 后端 "+shortCommit+" · 前端 "+(frontendCommit&&frontendCommit!=="unknown"?frontendCommit.slice(0,7):"unknown");
+    if(versionConsistent){
+      document.getElementById("versionInfo").innerHTML='<span style="color:#4ade80">✅ '+esc(text+' · 前后端一致')+'</span>';
+    }else{
+      document.getElementById("versionInfo").innerHTML='<span style="color:#f87171">⚠️ '+esc(text+' · 前后端版本不一致，修改操作已禁用')+'</span>';
+    }
+    setUnsafeActionAvailability();
+    return versionConsistent;
+  }catch(e){
+    versionConsistent=false;
+    document.getElementById("versionInfo").innerHTML='<span style="color:#f87171">⚠️ 前后端版本校验失败，修改操作已禁用</span>';
+    setUnsafeActionAvailability();
+    return false;
+  }
 }
 
 async function selectAdminEvent(){
@@ -377,6 +424,7 @@ async function selectAdminEvent(){
 }
 
 async function toggleEventStatus(){
+  if(!versionConsistent){showMsg(document.getElementById("eventLifecycleMsg"),"前后端版本未通过一致性校验，暂不能修改活动状态","error");return;}
   var item=currentEvents.find(function(row){return row.event_id===currentEventId;}); if(!item)return;
   var next=item.manual_status==="active"?"closed":"active";
   if(!confirm(next==="closed"?"关闭后，该活动将不能继续签到，确定关闭吗？":"确定重新开放该活动签到吗？"))return;
@@ -385,10 +433,14 @@ async function toggleEventStatus(){
 }
 
 async function updateEventLifecycle(next){
+  if(!versionConsistent){showMsg(document.getElementById("eventLifecycleMsg"),"前后端版本未通过一致性校验，暂不能修改活动生命周期","error");return;}
   var item=currentEvents.find(function(row){return row.event_id===currentEventId;});
   if(!item)return;
   var labels={DRAFT:"退回草稿",CONFIRMED:"确认举办",CANCELLED:"取消活动"};
-  if(!confirm("确定"+labels[next]+"“"+item.name+"”吗？"+(next==="CANCELLED"?"取消后不会出现在学员公开签到页。":"")))return;
+  var targets=lifecycleTargetEvents(item);
+  var targetName=targets.length>1 ? item.name+"（"+targets.map(function(row){return row.session_name||row.name;}).join("、")+"）" : item.name;
+  var groupMessage=targets.length>1 ? "\n\n此操作将同时作用于上述全部场次。" : "";
+  if(!confirm("确定"+labels[next]+"“"+targetName+"”吗？"+groupMessage+(next==="CANCELLED"?"\n取消后不会出现在学员公开签到页，也不能继续维护报名记录。":"")))return;
   var msg=document.getElementById("eventLifecycleMsg");
   try{
     var r=await adminFetch("/event_lifecycle_update",{method:"POST",body:JSON.stringify({event_id:currentEventId,lifecycle_status:next,reason:"后台人工操作"})});
@@ -418,6 +470,7 @@ async function changeAdminPassword(){
     document.getElementById("confirmAdminPassword").value="";
     adminToken="";
     if(refreshTimer)clearInterval(refreshTimer);
+    if(eventListTimer)clearInterval(eventListTimer);
     document.getElementById("mainPanel").style.display="none";
     document.getElementById("loginCard").style.display="block";
     showMsg(document.getElementById("loginMsg"),"密码已修改，请使用新密码重新登录","success");
@@ -452,7 +505,7 @@ async function addManualRegistration() {
   };
   if (!payload.event_id) { showMsg(msg, "请先选择当前管理活动", "error"); return; }
   var currentEvent=currentEvents.find(function(row){return row.event_id===currentEventId;});
-  if (!currentEvent || ["upcoming","open"].indexOf(currentEvent.checkin_status)===-1) { showMsg(msg, "当前管理活动已结束或已关闭，不能新增临时报名", "error"); return; }
+  if (!currentEvent || currentEvent.lifecycle_status==="CANCELLED" || ["upcoming","open"].indexOf(currentEvent.checkin_status)===-1) { showMsg(msg, "当前管理活动已结束、已关闭或已取消，不能新增临时报名", "error"); return; }
   if (!payload.name) { showMsg(msg, "请输入姓名", "error"); return; }
   if (!/^\d{11}$/.test(payload.phone)) { showMsg(msg, "请输入正确的11位手机号", "error"); return; }
   showMsg(msg, "正在新增报名，请稍候…", "info");
@@ -1111,6 +1164,7 @@ function showMsg(el, text, type) {
 }
 
 async function resetCheckins() {
+  if(!versionConsistent){showMsg(document.getElementById("clearMsg"),"前后端版本未通过一致性校验，暂不能清空签到","error");return;}
   if (!confirm("确定清空当前活动的签到记录？")) return;
   var msg = document.getElementById("clearMsg");
   try {
@@ -1122,6 +1176,7 @@ async function resetCheckins() {
 }
 
 async function clearAll() {
+  if(!versionConsistent){showMsg(document.getElementById("clearMsg"),"前后端版本未通过一致性校验，暂不能删除活动数据","error");return;}
   var item=currentEvents.find(function(row){return row.event_id===currentEventId;});
   if(!item){showMsg(document.getElementById("clearMsg"),"请先选择当前活动","error");return;}
   if (!confirm("第一次确认：将删除当前活动“"+item.name+"”的全部报名和签到记录。\n\n其他活动不会受到影响。是否继续？")) return;

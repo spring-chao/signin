@@ -131,6 +131,7 @@ tcb hosting delete /v3/admin.html -e {你的环境ID}
 - `registrations` — 存储报名数据
 - `checkins` — 存储签到记录
 - `events` — 存储活动名称、日期、类型和开放状态
+- `event_audit_logs` — 存储活动确认、取消和退回草稿的生命周期审计记录
 
 ### 9. 生成二维码
 

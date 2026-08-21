@@ -463,11 +463,24 @@ async function request(path, method, body, token, extraHeaders) {
   assert.equal(secondStats.data.group_field, "group_name", "班会活动应按小组分类");
   assert.equal(secondStats.data.group_type, "小组");
   assert.equal(secondStats.data.groups["一组"].total, 1);
+  db.collections.registrations.push({ _id: "reg-cancel", batch_id: "batch-2", name: "取消活动报名", phone: "13800000005", center: "", class_name: "一班", group_name: "一组" });
 
   const cancelled = await request("/event_lifecycle_update", "POST", {
     event_id: "batch-2", lifecycle_status: "CANCELLED", reason: "回归测试"
   }, token);
   assert.equal(cancelled.data.ok, true, "活动取消必须通过受保护生命周期接口完成");
+  const addToCancelled = await request("/registration", "POST", {
+    event_id: "batch-2", name: "取消后新增", phone: "13800000010"
+  }, token);
+  assert.equal(addToCancelled.data.ok, false, "已取消活动不得新增临时报名");
+  const updateCancelledRegistration = await request("/attendance_status", "POST", {
+    registration_id: "reg-cancel", status: "leave", note: "取消后修改"
+  }, token);
+  assert.equal(updateCancelledRegistration.data.ok, false, "已取消活动不得修改报名跟进状态");
+  const deleteCancelledRegistration = await request("/registration_delete", "POST", {
+    registration_id: "reg-cancel"
+  }, token);
+  assert.equal(deleteCancelledRegistration.data.ok, false, "已取消活动不得删除报名记录");
   const cancelledPublic = await request("/event", "GET");
   assert(!cancelledPublic.data.active_events.some(row => row.event_id === "batch-2"), "已取消活动不得进入公开签到候选");
   assert(!cancelledPublic.data.display_events.some(row => row.event_id === "batch-2"), "已取消活动不得显示在学员页");
