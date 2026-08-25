@@ -485,10 +485,12 @@ async function loadData() {
       activityHasMore = Boolean(ed.has_more);
       renderActivityList();
     }
-    todayItems = ed.today_items || [];
+    todayItems = ed.today_checkin_items || ed.today_items || [];
     todaySelectedItem = ed.today_selected_item || null;
     if (currentWorkspace === "today") {
-      currentEvents = todaySelectedItem && todaySelectedItem.sessions ? todaySelectedItem.sessions.slice() : [];
+      // Show every confirmed activity that is open or upcoming today. The
+      // selected item remains only the default statistics target.
+      currentEvents = todayItems.reduce(function(list,item){return list.concat(item.sessions||[item]);}, []);
       if (!currentEvents.some(function(item){return item.event_id===currentEventId;})) currentEventId = ed.today_selected_event_id || (currentEvents[0] && currentEvents[0].event_id) || "";
       if (!currentEventId) currentData = null;
       updateTodayAvailability();

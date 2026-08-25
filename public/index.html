@@ -97,14 +97,14 @@ async function init(){
   try{
     var r=await fetch(API+"/event");var d=await r.json();
     document.getElementById("eventName").textContent=d.event_name||"盛和塾签到";
-    var activeEvents=(d.active_events||[]).slice().sort(function(a,b){return Number(a.session_order||0)-Number(b.session_order||0)||String(a.checkin_start_at||"").localeCompare(String(b.checkin_start_at||""));}),nextEvent=d.next_event||null,eventsBox=document.getElementById("activeEvents");
+    var activeEvents=(d.active_events||[]).slice(),displayEvents=(d.display_events||activeEvents).slice().sort(function(a,b){return String(a.checkin_start_at||"").localeCompare(String(b.checkin_start_at||""))||Number(a.session_order||0)-Number(b.session_order||0)||String(a.name||"").localeCompare(String(b.name||""));}),nextEvent=d.next_event||null,eventsBox=document.getElementById("activeEvents");
     var lines=[];
-    activeEvents.forEach(function(item){lines.push("• "+esc(item.name)+"（当前可签到）");});
-    if(nextEvent && !activeEvents.some(function(item){return String(item.event_id)===String(nextEvent.event_id)})){
-      lines.push("• "+esc(nextEvent.name)+"（"+esc(formatChinaTime(nextEvent.checkin_start_at))+" 开始）");
-    }
+    displayEvents.forEach(function(item){
+      var state=item.checkin_status==="open"?"当前可签到":(item.checkin_status==="upcoming"?formatChinaTime(item.checkin_start_at)+" 开始":"");
+      lines.push("• "+esc(item.name)+(state?"（"+esc(state)+"）":""));
+    });
     if(lines.length){
-      var title=activeEvents.length?"当前可签到":"下一场活动";
+      var title=activeEvents.length?"当前可签到":"今日活动安排";
       eventsBox.innerHTML='<strong>'+title+'</strong><br>'+lines.join('<br>');
       eventsBox.classList.add('show');
     } else eventsBox.classList.remove('show');
@@ -114,7 +114,7 @@ async function init(){
     document.getElementById("nameInput").disabled=!hasActiveEvents;
     document.getElementById("phoneInput").disabled=!hasActiveEvents;
     if(eventRefreshTimer)clearInterval(eventRefreshTimer);
-    eventRefreshTimer=nextEvent?setInterval(init,25000):null;
+    eventRefreshTimer=displayEvents.length?setInterval(init,25000):null;
     document.getElementById("loadingArea").style.display="none";
     document.getElementById("mainArea").style.display="block";
   }catch(e){document.getElementById("loadingArea").innerHTML='<div style="color:#f87171">⚠️ 加载失败</div><div style="font-size:12px">请刷新重试</div>'}

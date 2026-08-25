@@ -475,6 +475,7 @@ async function request(path, method, body, token, extraHeaders) {
   const multiplePublicEvents = await request("/event", "GET");
   assert.equal(multiplePublicEvents.data.event_name, "盛和塾活动签到");
   assert.equal(multiplePublicEvents.data.active_events.length, 2, "多个开放活动时扫码页应返回活动名称列表");
+  assert.equal(multiplePublicEvents.data.display_events.length, 2, "公开签到页应显示全部当前开放活动");
   const multiEvent = await request("/checkin", "POST", { name: "陈一", phone: "13800000001" });
   assert.equal(multiEvent.data.needs_event, true, "同一人命中多个开放活动时应要求选择活动");
   assert.equal(multiEvent.data.events.length, 2);
@@ -485,6 +486,13 @@ async function request(path, method, body, token, extraHeaders) {
 
   const eventList = await request("/admin_events", "GET", undefined, token);
   assert.equal(eventList.data.events.length, 2);
+  db.collections.events.push({
+    _id: "event-upcoming", event_id: "batch-upcoming", name: "同日即将活动", event_date: today,
+    activity_type: "course", status: "active", lifecycle_status: "CONFIRMED",
+    checkin_start_at: "2099-01-01T00:00:00.000Z", checkin_end_at: "2099-01-01T12:00:00.000Z"
+  });
+  const allTodayPublic = await request("/event", "GET");
+  assert(allTodayPublic.data.display_events.some(row => row.event_id === "batch-upcoming"), "签到页应显示当天全部即将开始的活动，而不只显示一场下一活动");
   const secondStats = await request("/stats?event_id=batch-2", "GET", undefined, token);
   assert.equal(secondStats.data.total, 1);
   assert.equal(secondStats.data.checked, 1);
@@ -541,6 +549,7 @@ async function request(path, method, body, token, extraHeaders) {
   const todayWorkspaceData = await request("/admin_events?page=1&page_size=20", "GET", undefined, token);
   assert.notEqual(todayWorkspaceData.data.today_selected_event_id, "batch-3", "选择未来活动后，今日工作台不得切换到非今日活动");
   assert(todayWorkspaceData.data.today_selected_item && todayWorkspaceData.data.today_selected_item.event_date === today, "今日工作台必须返回今天的活动候选");
+  assert(todayWorkspaceData.data.today_checkin_items.some(item => item.event_id === "batch-1"), "今日工作台应返回所有可签到活动，而不是只返回默认活动");
   await request("/event_update", "POST", { event_id: "batch-1", select: true }, token);
 
   db.collections.events.push({ _id: "event-4", event_id: "batch-4", name: "已结束课程", event_date: "2000-01-01", activity_type: "course", status: "active", lifecycle_status: "CONFIRMED", checkin_start_at: "2000-01-01T00:00:00.000Z", checkin_end_at: "2000-01-01T12:00:00.000Z" });

@@ -1477,22 +1477,31 @@ exports.main = async (event, context) => {
       // Time. Future activities remain available in the admin console.
       const todayEvents = allEvents.filter(item => isEventToday(item));
       const activeEvents = todayEvents.filter(item => isPublicCheckinEligible(item));
+      const publicEventOrder = (a, b) => {
+        const aStart = Date.parse(a.checkin_start_at || "");
+        const bStart = Date.parse(b.checkin_start_at || "");
+        const aTime = Number.isFinite(aStart) ? aStart : Number.MAX_SAFE_INTEGER;
+        const bTime = Number.isFinite(bStart) ? bStart : Number.MAX_SAFE_INTEGER;
+        return aTime - bTime ||
+          Number(a.session_order || 0) - Number(b.session_order || 0) ||
+          String(a.name || "").localeCompare(String(b.name || ""));
+      };
       const upcomingEvents = todayEvents
         .filter(item => isPublicUpcoming(item))
-        .sort((a, b) => Date.parse(a.checkin_start_at || "") - Date.parse(b.checkin_start_at || ""));
+        .sort(publicEventOrder);
       const nextEvent = upcomingEvents[0] || null;
-      const displayEvents = activeEvents.concat(
-        nextEvent && !activeEvents.some(item => String(item.event_id || item._id || "") === String(nextEvent.event_id || nextEvent._id || ""))
-          ? [nextEvent]
-          : []
-      );
+      // Return every confirmed activity that is open or upcoming today. The
+      // old implementation exposed only one next session and hid other classes.
+      const displayEvents = todayEvents
+        .filter(item => isPublicCheckinEligible(item) || isPublicUpcoming(item))
+        .sort(publicEventOrder);
       const ds = await getDisplaySettings();
       const activeIds = activeEvents.map(item => String(item.event_id || item._id || ""));
       const activeRegistrationRows = await Promise.all(activeIds.map(eventId => rowsForBatch("registrations", eventId, 5000)));
       const total = activeRegistrationRows.reduce((sum, rows) => sum + rows.length, 0);
       const eventName = activeEvents.length === 1
         ? (activeEvents[0].name || "盛和塾活动签到")
-        : (activeEvents.length > 1 ? "盛和塾活动签到" : "当前暂无可签到活动");
+        : (activeEvents.length > 1 || displayEvents.length ? "盛和塾活动签到" : "当前暂无可签到活动");
       return { statusCode: 200, headers: h, body: JSON.stringify({ event_name: eventName, active_event_count: activeEvents.length, active_events: activeEvents.map(publicEvent), next_event: nextEvent ? publicEvent(nextEvent) : null, display_events: displayEvents.map(publicEvent), show_group: ds.show_group, show_dinner_table: ds.show_dinner_table, total }) };
     } catch (e) {
       return { statusCode: 200, headers: h, body: JSON.stringify({ event_name: "签到活动加载失败", active_event_count: 0, active_events: [], show_group: "true", show_dinner_table: "true", total: 0 }) };
@@ -1527,11 +1536,11 @@ exports.main = async (event, context) => {
           selectedItem = summarizeEventGroup(selectedRows);
         }
       }
-      const selectedTodayItem = selectedEvent && String(selectedEvent.event_date || "") === today && selectedItem && !summaryHasLifecycle(selectedItem, "CANCELLED") && todaySummaryPriority(selectedItem) < 2
+      const selectedTodayItem = selectedEvent && String(selectedEvent.event_date || "") === today && selectedItem && summaryHasLifecycle(selectedItem, "CONFIRMED") && !summaryHasLifecycle(selectedItem, "CANCELLED") && todaySummaryPriority(selectedItem) < 2
         ? selectedItem
         : null;
       const todayCandidates = todayItems
-        .filter(item => !summaryHasLifecycle(item, "CANCELLED") && todaySummaryPriority(item) < 2)
+        .filter(item => summaryHasLifecycle(item, "CONFIRMED") && !summaryHasLifecycle(item, "CANCELLED") && todaySummaryPriority(item) < 2)
         .sort((a, b) => todaySummaryPriority(a) - todaySummaryPriority(b) || compareEventListOrder(a, b));
       const todaySelectedItem = selectedTodayItem || todayCandidates[0] || null;
       const todaySelectedSessions = todaySelectedItem ? (todaySelectedItem.sessions || [todaySelectedItem]) : [];
@@ -1553,6 +1562,7 @@ exports.main = async (event, context) => {
         selected_event_id: selectedEventId,
         selected_item: selectedItem,
         today_items: todayItems,
+        today_checkin_items: todayCandidates,
         today_selected_event_id: todaySelectedEventId,
         today_selected_item: todaySelectedItem,
         activity_types: ACTIVITY_TYPES
