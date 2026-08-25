@@ -600,6 +600,11 @@ async function request(path, method, body, token, extraHeaders) {
   }, token);
   assert.equal(defaultSessions.data.ok, true);
   const defaultSessionRows = db.collections.events.filter(row => row.event_group_id === defaultSessions.data.event_group_id).sort((a, b) => a.session_order - b.session_order);
+  assert(defaultSessionRows.every(row => row.lifecycle_status === "CONFIRMED"), "班会创建成功后应直接为已确认举办，不需要二次确认");
+  assert(defaultSessionRows.every(row => row.confirmed_at && row.confirmed_by === "admin_token"), "班会创建应记录确认时间和操作方");
+  const createdActivityList = await request("/admin_events?page=1&page_size=50&date_from=2099-03-03&date_to=2099-03-03", "GET", undefined, token);
+  const createdActivitySummary = (createdActivityList.data.items || []).find(row => row.event_group_id === defaultSessions.data.event_group_id);
+  assert(createdActivitySummary && createdActivitySummary.lifecycle_status === "CONFIRMED", "班会创建后活动列表应立即显示已确认举办");
   assert.deepEqual(defaultSessionRows.map(row => [row.session_code, row.checkin_start_at, row.scheduled_start_at, row.checkin_end_at, row.scheduled_end_at]), [
     ["MORNING", "2099-03-02T23:30:00.000Z", "2099-03-03T01:00:00.000Z", "2099-03-03T02:30:00.000Z", "2099-03-03T04:00:00.000Z"],
     ["AFTERNOON", "2099-03-03T04:10:00.000Z", "2099-03-03T05:30:00.000Z", "2099-03-03T07:00:00.000Z", "2099-03-03T09:00:00.000Z"],

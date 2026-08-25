@@ -1745,11 +1745,11 @@ async function createThreeSessionMeeting() {
     var r=await adminFetch("/create_class_meeting_sessions",{method:"POST",body:JSON.stringify(payload)});
     var d=await r.json();
     if(!d.ok)throw new Error(d.msg||"创建失败");
-    showMsg(msg,"创建成功：上午、下午、空巴三个签到场次已生成","success");
+    showMsg(msg,"创建成功：上午、下午、空巴三个签到场次已生成，并已确认举办","success");
     excelData=null;uploadGroupField="";uploadPreview=null;
     document.getElementById("eventNameInput").value="";
     document.getElementById("uploadArea").innerHTML='<div class="icon">&#x1f4c1;</div><div class="text">点击上传 Excel 报名表</div><div class="hint">支持 .xls / .xlsx；自动查找前100行表头，列顺序不限</div>';
-    await loadData();
+    await refreshActivityStateAfterMutation();
   }catch(e){showMsg(msg,e.message||"创建三次签到失败","error");}
   finally{btn.disabled=false;btn.textContent="确认创建上午、下午、空巴三次签到";}
 }
