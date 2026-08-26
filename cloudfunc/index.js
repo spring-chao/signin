@@ -17,7 +17,13 @@ const ADMIN_TOKEN_TTL_MS = 12 * 60 * 60 * 1000;
 const LOGIN_RATE_LIMIT_WINDOW_MS = 15 * 60 * 1000;
 const LOGIN_RATE_LIMIT_MAX_FAILURES = 5;
 const loginFailures = new Map();
+let testOpsRequestHandler = null;
 const REQUIRED_COLLECTIONS = ["config", "events", "registrations", "checkins", "event_audit_logs"];
+const ATTENDANCE_ROLES = {
+  HOME_CLASS_MEMBER: "HOME_CLASS_MEMBER",
+  CROSS_CLASS_MEMBER: "CROSS_CLASS_MEMBER",
+  GUEST: "GUEST"
+};
 const ACTIVITY_TYPES = {
   national_report: "全国报告会",
   center_quarterly_report: "分中心季度报告会",
@@ -331,7 +337,10 @@ exports._test = {
   isScheduledAttendanceSyncEvent,
   isMissingCollectionError,
   checkRequiredCollections,
-  adminOperationErrorMessage
+  adminOperationErrorMessage,
+  setRequestOpsHandler(handler) {
+    testOpsRequestHandler = typeof handler === "function" ? handler : null;
+  }
 };
 
 exports.main = async (event, context) => {
@@ -446,6 +455,7 @@ exports.main = async (event, context) => {
   }
 
   async function requestOps(pathname, params) {
+    if (testOpsRequestHandler) return await testOpsRequestHandler(pathname, params || {});
     // 旧 OPS_API_BASE 指向历史运营系统，既会超时，也不返回三场签到所需的
     // 组织 ID。迁移期间自动切到统一平台；新部署可用两个 CHECKIN_ROSTER_*
     // 环境变量显式覆盖，完成独立密钥切换后即可移除兼容分支。
@@ -1083,7 +1093,7 @@ exports.main = async (event, context) => {
     return { statusCode: 200, headers: h, body: JSON.stringify({ ok: true, token: await issueAdminToken(), expires_in: ADMIN_TOKEN_TTL_MS / 1000 }) };
   }
 
-  const protectedPaths = new Set(["/settings", "/admin_password", "/admin_events", "/event_update", "/event_lifecycle_update", "/registration", "/registration_delete", "/attendance_status", "/export", "/stats", "/ops_roster_options", "/ops_roster_members", "/upload_preview", "/upload", "/reset", "/clear_all", "/create_class_meeting_sessions"]);
+  const protectedPaths = new Set(["/settings", "/admin_password", "/admin_events", "/event_update", "/event_lifecycle_update", "/registration", "/registration_delete", "/attendance_status", "/export", "/stats", "/ops_roster_options", "/ops_roster_members", "/class_roster_reconciliation", "/sync_class_roster", "/upload_preview", "/upload", "/reset", "/clear_all", "/create_class_meeting_sessions"]);
   if (protectedPaths.has(p) && !(await isAdminRequest())) return unauthorized();
 
   async function writeEventAudit(eventItem, previousStatus, nextStatus, reason) {
@@ -1387,6 +1397,201 @@ exports.main = async (event, context) => {
     return String(value || "").trim().replace(/\s/g, "").replace(/-/g, "");
   }
 
+  function registrationAttendanceRole(registration, eventItem) {
+    const stored = String(registration && registration.attendance_role || "").trim();
+    if (Object.prototype.hasOwnProperty.call(ATTENDANCE_ROLES, stored)) return stored;
+    // Existing class rosters predate the explicit role field. They remain the
+    // event's home-class baseline; only new manual additions become guests.
+    if (isClassMeetingEvent(eventItem) && String(registration && registration.source || "") !== "manual") {
+      return ATTENDANCE_ROLES.HOME_CLASS_MEMBER;
+    }
+    return ATTENDANCE_ROLES.GUEST;
+  }
+
+  function rosterMemberKey(member) {
+    const memberCode = String(member && member.member_code || "").trim();
+    if (memberCode) return "member_code:" + memberCode;
+    return "identity:" + normalizePersonName(member && member.name) + "|" + normalizePhone(member && member.phone);
+  }
+
+  function registrationRosterKey(registration) {
+    const memberCode = String(registration && registration.member_code || "").trim();
+    if (memberCode) return "member_code:" + memberCode;
+    return "identity:" + normalizePersonName(registration && registration.name) + "|" + normalizePhone(registration && registration.phone);
+  }
+
+  function publicRosterDiffPerson(item, reason) {
+    return {
+      name: String(item && item.name || "").trim(),
+      company: String(item && (item.company_name || item.company) || "").trim(),
+      center: normalizeCenterValue(item && (item.primary_org_name || item.center)),
+      class_name: normalizeGroupValue(item && item.class_name),
+      group_name: normalizeGroupValue(item && item.group_name),
+      reason
+    };
+  }
+
+  function rosterRegistrationData(member, eventItem, source) {
+    return {
+      name: String(member && member.name || "").trim(),
+      phone: normalizePhone(member && member.phone),
+      center: normalizeCenterValue(member && (member.primary_org_name || member.center)),
+      class_name: normalizeGroupValue(member && member.class_name),
+      group_name: normalizeGroupValue(member && member.group_name),
+      company: String(member && (member.company_name || member.company) || "").trim(),
+      member_code: String(member && member.member_code || "").trim(),
+      platform_member_id: String(member && member.member_id || "").trim(),
+      group_num: null,
+      dinner_table_num: null,
+      attendance_status: "pending",
+      attendance_note: "",
+      attendance_role: ATTENDANCE_ROLES.HOME_CLASS_MEMBER,
+      home_class_org_unit_id: String(eventItem && eventItem.class_org_unit_id || "").trim(),
+      home_class_name: normalizeGroupValue(member && member.class_name),
+      event_class_org_unit_id: String(eventItem && eventItem.class_org_unit_id || "").trim(),
+      registration_source: source || "OPS_ROSTER",
+      source: source === "EXCEL_UPLOAD" ? "excel_upload" : "ops_roster",
+      batch_id: String(eventItem && (eventItem.event_id || eventItem._id) || ""),
+      event_group_id: String(eventItem && eventItem.event_group_id || ""),
+      session_code: String(eventItem && eventItem.session_code || ""),
+      created_at: new Date().toISOString()
+    };
+  }
+
+  async function fetchCurrentClassRoster(eventItem) {
+    const classOrgUnitId = String(eventItem && eventItem.class_org_unit_id || "").trim();
+    if (!isClassMeetingEvent(eventItem) || !classOrgUnitId) {
+      throw new Error("当前活动不是已关联班级组织的班会，不能进行名单对账");
+    }
+    const params = { class_org_unit_id: classOrgUnitId, group_org_unit_id: "" };
+    const result = await requestOps("/api/v1/checkin-rosters/members", params);
+    const normalized = validateOpsRosterData(result, params);
+    const members = normalized.members.map(item => ({
+      ...item,
+      phone: normalizePhone(item && item.phone),
+      member_code: String(item && item.member_code || "").trim(),
+      member_id: String(item && item.member_id || "").trim()
+    }));
+    return {
+      members,
+      quality: validateClassMeetingRoster(members),
+      version: normalized.version || null
+    };
+  }
+
+  async function rosterSyncTargetEvents(selectedEvent) {
+    if (!isClassMeetingEvent(selectedEvent)) return [selectedEvent];
+    const groupId = String(selectedEvent && selectedEvent.event_group_id || "").trim();
+    if (!groupId) return [selectedEvent];
+    const selectedOrder = Number(selectedEvent && selectedEvent.session_order || 0);
+    const related = await getEventGroupById(groupId);
+    return related.filter(item =>
+      Number(item.session_order || 0) >= selectedOrder && eventTimeState(item) === "upcoming"
+    ).sort((a, b) => Number(a.session_order || 0) - Number(b.session_order || 0));
+  }
+
+  async function buildClassRosterReconciliation(selectedEvent) {
+    const roster = await fetchCurrentClassRoster(selectedEvent);
+    const eventId = String(selectedEvent && (selectedEvent.event_id || selectedEvent._id) || "");
+    const registrations = await rowsForBatch("registrations", eventId, 5000);
+    const homeRegistrations = registrations.filter(item =>
+      registrationAttendanceRole(item, selectedEvent) === ATTENDANCE_ROLES.HOME_CLASS_MEMBER
+    );
+    const currentByKey = new Map();
+    roster.members.forEach(member => currentByKey.set(rosterMemberKey(member), member));
+    const snapshotByKey = new Map();
+    homeRegistrations.forEach(registration => snapshotByKey.set(registrationRosterKey(registration), registration));
+    const currentOnly = roster.members
+      .filter(member => !snapshotByKey.has(rosterMemberKey(member)))
+      .map(member => publicRosterDiffPerson(member, "当前有效成员，创建活动后尚未同步"));
+    const snapshotOnly = homeRegistrations
+      .filter(registration => !currentByKey.has(registrationRosterKey(registration)))
+      .map(registration => publicRosterDiffPerson(registration, "当前不在有效班级名册，请在运营平台核对状态或组织关系"));
+    const targetEvents = await rosterSyncTargetEvents(selectedEvent);
+    return {
+      event_id: eventId,
+      event_group_id: String(selectedEvent && selectedEvent.event_group_id || ""),
+      current_effective_count: roster.members.length,
+      activity_roster_count: homeRegistrations.length,
+      initial_snapshot_count: Number(selectedEvent && selectedEvent.roster_snapshot_count || homeRegistrations.length),
+      difference_count: roster.members.length - homeRegistrations.length,
+      additions: currentOnly,
+      no_longer_current: snapshotOnly,
+      roster_quality: roster.quality,
+      roster_version: roster.version,
+      can_sync: eventTimeState(selectedEvent) === "upcoming" && targetEvents.length > 0,
+      sync_target_sessions: targetEvents.map(item => ({
+        event_id: String(item.event_id || item._id || ""),
+        session_name: String(item.session_name || item.name || "当前场次")
+      }))
+    };
+  }
+
+  async function writeRosterSyncAudit(eventItem, details) {
+    await db.collection("event_audit_logs").add({
+      action: "event.roster.incremental_sync",
+      event_id: String(eventItem && (eventItem.event_id || eventItem._id) || ""),
+      event_group_id: String(eventItem && eventItem.event_group_id || ""),
+      source_system: eventItem && eventItem.source_system || "MANUAL_ADMIN",
+      actor: "admin_token",
+      occurred_at: new Date().toISOString(),
+      ...details
+    });
+  }
+
+  async function crossClassCandidateToken(eventItem, member) {
+    const value = [
+      "cross_class_checkin",
+      String(eventItem && (eventItem.event_id || eventItem._id) || ""),
+      String(member && member.member_id || ""),
+      String(member && member.member_code || ""),
+      normalizePersonName(member && member.name),
+      String(member && member.home_class_org_unit_id || "")
+    ].join("\u001f");
+    return crypto.createHmac("sha256", await getAuthSecret()).update(value).digest("base64url");
+  }
+
+  function validateCrossClassLookup(result, eventItem, requestedName) {
+    const payload = result && result.data;
+    if (!payload || payload.source !== "PLATFORM_ORG_RELATIONS" ||
+      payload.query_mode !== "EXACT_NAME_CURRENT_STUDY_CLASS" ||
+      payload.fallback_mode !== "FAIL_CLOSED") {
+      throw new Error("跨班学长身份来源校验失败");
+    }
+    if (String(payload.event_class_org_unit_id || "") !== String(eventItem && eventItem.class_org_unit_id || "")) {
+      throw new Error("跨班学长查询范围不匹配");
+    }
+    const members = Array.isArray(payload.members) ? payload.members : [];
+    return members.filter(member =>
+      normalizePersonName(member && member.name) === normalizePersonName(requestedName) &&
+      String(member && member.member_id || "") &&
+      String(member && member.home_class_org_unit_id || "") &&
+      String(member && member.home_class_org_unit_id || "") !== String(eventItem && eventItem.class_org_unit_id || "")
+    );
+  }
+
+  async function lookupCrossClassMembers(eventItem, name) {
+    const result = await requestOps("/api/v1/checkin-rosters/cross-class-members", {
+      name,
+      event_class_org_unit_id: String(eventItem && eventItem.class_org_unit_id || "")
+    });
+    return validateCrossClassLookup(result, eventItem, name);
+  }
+
+  async function publicCrossClassCandidate(eventItem, member) {
+    return {
+      candidate_type: "CROSS_CLASS_MEMBER",
+      candidate_token: await crossClassCandidateToken(eventItem, member),
+      event_id: String(eventItem && (eventItem.event_id || eventItem._id) || ""),
+      name: String(member && member.name || "").trim(),
+      company: String(member && member.company_name || "").trim(),
+      center: normalizeCenterValue(member && member.primary_org_name),
+      home_class_name: String(member && member.home_class_name || "").trim(),
+      home_group_name: String(member && member.home_group_name || "").trim(),
+      event: publicEvent(eventItem)
+    };
+  }
+
   function nameCheckinCandidate(reg, eventItem, checkedAt, includePhoneLast4) {
     const candidate = {
       registration_id: String(reg && reg._id || ""),
@@ -1398,6 +1603,7 @@ exports.main = async (event, context) => {
       group_name: normalizeGroupValue(reg && reg.group_name),
       group_num: reg && reg.group_num || null,
       dinner_table_num: reg && reg.dinner_table_num || null,
+      attendance_role: registrationAttendanceRole(reg, eventItem),
       checked_in: Boolean(checkedAt),
       checked_at: checkedAt || "",
       event: publicEvent(eventItem)
@@ -1437,6 +1643,23 @@ exports.main = async (event, context) => {
         return nameCheckinCandidate(reg, eventItem, checkin && checkin.checked_at, matches.length > 1);
       });
       if (!candidates.length) {
+        if (events.length === 1 && String(events[0] && events[0].class_org_unit_id || "").trim()) {
+          try {
+            const externalMembers = await lookupCrossClassMembers(events[0], name);
+            if (externalMembers.length) {
+              const crossCandidates = await Promise.all(externalMembers.map(member => publicCrossClassCandidate(events[0], member)));
+              return { statusCode: 200, headers: h, body: JSON.stringify({
+                ok: true,
+                status: "CROSS_CLASS",
+                candidates: crossCandidates,
+                msg: "已找到其他班级的正式学长，请确认是否作为外班学长参加本次学习"
+              }) };
+            }
+          } catch (crossLookupError) {
+            // A cross-class lookup must fail closed: do not turn a roster
+            // integration outage into a false positive or auto-registration.
+          }
+        }
         return { statusCode: 200, headers: h, body: JSON.stringify({ ok: false, status: "NOT_FOUND", phone_assist: true, msg: "没有找到这个姓名，请确认姓名是否与报名名单一致" }) };
       }
       return { statusCode: 200, headers: h, body: JSON.stringify({ ok: true, status: candidates.length === 1 ? "UNIQUE" : "MULTIPLE", candidates }) };
@@ -1461,6 +1684,7 @@ exports.main = async (event, context) => {
       const gf = groupFieldForEvent(eventItem, [reg]);
       const displayData = {
         ...nameCheckinCandidate(reg, eventItem, existing && existing.checked_at, false),
+        attendance_role_label: registrationAttendanceRole(reg, eventItem) === ATTENDANCE_ROLES.HOME_CLASS_MEMBER ? "本班学长" : "来宾",
         group_type: gf.label,
         group_value: normalizeDimensionValue(reg, gf.field),
         show_group: ds.show_group,
@@ -1478,6 +1702,13 @@ exports.main = async (event, context) => {
         class_name: normalizeGroupValue(reg.class_name),
         group_name: normalizeGroupValue(reg.group_name),
         company: String(reg.company || "").trim(),
+        member_code: String(reg.member_code || "").trim(),
+        platform_member_id: String(reg.platform_member_id || "").trim(),
+        attendance_role: registrationAttendanceRole(reg, eventItem),
+        home_class_org_unit_id: String(reg.home_class_org_unit_id || eventItem.class_org_unit_id || "").trim(),
+        home_class_name: String(reg.home_class_name || reg.class_name || "").trim(),
+        event_class_org_unit_id: String(reg.event_class_org_unit_id || eventItem.class_org_unit_id || "").trim(),
+        registration_source: String(reg.registration_source || reg.source || ""),
         group_num: reg.group_num || null,
         dinner_table_num: reg.dinner_table_num || null,
         batch_id: eventId,
@@ -1488,6 +1719,128 @@ exports.main = async (event, context) => {
       return { statusCode: 200, headers: h, body: JSON.stringify({ ok: true, msg: "签到成功", data: displayData }) };
     } catch (e) {
       return { statusCode: 200, headers: h, body: JSON.stringify({ ok: false, msg: "签到失败，请稍后重试" }) };
+    }
+  }
+
+  if (p === "/checkin/cross-confirm" && method === "POST") {
+    const eventId = String(data.event_id || "").trim();
+    const name = String(data.name || "").trim();
+    const candidateToken = String(data.candidate_token || "").trim();
+    if (!eventId || !name || !candidateToken) {
+      return { statusCode: 200, headers: h, body: JSON.stringify({ ok: false, msg: "外班学长信息不完整，请重新查询" }) };
+    }
+    try {
+      const eventItem = (await activeClassMeetingEvents()).find(item =>
+        String(item.event_id || item._id || "") === eventId
+      );
+      if (!eventItem) {
+        return { statusCode: 200, headers: h, body: JSON.stringify({ ok: false, msg: "当前班会已关闭或尚未开始，请重新查询" }) };
+      }
+      const members = await lookupCrossClassMembers(eventItem, name);
+      let matchedMember = null;
+      for (const member of members) {
+        const expected = Buffer.from(await crossClassCandidateToken(eventItem, member), "base64url");
+        const actual = Buffer.from(candidateToken, "base64url");
+        if (actual.length === expected.length && crypto.timingSafeEqual(actual, expected)) {
+          matchedMember = member;
+          break;
+        }
+      }
+      if (!matchedMember) {
+        return { statusCode: 200, headers: h, body: JSON.stringify({ ok: false, msg: "外班学长信息已变化，请重新查询并确认本人" }) };
+      }
+      const currentRegistrations = await rowsForBatch("registrations", eventId, 5000);
+      const platformMemberId = String(matchedMember.member_id || "");
+      let registration = currentRegistrations.find(item =>
+        registrationAttendanceRole(item, eventItem) === ATTENDANCE_ROLES.CROSS_CLASS_MEMBER &&
+        String(item.platform_member_id || "") === platformMemberId
+      );
+      if (!registration) {
+        const now = new Date().toISOString();
+        const created = await db.collection("registrations").add({
+          name: String(matchedMember.name || "").trim(),
+          phone: "",
+          center: normalizeCenterValue(matchedMember.primary_org_name),
+          class_name: String(matchedMember.home_class_name || "").trim(),
+          group_name: String(matchedMember.home_group_name || "").trim(),
+          company: String(matchedMember.company_name || "").trim(),
+          member_code: String(matchedMember.member_code || "").trim(),
+          platform_member_id: platformMemberId,
+          group_num: null,
+          dinner_table_num: null,
+          attendance_status: "pending",
+          attendance_note: "",
+          attendance_role: ATTENDANCE_ROLES.CROSS_CLASS_MEMBER,
+          home_class_org_unit_id: String(matchedMember.home_class_org_unit_id || "").trim(),
+          home_class_name: String(matchedMember.home_class_name || "").trim(),
+          event_class_org_unit_id: String(eventItem.class_org_unit_id || "").trim(),
+          registration_source: "CROSS_CLASS_SELF_CHECKIN",
+          source: "cross_class_self_checkin",
+          batch_id: eventId,
+          event_group_id: String(eventItem.event_group_id || ""),
+          session_code: String(eventItem.session_code || ""),
+          created_at: now
+        });
+        registration = {
+          _id: created.id || created._id || "",
+          name: String(matchedMember.name || "").trim(),
+          phone: "",
+          center: normalizeCenterValue(matchedMember.primary_org_name),
+          class_name: String(matchedMember.home_class_name || "").trim(),
+          group_name: String(matchedMember.home_group_name || "").trim(),
+          company: String(matchedMember.company_name || "").trim(),
+          member_code: String(matchedMember.member_code || "").trim(),
+          platform_member_id: platformMemberId,
+          attendance_role: ATTENDANCE_ROLES.CROSS_CLASS_MEMBER,
+          home_class_org_unit_id: String(matchedMember.home_class_org_unit_id || "").trim(),
+          home_class_name: String(matchedMember.home_class_name || "").trim(),
+          event_class_org_unit_id: String(eventItem.class_org_unit_id || "").trim(),
+          registration_source: "CROSS_CLASS_SELF_CHECKIN",
+          batch_id: eventId
+        };
+      }
+      const registrationId = String(registration._id || "");
+      const currentCheckins = await rowsForBatch("checkins", eventId, 5000);
+      const existing = currentCheckins.find(item => String(item.registration_id || "") === registrationId);
+      const ds = await getDisplaySettings();
+      const displayData = {
+        ...nameCheckinCandidate(registration, eventItem, existing && existing.checked_at, false),
+        attendance_role: ATTENDANCE_ROLES.CROSS_CLASS_MEMBER,
+        attendance_role_label: "外班学长",
+        home_class_name: String(registration.home_class_name || registration.class_name || "").trim(),
+        event_class_org_unit_id: String(eventItem.class_org_unit_id || "").trim(),
+        show_group: ds.show_group,
+        show_dinner_table: ds.show_dinner_table,
+        multi_total: 1,
+        checked_at: existing && existing.checked_at || ""
+      };
+      if (existing) {
+        return { statusCode: 200, headers: h, body: JSON.stringify({ ok: true, already: true, msg: "您已作为外班学长签到，无需重复操作", data: displayData }) };
+      }
+      const now = new Date().toISOString();
+      await db.collection("checkins").add({
+        registration_id: registrationId,
+        name: String(registration.name || "").trim(),
+        phone: "",
+        center: normalizeCenterValue(registration.center),
+        class_name: normalizeGroupValue(registration.class_name),
+        group_name: normalizeGroupValue(registration.group_name),
+        company: String(registration.company || "").trim(),
+        member_code: String(registration.member_code || "").trim(),
+        platform_member_id: platformMemberId,
+        attendance_role: ATTENDANCE_ROLES.CROSS_CLASS_MEMBER,
+        home_class_org_unit_id: String(registration.home_class_org_unit_id || "").trim(),
+        home_class_name: String(registration.home_class_name || registration.class_name || "").trim(),
+        event_class_org_unit_id: String(eventItem.class_org_unit_id || "").trim(),
+        registration_source: "CROSS_CLASS_SELF_CHECKIN",
+        batch_id: eventId,
+        checked_at: now
+      });
+      displayData.checked_in = true;
+      displayData.checked_at = now;
+      return { statusCode: 200, headers: h, body: JSON.stringify({ ok: true, msg: "外班签到成功", data: displayData }) };
+    } catch (e) {
+      return { statusCode: 200, headers: h, body: JSON.stringify({ ok: false, msg: "外班签到失败，请重新查询后再试" }) };
     }
   }
 
@@ -1575,7 +1928,7 @@ exports.main = async (event, context) => {
       const now = new Date().toISOString();
       for (const index of selectedIndexes) {
         const reg = matchingRegs[index];
-        await db.collection("checkins").add({ registration_id: reg._id || "", name: String(reg.name || "").trim(), phone, center: normalizeCenterValue(reg.center), class_name: normalizeGroupValue(reg.class_name), group_name: normalizeGroupValue(reg.group_name), company: reg.company || "", group_num: reg.group_num || null, dinner_table_num: reg.dinner_table_num || null, batch_id: selectedEventId, checked_at: now });
+        await db.collection("checkins").add({ registration_id: reg._id || "", name: String(reg.name || "").trim(), phone, center: normalizeCenterValue(reg.center), class_name: normalizeGroupValue(reg.class_name), group_name: normalizeGroupValue(reg.group_name), company: reg.company || "", member_code: String(reg.member_code || "").trim(), platform_member_id: String(reg.platform_member_id || "").trim(), attendance_role: registrationAttendanceRole(reg, selectedEvent), home_class_org_unit_id: String(reg.home_class_org_unit_id || selectedEvent.class_org_unit_id || "").trim(), home_class_name: String(reg.home_class_name || reg.class_name || "").trim(), event_class_org_unit_id: String(reg.event_class_org_unit_id || selectedEvent.class_org_unit_id || "").trim(), registration_source: String(reg.registration_source || reg.source || ""), group_num: reg.group_num || null, dinner_table_num: reg.dinner_table_num || null, batch_id: selectedEventId, checked_at: now });
       }
       const newCheckedSlots = checkedSlots + quantity;
       return { statusCode: 200, headers: h, body: JSON.stringify({ ok: true, msg: "签到成功，本次登记" + quantity + "人", checked_count: quantity, data: { ...makeDisplayData(matchingRegs[selectedIndexes[0]]), multi_checked: newCheckedSlots, checked_at: now } }) };
@@ -1740,6 +2093,7 @@ exports.main = async (event, context) => {
       );
       const normalized = validateOpsRosterData(result, params);
       const attendees = normalized.members.map(item => ({
+        member_id: item.member_id || "",
         name: item.name || "",
         phone: normalizeRosterPhone(item.phone),
         member_code: item.member_code || "",
@@ -1761,6 +2115,112 @@ exports.main = async (event, context) => {
       }) };
     } catch (e) {
       return { statusCode: 200, headers: h, body: JSON.stringify({ ok: false, msg: "读取运营名单失败: " + (e.message || "") }) };
+    }
+  }
+
+  if (p === "/class_roster_reconciliation" && method === "GET") {
+    try {
+      const selectedEvent = await getRequestedEvent(query.event_id || data.event_id);
+      if (!selectedEvent) {
+        return { statusCode: 200, headers: h, body: JSON.stringify({ ok: false, msg: "请先选择班会活动" }) };
+      }
+      const reconciliation = await buildClassRosterReconciliation(selectedEvent);
+      return { statusCode: 200, headers: h, body: JSON.stringify({
+        ok: true,
+        event: publicEvent(selectedEvent),
+        ...reconciliation
+      }) };
+    } catch (e) {
+      return { statusCode: 200, headers: h, body: JSON.stringify({ ok: false, msg: "名单对账失败：" + adminOperationErrorMessage(e, "名单对账") }) };
+    }
+  }
+
+  if (p === "/sync_class_roster" && method === "POST") {
+    const stagedRegistrations = [];
+    const eventSnapshots = [];
+    try {
+      const selectedEvent = await getRequestedEvent(data.event_id);
+      if (!selectedEvent || !isClassMeetingEvent(selectedEvent)) {
+        return { statusCode: 200, headers: h, body: JSON.stringify({ ok: false, msg: "请选择班会活动后再同步名单" }) };
+      }
+      if (eventTimeState(selectedEvent) !== "upcoming") {
+        return { statusCode: 200, headers: h, body: JSON.stringify({ ok: false, msg: "名单只能在该场次开始签到前同步；已开始或已结束场次保持原名单快照" }) };
+      }
+      const roster = await fetchCurrentClassRoster(selectedEvent);
+      if (!roster.quality.passed) {
+        return { statusCode: 200, headers: h, body: JSON.stringify({
+          ok: false,
+          msg: "运营平台当前名单存在资料问题，未同步任何人员；请先修正后再试",
+          roster_quality: roster.quality
+        }) };
+      }
+      const targetEvents = await rosterSyncTargetEvents(selectedEvent);
+      if (!targetEvents.length) {
+        return { statusCode: 200, headers: h, body: JSON.stringify({ ok: false, msg: "没有可同步的未开始场次" }) };
+      }
+      const additionsByEvent = [];
+      for (const eventItem of targetEvents) {
+        const eventId = String(eventItem.event_id || eventItem._id || "");
+        const existingRows = await rowsForBatch("registrations", eventId, 5000);
+        const existingKeys = new Set(existingRows.map(registrationRosterKey));
+        const additions = roster.members.filter(member => !existingKeys.has(rosterMemberKey(member)));
+        additionsByEvent.push({ eventItem, additions, before_count: existingRows.length });
+      }
+      for (const target of additionsByEvent) {
+        for (const member of target.additions) {
+          const created = await db.collection("registrations").add(
+            rosterRegistrationData(member, target.eventItem, "OPS_ROSTER_SYNC")
+          );
+          stagedRegistrations.push({ _id: created.id || created._id || "" });
+        }
+      }
+      const syncedAt = new Date().toISOString();
+      for (const target of additionsByEvent) {
+        const previous = {
+          roster_last_synced_at: target.eventItem.roster_last_synced_at,
+          roster_last_sync_added_count: target.eventItem.roster_last_sync_added_count,
+          roster_last_sync_member_count: target.eventItem.roster_last_sync_member_count,
+          roster_version: target.eventItem.roster_version
+        };
+        eventSnapshots.push({ eventItem: target.eventItem, previous });
+        await db.collection("events").doc(target.eventItem._id).update({
+          roster_last_synced_at: syncedAt,
+          roster_last_sync_added_count: target.additions.length,
+          roster_last_sync_member_count: roster.members.length,
+          roster_version: roster.version || target.eventItem.roster_version || ""
+        });
+        await writeRosterSyncAudit(target.eventItem, {
+          previous_roster_count: target.before_count,
+          current_effective_count: roster.members.length,
+          added_count: target.additions.length,
+          sync_scope: "ADDITIVE_UPCOMING_ONLY"
+        });
+      }
+      const reconciliation = await buildClassRosterReconciliation(selectedEvent);
+      const addedCount = additionsByEvent.reduce((sum, item) => sum + item.additions.length, 0);
+      return { statusCode: 200, headers: h, body: JSON.stringify({
+        ok: true,
+        added_count: addedCount,
+        target_sessions: additionsByEvent.map(item => ({
+          event_id: String(item.eventItem.event_id || item.eventItem._id || ""),
+          session_name: String(item.eventItem.session_name || item.eventItem.name || "当前场次"),
+          added_count: item.additions.length
+        })),
+        reconciliation,
+        msg: addedCount
+          ? "已按运营平台当前有效名单增补 " + addedCount + " 条报名；未删除或覆盖任何既有报名和签到"
+          : "当前活动名单已与运营平台当前有效名单一致，未新增人员"
+      }) };
+    } catch (e) {
+      for (const registration of stagedRegistrations.reverse()) {
+        if (registration._id) {
+          try { await db.collection("registrations").doc(registration._id).remove(); } catch (rollbackError) {}
+        }
+      }
+      for (const snapshot of eventSnapshots.reverse()) {
+        try { await db.collection("events").doc(snapshot.eventItem._id).update(snapshot.previous); } catch (rollbackError) {}
+      }
+      return { statusCode: 200, headers: h, body: JSON.stringify({ ok: false, msg: "名单同步失败，已回滚本次新增：" + adminOperationErrorMessage(e, "名单同步") }) };
     }
   }
 
@@ -1797,6 +2257,11 @@ exports.main = async (event, context) => {
       const selectedEvent = await getRequestedEvent(data.event_id);
       if (!selectedEvent) return { statusCode: 200, headers: h, body: JSON.stringify({ ok: false, msg: "请先选择活动" }) };
       if (!canManageEventRegistrations(selectedEvent)) return { statusCode: 200, headers: h, body: JSON.stringify({ ok: false, msg: "当前活动已结束或已关闭，不能新增临时报名" }) };
+      if (isClassMeetingEvent(selectedEvent)) {
+        registration.attendance_role = ATTENDANCE_ROLES.GUEST;
+        registration.event_class_org_unit_id = String(selectedEvent.class_org_unit_id || "").trim();
+        registration.registration_source = "MANUAL_GUEST";
+      }
       const targetEvents = await manualRegistrationTargetEvents(selectedEvent);
       const unavailableEvent = targetEvents.find(item => !canManageEventRegistrations(item));
       if (unavailableEvent) {
@@ -1918,6 +2383,7 @@ exports.main = async (event, context) => {
       // Build export rows: all registrations with check-in status
       const rows = regs.map(function(r, index) {
         var ck = attendance.checkinByIndex.get(index);
+        var attendanceRole = registrationAttendanceRole(r, selectedEvent);
         return {
           name: r.name || "",
           phone: r.phone || "",
@@ -1929,7 +2395,11 @@ exports.main = async (event, context) => {
           dinner_table_num: r.dinner_table_num || "",
           sign_status: ck ? "已签到" : attendanceStatusLabel(r.attendance_status),
           sign_time: ck ? (ck.checked_at || "") : "",
-          attendance_note: ck ? "" : (r.attendance_note || "")
+          attendance_note: ck ? "" : (r.attendance_note || ""),
+          attendance_role: attendanceRole,
+          attendance_role_label: attendanceRole === ATTENDANCE_ROLES.CROSS_CLASS_MEMBER ? "外班学长" : (attendanceRole === ATTENDANCE_ROLES.HOME_CLASS_MEMBER ? "本班学长" : "来宾"),
+          home_class_name: r.home_class_name || r.class_name || "",
+          event_class_name: selectedEvent.class_name || ""
         };
       });
       return { statusCode: 200, headers: h, body: JSON.stringify({ ok: true, event: publicEvent(selectedEvent), rows: rows }) };
@@ -1948,18 +2418,40 @@ exports.main = async (event, context) => {
       const regs = await rowsForBatch("registrations", eventId, 5000);
       const cks = await rowsForBatch("checkins", eventId, 5000);
       const attendance = buildAttendanceState(regs, cks);
-      const total = regs.length;
-      const checked = attendance.checkedIndexes.size;
+      const isClassMeeting = isClassMeetingEvent(selectedEvent);
+      // A class meeting has two deliberately separate views of attendance:
+      // the home-class roster answers the attendance-rate question, while all
+      // checked-in roles answer the physical on-site headcount question.
+      const homeIndexes = new Set();
+      const crossClassIndexes = new Set();
+      const guestIndexes = new Set();
+      regs.forEach(function(registration, index) {
+        const role = registrationAttendanceRole(registration, selectedEvent);
+        if (!isClassMeeting || role === ATTENDANCE_ROLES.HOME_CLASS_MEMBER) homeIndexes.add(index);
+        else if (role === ATTENDANCE_ROLES.CROSS_CLASS_MEMBER) crossClassIndexes.add(index);
+        else guestIndexes.add(index);
+      });
+      const checkedIn = function(indexes) {
+        let count = 0;
+        indexes.forEach(function(index) { if (attendance.checkedIndexes.has(index)) count++; });
+        return count;
+      };
+      const total = homeIndexes.size;
+      const checked = checkedIn(homeIndexes);
       const rate = total > 0 ? Math.round(checked / total * 1000) / 10 : 0;
+      const crossClassChecked = checkedIn(crossClassIndexes);
+      const guestChecked = checkedIn(guestIndexes);
+      const onsiteTotal = isClassMeeting ? checked + crossClassChecked + guestChecked : checked;
       const gf = groupFieldForEvent(selectedEvent, regs);
       const groups = {};
       regs.forEach((a, index) => {
+        if (!homeIndexes.has(index)) return;
         const gv = normalizeDimensionValue(a, gf.field) || "未分组";
         if (!groups[gv]) groups[gv] = { total: 0, checked: 0 };
         groups[gv].total++;
         if (attendance.checkedIndexes.has(index)) groups[gv].checked++;
       });
-      const nc = regs.filter((a, index) => !attendance.checkedIndexes.has(index)).map(a => ({
+      const nc = regs.filter((a, index) => homeIndexes.has(index) && !attendance.checkedIndexes.has(index)).map(a => ({
         registration_id: a._id || "",
         name: a.name,
         phone: a.phone || "",
@@ -1969,14 +2461,51 @@ exports.main = async (event, context) => {
         company: a.company || "",
         attendance_status: normalizeAttendanceStatus(a.attendance_status),
         attendance_status_label: attendanceStatusLabel(a.attendance_status),
-        attendance_note: a.attendance_note || ""
+        attendance_note: a.attendance_note || "",
+        attendance_role: registrationAttendanceRole(a, selectedEvent)
       }));
       const followUp = nc.reduce((counts, row) => {
         counts[row.attendance_status]++;
         return counts;
       }, { pending: 0, late: 0, leave: 0 });
-      const rc = cks.sort((a, b) => (b.checked_at || "").localeCompare(a.checked_at || "")).slice(0, 20).map(r => ({ name: r.name, center: normalizeCenterValue(r.center), class_name: normalizeGroupValue(r.class_name), group_name: normalizeGroupValue(r.group_name), company: r.company || "", group_num: r.group_num || null, dinner_table_num: r.dinner_table_num || null, checked_at: r.checked_at }));
-      return { statusCode: 200, headers: h, body: JSON.stringify({ ok: true, event: publicEvent(selectedEvent), event_name: selectedEvent.name, show_group: ds.show_group, show_dinner_table: ds.show_dinner_table, total, checked, rate, pending: followUp.pending, late: followUp.late, leave: followUp.leave, group_field: gf.field, group_type: gf.label, groups, not_checked: nc, recent: rc }) };
+      const rc = cks.sort((a, b) => (b.checked_at || "").localeCompare(a.checked_at || "")).slice(0, 20).map(r => ({
+        name: r.name,
+        center: normalizeCenterValue(r.center),
+        class_name: normalizeGroupValue(r.class_name),
+        home_class_name: normalizeGroupValue(r.home_class_name),
+        group_name: normalizeGroupValue(r.group_name),
+        company: r.company || "",
+        group_num: r.group_num || null,
+        dinner_table_num: r.dinner_table_num || null,
+        attendance_role: registrationAttendanceRole(r, selectedEvent),
+        checked_at: r.checked_at
+      }));
+      return { statusCode: 200, headers: h, body: JSON.stringify({
+        ok: true,
+        event: publicEvent(selectedEvent),
+        event_name: selectedEvent.name,
+        show_group: ds.show_group,
+        show_dinner_table: ds.show_dinner_table,
+        total,
+        checked,
+        rate,
+        is_class_meeting: isClassMeeting,
+        home_class_total: total,
+        home_class_checked: checked,
+        home_class_rate: rate,
+        cross_class_checked: crossClassChecked,
+        guest_checked: guestChecked,
+        onsite_total: onsiteTotal,
+        registration_total: regs.length,
+        pending: followUp.pending,
+        late: followUp.late,
+        leave: followUp.leave,
+        group_field: gf.field,
+        group_type: gf.label,
+        groups,
+        not_checked: nc,
+        recent: rc
+      }) };
     } catch (e) {
       return { statusCode: 200, headers: h, body: JSON.stringify({ total: 0, checked: 0, rate: 0, pending: 0, late: 0, leave: 0, group_type: "分组", groups: {}, not_checked: [], recent: [] }) };
     }
@@ -2234,6 +2763,7 @@ exports.main = async (event, context) => {
 
       // Generate a shared event_group_id
       const eventGroupId = Date.now().toString(36) + "_" + crypto.randomBytes(6).toString("hex");
+      const rosterSnapshotAt = new Date().toISOString();
 
       // Create three events
       const createdEvents = [];
@@ -2260,6 +2790,9 @@ exports.main = async (event, context) => {
           group_field: groupField,
           org_unit_id: orgUnitId,
           class_org_unit_id: classOrgUnitId,
+          roster_snapshot_count: rosterMembers.length,
+          roster_snapshot_at: rosterSnapshotAt,
+          roster_version: data.roster_version || "",
           created_at: new Date().toISOString()
         });
         createdEvents.push({ event_id: batchId, session_code: session.code, session_name: session.name });
@@ -2277,10 +2810,16 @@ exports.main = async (event, context) => {
               group_name: normalizeGroupValue(member.group_name || ""),
               company: String(member.company_name || member.company || "").trim(),
               member_code: String(member.member_code || "").trim(),
+              platform_member_id: String(member.member_id || "").trim(),
               group_num: null,
               dinner_table_num: null,
               attendance_status: "pending",
               attendance_note: "",
+              attendance_role: ATTENDANCE_ROLES.HOME_CLASS_MEMBER,
+              home_class_org_unit_id: classOrgUnitId,
+              home_class_name: normalizeGroupValue(member.class_name || ""),
+              event_class_org_unit_id: classOrgUnitId,
+              registration_source: data.roster_source === "excel_upload" ? "EXCEL_UPLOAD" : "OPS_ROSTER",
               source: data.roster_source === "excel_upload" ? "excel_upload" : "ops_roster",
               batch_id: ev.event_id,
               event_group_id: eventGroupId,
@@ -2405,13 +2944,26 @@ exports.main = async (event, context) => {
       const items = registrations.map(function(reg) {
         const ck = checkinMap[String(reg._id)] || null;
         const checkedIn = !!ck;
+        // The pull is keyed by a legacy batch/session id and might not carry
+        // the event document. Keep historical rows compatible as MEMBER;
+        // explicit role fields are authoritative for new class attendance.
+        const storedRole = String(reg.attendance_role || "").trim();
+        const attendanceRole = Object.prototype.hasOwnProperty.call(ATTENDANCE_ROLES, storedRole) ? storedRole : "MEMBER";
+        const crossClass = attendanceRole === ATTENDANCE_ROLES.CROSS_CLASS_MEMBER;
         return {
           external_record_id: String(reg._id),
           external_registration_id: String(reg._id),
           member_code: reg.member_code || "",
           name: reg.name || "",
-          participant_type: "MEMBER",
-          score_eligible: true,
+          participant_type: attendanceRole,
+          // Cross-class attendance is a verified learning fact. Whether it
+          // earns credits is an operations policy decision, so do not let the
+          // incremental sync award it automatically.
+          score_eligible: !crossClass,
+          score_eligibility_reason: crossClass ? "CROSS_CLASS_POLICY_PENDING" : "DEFAULT_MEMBER_POLICY",
+          home_class_org_unit_id: reg.home_class_org_unit_id || "",
+          home_class_name: reg.home_class_name || reg.class_name || "",
+          event_class_org_unit_id: reg.event_class_org_unit_id || "",
           attendance_status: checkedIn ? "PRESENT" : (reg.attendance_status === "leave" ? "LEAVE" : "ABSENT"),
           checked_at: ck ? (ck.checked_at || "") : null,
           checkin_source: ck ? "QR" : null,

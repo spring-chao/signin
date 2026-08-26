@@ -149,6 +149,14 @@ select option{background:#1e293b;color:#e2e8f0}
 .session-card.selected .session-state{color:#bfdbfe}
 .activity-detail-toolbar{display:flex;gap:8px;flex-wrap:wrap}
 .activity-detail-toolbar .btn{flex:1;min-width:120px}
+.roster-reconciliation{padding:13px;border:1px solid rgba(96,165,250,.26);border-radius:12px;background:rgba(59,130,246,.07)}
+.roster-reconciliation h4{font-size:14px;color:#bfdbfe;margin-bottom:6px}
+.roster-reconciliation .reconcile-summary{font-size:13px;line-height:1.7;color:#cbd5e1}
+.roster-reconciliation .reconcile-diff{margin-top:10px;padding-top:9px;border-top:1px solid rgba(255,255,255,.08)}
+.roster-reconciliation .reconcile-diff strong{font-size:12px;color:#e2e8f0}
+.roster-reconciliation .reconcile-person{font-size:12px;line-height:1.7;color:#94a3b8;margin:4px 0}
+.roster-reconciliation .reconcile-actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}
+.roster-reconciliation .reconcile-actions .btn{flex:1;min-width:180px}
 .danger-zone>summary{cursor:pointer;font-weight:700;color:#fca5a5;list-style:none}
 .danger-zone>summary::-webkit-details-marker{display:none}
 .danger-zone>summary:before{content:"▶";display:inline-block;margin-right:7px;font-size:11px;transition:transform .2s}
@@ -275,6 +283,7 @@ select option{background:#1e293b;color:#e2e8f0}
         <div id="activityDetailMeta" class="form-help"></div>
         <div id="activityDetailSessions" class="session-picker" aria-label="选择签到场次"></div>
         <div class="overview" id="activityDetailStats"></div>
+        <div id="classRosterReconciliation" class="roster-reconciliation" style="display:none"></div>
         <div id="activityHistoryData" class="history-data-panel" style="display:none">
           <div class="form-help">历史活动只读数据</div>
           <div class="tabs" id="activityHistoryTabBar">
@@ -408,8 +417,8 @@ select option{background:#1e293b;color:#e2e8f0}
 <script>
 var API = "https://shengheshu-d2g2zyyl99f6c6fc2-1453587887.ap-shanghai.app.tcloudbase.com/api";
 var adminToken = "", refreshTimer = null, eventListTimer = null, versionCheckTimer = null, versionCheckInFlight = null, versionConsistent = false, systemHealthy = false;
-var currentTab = "groups", currentData = null, currentEvents = [], currentEventId = "", excelData = null, uploadGroupField = "", uploadPreview = null, uploadPreviewTimer = null, opsRosterOptions = [], opsRosterQuality = null;
-var currentWorkspace = "today", activityItems = [], activityPage = 1, activityPageSize = 20, activityHasMore = false, todayItems = [], todaySelectedItem = null, activityDetailItem = null;
+var currentTab = "groups", currentData = null, currentEvents = [], currentEventId = "", excelData = null, uploadGroupField = "", uploadPreview = null, uploadPreviewTimer = null, opsRosterOptions = [], opsRosterQuality = null, opsRosterVersion = null;
+var currentWorkspace = "today", activityItems = [], activityPage = 1, activityPageSize = 20, activityHasMore = false, todayItems = [], todaySelectedItem = null, activityDetailItem = null, classRosterReconciliationRequest = 0;
 document.getElementById("eventDateInput").value = new Date().toLocaleDateString("en-CA", {timeZone:"Asia/Shanghai"});
 syncDefaultCheckinTimes();
 setRecentActivityRange(false);
@@ -631,6 +640,20 @@ function renderActivityList() {
   document.getElementById("activityNextBtn").disabled=!activityHasMore;
 }
 
+function attendanceOverviewHtml(data) {
+  if(!data) return '<div class="form-help">正在读取当前活动统计…</div>';
+  if(data.is_class_meeting){
+    return '<div class="ov-item"><div class="num green">'+Number(data.home_class_checked||0)+'</div><div class="label">本班实到</div></div>'+
+      '<div class="ov-item"><div class="num blue">'+Number(data.home_class_total||0)+'</div><div class="label">本班应到</div></div>'+
+      '<div class="ov-item"><div class="num yellow">'+Number(data.home_class_rate||0)+'%</div><div class="label">班会参会率</div></div>'+
+      '<div class="ov-item"><div class="num blue">'+Number(data.cross_class_checked||0)+'</div><div class="label">外班学长</div></div>'+
+      '<div class="ov-item"><div class="num green">'+Number(data.onsite_total||0)+'</div><div class="label">现场到场</div></div>';
+  }
+  return '<div class="ov-item"><div class="num green">'+Number(data.checked||0)+'</div><div class="label">已签到</div></div>'+
+    '<div class="ov-item"><div class="num blue">'+Number(data.total||0)+'</div><div class="label">报名总数</div></div>'+
+    '<div class="ov-item"><div class="num yellow">'+Number(data.rate||0)+'%</div><div class="label">签到率</div></div>';
+}
+
 function renderActivityDetail(item) {
   var section=document.getElementById("activityDetailSection");
   if(!section) return;
@@ -664,8 +687,7 @@ function renderActivityDetail(item) {
     button.addEventListener("click",function(){selectActivitySession(button.getAttribute("data-session-event-id"));});
   });
   var stats=document.getElementById("activityDetailStats");
-  stats.innerHTML=currentData && currentData.event && String(currentData.event.event_id||"")===String(currentEventId||"") ?
-    '<div class="ov-item"><div class="num green">'+currentData.checked+'</div><div class="label">已签到</div></div><div class="ov-item"><div class="num blue">'+currentData.total+'</div><div class="label">报名总数</div></div><div class="ov-item"><div class="num yellow">'+currentData.rate+'%</div><div class="label">签到率</div></div>' : '<div class="form-help">正在读取当前活动统计…</div>';
+  stats.innerHTML=currentData && currentData.event && String(currentData.event.event_id||"")===String(currentEventId||"") ? attendanceOverviewHtml(currentData) : '<div class="form-help">正在读取当前活动统计…</div>';
   var historyPanel=document.getElementById("activityHistoryData");
   if(historyPanel) historyPanel.style.display=historical ? "block" : "none";
   if(historical) renderActivityHistoryTab();
@@ -787,18 +809,92 @@ async function refreshCurrentStats() {
     if (!currentData.ok && currentData.msg) throw new Error(currentData.msg);
     document.getElementById("eventTitle").textContent = currentData.event_name || "管理后台";
     document.getElementById("lastUpdate").textContent = formatChinaDateTime(new Date(),{hour:"2-digit",minute:"2-digit",second:"2-digit",hour12:false});
-    document.getElementById("overview").innerHTML =
-      '<div class="ov-item"><div class="num green">'+currentData.checked+'</div><div class="label">已签到</div></div>'+
-      '<div class="ov-item"><div class="num blue">'+currentData.total+'</div><div class="label">报名总数</div></div>'+
-      '<div class="ov-item"><div class="num yellow">'+currentData.rate+'%</div><div class="label">签到率</div></div>';
+    document.getElementById("overview").innerHTML = attendanceOverviewHtml(currentData);
     document.getElementById("toggleGroup").checked = currentData.show_group !== "false";
     document.getElementById("toggleDinner").checked = currentData.show_dinner_table !== "false";
     var gt = currentData.group_type || "分中心";
     var tabs = document.querySelectorAll("#tabBar .tab");
     if (tabs.length > 0) tabs[0].textContent = gt;
     renderTab();
-    if(currentWorkspace === "activity" && activityDetailItem) renderActivityDetail(activityDetailItem);
+    if(currentWorkspace === "activity" && activityDetailItem) {
+      renderActivityDetail(activityDetailItem);
+      loadClassRosterReconciliation();
+    }
   } catch(e) { document.getElementById("lastUpdate").textContent = e.message || "统计加载失败"; }
+}
+
+function reconciliationPeopleHtml(title, people) {
+  var rows=people||[];
+  if(!rows.length) return "";
+  return '<div class="reconcile-diff"><strong>'+esc(title)+'（'+rows.length+'人）</strong>'+rows.map(function(person){
+    var meta=[];
+    if(person.company)meta.push(person.company);
+    if(person.center)meta.push(person.center);
+    if(person.class_name)meta.push(person.class_name);
+    if(person.group_name)meta.push(person.group_name);
+    if(person.reason)meta.push(person.reason);
+    return '<div class="reconcile-person">'+esc(person.name||"未命名")+(meta.length?' · '+esc(meta.join(" · ")):'')+'</div>';
+  }).join("")+'</div>';
+}
+
+function renderClassRosterReconciliation(data) {
+  var panel=document.getElementById("classRosterReconciliation");
+  if(!panel) return;
+  if(!data || !data.event || data.event.activity_type!=="class_meeting") {panel.style.display="none";panel.innerHTML="";return;}
+  panel.style.display="block";
+  var difference=Number(data.difference_count||0),same=difference===0 && !(data.additions||[]).length && !(data.no_longer_current||[]).length;
+  var quality=data.roster_quality||{},qualityText=quality.passed===false ? "当前运营名单存在资料问题，不能同步。" : "名单来源：运营平台当前有效组织关系。";
+  var targets=(data.sync_target_sessions||[]).map(function(item){return item.session_name||"当前场次";});
+  panel.innerHTML='<h4>班会名单对账</h4>'+
+    '<div class="reconcile-summary">运营平台当前有效成员：<strong>'+Number(data.current_effective_count||0)+'</strong> 人 · 本活动签到名单：<strong>'+Number(data.activity_roster_count||0)+'</strong> 人'+
+    (difference?(' · 差异 <strong>'+Math.abs(difference)+'</strong> 人'):' · 已一致')+'</div>'+
+    '<div class="form-help">初始创建快照：'+Number(data.initial_snapshot_count||0)+' 人。'+esc(qualityText)+'</div>'+
+    reconciliationPeopleHtml("运营平台新增、尚未进入本活动名单",data.additions)+
+    reconciliationPeopleHtml("活动快照中仍保留、但当前不在有效班级名册",data.no_longer_current)+
+    '<div class="reconcile-actions">'+
+      '<button class="btn" type="button" onclick="loadClassRosterReconciliation()">刷新对账</button>'+
+      '<button class="btn success" type="button" id="syncClassRosterBtn" onclick="syncCurrentClassRoster()" '+((!data.can_sync||quality.passed===false||same)?'disabled':'')+'>'+
+        (data.can_sync ? "仅增补同步未开始场次" : "本场已开始或结束，保留名单快照")+'</button></div>'+
+    (data.can_sync&&targets.length?'<div class="form-help">本次只会增补到：'+esc(targets.join("、"))+'；不会删除、覆盖既有报名或签到记录。</div>':'');
+}
+
+async function loadClassRosterReconciliation() {
+  var panel=document.getElementById("classRosterReconciliation");
+  if(!panel || !currentData || !currentData.is_class_meeting || !currentEventId) {
+    if(panel){panel.style.display="none";panel.innerHTML="";}
+    return;
+  }
+  var requestId=++classRosterReconciliationRequest;
+  panel.style.display="block";
+  panel.innerHTML='<h4>班会名单对账</h4><div class="form-help">正在读取运营平台当前有效名单…</div>';
+  try{
+    var response=await adminFetch("/class_roster_reconciliation?event_id="+encodeURIComponent(currentEventId));
+    var data=await response.json();
+    if(requestId!==classRosterReconciliationRequest) return;
+    if(!data.ok) throw new Error(data.msg||"名单对账读取失败");
+    renderClassRosterReconciliation(data);
+  }catch(e){
+    if(requestId!==classRosterReconciliationRequest) return;
+    panel.innerHTML='<h4>班会名单对账</h4><div class="form-help">'+esc(e.message||"名单对账读取失败")+'</div>';
+  }
+}
+
+async function syncCurrentClassRoster() {
+  if(!currentEventId) return;
+  if(!confirm("将按运营平台当前有效名单，增补到本场及其后续未开始场次。\n\n不会删除、覆盖现有报名或签到记录。是否继续？")) return;
+  var button=document.getElementById("syncClassRosterBtn"),previous=button&&button.textContent;
+  if(button){button.disabled=true;button.textContent="同步中…";}
+  try{
+    var response=await adminFetch("/sync_class_roster",{method:"POST",body:JSON.stringify({event_id:currentEventId})});
+    var data=await response.json();
+    if(!data.ok) throw new Error(data.msg||"名单同步失败");
+    alert(data.msg||"名单已同步");
+    await refreshCurrentStats();
+  }catch(e){
+    alert(e.message||"名单同步失败");
+  }finally{
+    if(button&&document.body.contains(button)){button.disabled=false;button.textContent=previous||"仅增补同步未开始场次";}
+  }
 }
 
 function renderEventSelector() {
@@ -807,7 +903,8 @@ function renderEventSelector() {
   select.innerHTML=currentEvents.map(function(item){return '<option value="'+esc(item.event_id)+'"'+(item.event_id===currentEventId?' selected':'')+'>'+esc(item.event_date+' · '+(isHistoricalActivity(item) ? "已结束 · 历史记录" : (lifecycleNames[item.lifecycle_status]||"草稿"))+' · '+item.name)+'</option>';}).join("");
   var item=currentEvents.find(function(row){return row.event_id===currentEventId;});
   var stateNames={open:"签到中",upcoming:"未开始",ended:"已结束",closed:"已手动关闭"};
-  var statsText=currentData && currentData.event && String(currentData.event.event_id||"")===String(currentEventId||"") ? " · "+currentData.total+"人报名 · "+currentData.checked+"人签到" : "";
+  var statsText=currentData && currentData.event && String(currentData.event.event_id||"")===String(currentEventId||"") ?
+    (currentData.is_class_meeting ? " · 本班 "+currentData.home_class_checked+"/"+currentData.home_class_total+" 人 · 外班 "+currentData.cross_class_checked+" 人 · 现场 "+currentData.onsite_total+" 人" : " · "+currentData.total+"人报名 · "+currentData.checked+"人签到") : "";
   document.getElementById("eventMeta").textContent=item ? item.event_date+" · "+(item.activity_type_name||activityTypeLabel(item.activity_type))+" · "+(isHistoricalActivity(item) ? "已结束 · 历史记录" : ({DRAFT:"草稿",CONFIRMED:"已确认举办",CANCELLED:"已取消"}[item.lifecycle_status]||"草稿"))+" · "+(stateNames[item.checkin_status]||"")+statsText : "暂无活动";
   var lifecycle=item&&item.lifecycle_status||"DRAFT";
   var historical=isHistoricalActivity(item);
@@ -1123,7 +1220,7 @@ async function exportExcel() {
     
     // Build Excel using SheetJS
     var rows = d.rows || [];
-    var headers = ["序号","姓名","手机号","公司","分中心","班级","小组","组号","桌号","签到状态","签到时间","跟进备注"];
+    var headers = ["序号","姓名","手机号","公司","分中心","班级","小组","签到身份","原班级","组号","桌号","签到状态","签到时间","跟进备注"];
     var data = [];
     rows.forEach(function(row, idx) {
       data.push([
@@ -1134,6 +1231,8 @@ async function exportExcel() {
         row.center,
         row.class_name,
         row.group_name,
+        row.attendance_role_label || "",
+        row.home_class_name || "",
         row.group_num,
         row.dinner_table_num,
         row.sign_status,
@@ -1144,7 +1243,7 @@ async function exportExcel() {
     var ws = XLSX.utils.aoa_to_sheet([headers].concat(data));
     // Set column widths
     ws["!cols"] = [
-      {wch:6},{wch:10},{wch:15},{wch:18},{wch:14},{wch:12},{wch:10},{wch:6},{wch:6},{wch:10},{wch:20},{wch:24}
+      {wch:6},{wch:10},{wch:15},{wch:18},{wch:14},{wch:12},{wch:10},{wch:12},{wch:12},{wch:6},{wch:6},{wch:10},{wch:20},{wch:24}
     ];
     var wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, "签到名单");
@@ -1230,6 +1329,7 @@ function buildAttendanceTabHtml(tabName, readOnly) {
       var extra="";
       if(r.group_num) extra+=" · 组"+r.group_num;
       if(r.dinner_table_num) extra+=" · 桌"+r.dinner_table_num;
+      if(r.attendance_role==="CROSS_CLASS_MEMBER") extra+=" · 外班学长"+(r.home_class_name?"（"+r.home_class_name+"）":"");
       h += '<div class="list-item"><div><span class="li-name">'+esc(r.name)+'</span><span class="li-meta">'+extra+' · '+esc(r.center||r.class_name||r.group_name||"")+'</span></div><span class="li-meta">'+esc(r.checked_at||"")+'</span></div>';
     });
   }
@@ -1610,6 +1710,7 @@ async function loadOpsRosterMembers() {
     var d=await r.json();
     if(!d.ok)throw new Error(d.msg||"读取名单失败");
     excelData=d.attendees||[];
+    opsRosterVersion=d.version||null;
     opsRosterQuality=scope==="class"
       ? (d.roster_quality||buildRosterQuality(excelData))
       : null;
@@ -1742,6 +1843,7 @@ async function createThreeSessionMeeting() {
       center_name:identity.center,
       class_name:identity.class_name,
       roster_source:fromExcel?"excel_upload":"ops_roster",
+      roster_version:fromExcel?"":(opsRosterVersion&&(opsRosterVersion.file_name||opsRosterVersion.source_version||"")),
       roster_members:excelData
     },values);
     var r=await adminFetch("/create_class_meeting_sessions",{method:"POST",body:JSON.stringify(payload)});

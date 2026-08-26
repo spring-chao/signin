@@ -90,12 +90,17 @@ body{font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;backgr
       <h3>&#x270d;&#xfe0f; 签到</h3>
       <div class="identity-tip" id="identityTip"></div>
       <div class="input-group"><label>姓名</label><input type="text" id="nameInput" placeholder="请输入报名时的姓名"></div>
-      <div class="input-group" id="phoneInputGroup" style="display:none"><label>手机号</label><input type="tel" id="phoneInput" placeholder="请输入11位手机号" maxlength="11"></div>
+      <div class="input-group" id="phoneInputGroup" style="display:none"><label id="phoneLabel">手机号</label><input type="tel" id="phoneInput" placeholder="请输入11位手机号" maxlength="11"></div>
       <button class="btn" id="submitBtn" onclick="doCheckin()">&#x2713; 查找我的报名</button>
       <button class="text-btn" id="phoneAssistBtn" onclick="showPhoneAssist()" style="display:none">找不到自己？使用手机号辅助查找</button>
       <div class="multi-panel" id="candidatePanel">
         <div class="tip" id="candidateText">找到多位同名学长，请选择您本人：</div>
         <div class="candidate-list" id="candidateList"></div>
+      </div>
+      <div class="multi-panel" id="crossClassPanel">
+        <div class="tip" id="crossClassText"></div>
+        <button class="btn" id="crossClassConfirmBtn" onclick="confirmCrossClassCandidate()">确认作为外班学长参加</button>
+        <button class="text-btn" type="button" onclick="hideCrossClassPanel()">不是我</button>
       </div>
       <div class="multi-panel" id="eventPanel">
         <div class="tip">您报名了多个开放活动，请选择本次签到活动：</div>
@@ -120,7 +125,7 @@ body{font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;backgr
 </div>
 <script>
 var API="https://shengheshu-d2g2zyyl99f6c6fc2-1453587887.ap-shanghai.app.tcloudbase.com/api";
-var pendingName="",pendingPhone="",pendingEventId="",eventRefreshTimer=null,checkinMode="phone",phoneAssistActive=false,nameCandidates=[],activityGroups=[],activityDisplayEvents=[],activityResponse=null,selectedActivityEventId="";
+var pendingName="",pendingPhone="",pendingEventId="",eventRefreshTimer=null,checkinMode="phone",phoneAssistActive=false,nameCandidates=[],crossClassCandidate=null,activityGroups=[],activityDisplayEvents=[],activityResponse=null,selectedActivityEventId="";
 function formatChinaDateTime(value, options){
   var date=new Date(value);if(isNaN(date.getTime()))return "";
   return date.toLocaleString("zh-CN",Object.assign({timeZone:"Asia/Shanghai"},options||{}));
@@ -128,6 +133,7 @@ function formatChinaDateTime(value, options){
 function formatChinaTime(value){return formatChinaDateTime(value,{hour:"2-digit",minute:"2-digit",hour12:false});}
 
 function hideCandidatePanel(){nameCandidates=[];document.getElementById("candidatePanel").classList.remove("show");document.getElementById("candidateList").innerHTML="";}
+function hideCrossClassPanel(){crossClassCandidate=null;document.getElementById("crossClassPanel").classList.remove("show");}
 
 function configureCheckinMode(d,hasActiveEvents,nextEvent,selectedEvent){
   var classAvailable=selectedEvent?selectedEvent.activity_type==="class_meeting":Boolean(d.class_meeting_available);
@@ -135,7 +141,7 @@ function configureCheckinMode(d,hasActiveEvents,nextEvent,selectedEvent){
   var classMode=checkinMode==="name";
   var tip=document.getElementById("identityTip"),phoneGroup=document.getElementById("phoneInputGroup"),assist=document.getElementById("phoneAssistBtn"),submit=document.getElementById("submitBtn");
   if(classMode){
-    tip.textContent="班会签到请输入姓名，系统会自动匹配报名记录。";
+    tip.textContent="班会签到请输入姓名，系统会优先匹配本班名单；外班学长可确认后参加。";
     phoneGroup.style.display="none";
     assist.style.display=hasActiveEvents?"block":"none";
   }else{
@@ -197,6 +203,7 @@ function selectActivityGroup(key){
   if(!group)return;
   selectedActivityEventId=String(group.selected.event_id||"");
   hideCandidatePanel();
+  hideCrossClassPanel();
   document.getElementById("eventPanel").classList.remove("show");
   document.getElementById("multiPanel").classList.remove("show");
   renderActivityCards(activityDisplayEvents,activityResponse&&activityResponse.active_events||[],activityResponse&&activityResponse.next_event,activityResponse);
@@ -250,12 +257,13 @@ function showPhoneAssist(){
 
 async function lookupName(){
   var btn=document.getElementById("submitBtn"),originalText=btn.textContent;
-  btn.disabled=true;btn.textContent="查找中...";hideCandidatePanel();
+  btn.disabled=true;btn.textContent="查找中...";hideCandidatePanel();hideCrossClassPanel();
   try{
     var r=await fetch(API+"/checkin/lookup",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({name:pendingName,event_id:selectedActivityEventId||""})});
     var d=await r.json();
     if(d.status==="UNIQUE"){await confirmNameCandidate((d.candidates||[])[0]);}
     else if(d.status==="MULTIPLE"){renderCandidates(d.candidates||[]);m("找到多位同名学长，请选择您本人","success");}
+    else if(d.status==="CROSS_CLASS"){renderCrossClassCandidates(d.candidates||[]);}
     else{m(d.msg||"没有找到这个姓名","error");if(d.phone_assist)document.getElementById("phoneAssistBtn").style.display="block";}
   }catch(e){m("网络错误，请稍后重试","error");}
   btn.disabled=false;btn.textContent=checkinMode==="name"?originalText:"确认签到";
@@ -263,6 +271,7 @@ async function lookupName(){
 
 function renderCandidates(candidates){
   nameCandidates=candidates||[];
+  document.getElementById("candidateText").textContent="找到多位同名学长，请选择您本人：";
   var list=document.getElementById("candidateList");list.innerHTML="";
   nameCandidates.forEach(function(candidate,index){
     var button=document.createElement("button");button.type="button";button.className="candidate-card";
@@ -279,6 +288,50 @@ function renderCandidates(candidates){
     list.appendChild(button);
   });
   document.getElementById("candidatePanel").classList.add("show");
+}
+
+function renderCrossClassCandidates(candidates){
+  var rows=candidates||[];
+  if(rows.length===1){showCrossClassConfirmation(rows[0]);return;}
+  nameCandidates=rows;
+  document.getElementById("candidateText").textContent="找到多位其他班级同名学长，请选择您本人：";
+  var list=document.getElementById("candidateList");list.innerHTML="";
+  rows.forEach(function(candidate,index){
+    var button=document.createElement("button");button.type="button";button.className="candidate-card";
+    var meta=[];
+    if(candidate.company)meta.push(candidate.company);
+    if(candidate.home_class_name)meta.push(candidate.home_class_name);
+    if(candidate.home_group_name)meta.push(candidate.home_group_name);
+    button.innerHTML='<div class="candidate-name">'+esc(candidate.name)+'</div><div class="candidate-meta">'+esc(meta.join(" · "))+'</div>';
+    button.addEventListener("click",function(){showCrossClassConfirmation(nameCandidates[index]);});
+    list.appendChild(button);
+  });
+  document.getElementById("candidatePanel").classList.add("show");
+  m("请先确认您本人","success");
+}
+
+function showCrossClassConfirmation(candidate){
+  if(!candidate||!candidate.candidate_token||!candidate.event_id){m("外班学长信息不完整，请重新查询","error");return;}
+  crossClassCandidate=candidate;
+  hideCandidatePanel();
+  var text="您目前属于“"+(candidate.home_class_name||"其他班级")+"”";
+  if(candidate.home_group_name)text+=" · "+candidate.home_group_name;
+  text+="。当前签到活动是“"+((candidate.event&&candidate.event.name)||"本次班会")+"”，确认作为外班学长参加吗？";
+  document.getElementById("crossClassText").textContent=text;
+  document.getElementById("crossClassPanel").classList.add("show");
+}
+
+async function confirmCrossClassCandidate(){
+  var candidate=crossClassCandidate;
+  if(!candidate){m("请重新查询姓名","error");return;}
+  var btn=document.getElementById("crossClassConfirmBtn"),originalText=btn.textContent;
+  btn.disabled=true;btn.textContent="签到中...";
+  try{
+    var r=await fetch(API+"/checkin/cross-confirm",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({event_id:candidate.event_id,name:candidate.name,candidate_token:candidate.candidate_token})});
+    var d=await r.json();
+    if(d.ok)showSuccess(d);else m(d.msg||"签到失败","error");
+  }catch(e){m("网络错误，请稍后重试","error");}
+  btn.disabled=false;btn.textContent=originalText;
 }
 
 async function confirmNameCandidate(candidate){
@@ -309,6 +362,7 @@ async function confirmEventCheckin(){
 function showSuccess(d){
   document.getElementById("formCard").style.display="none";
   hideCandidatePanel();
+  hideCrossClassPanel();
   document.getElementById("multiPanel").classList.remove("show");
   document.getElementById("eventPanel").classList.remove("show");
   document.getElementById("phoneAssistBtn").style.display="none";
@@ -321,6 +375,9 @@ function showSuccess(d){
   document.getElementById("seatArea").innerHTML=seatHtml;
   var info="";
   if(d.data.event) info+="活动："+esc(d.data.event.event_date+" · "+d.data.event.activity_type_name+" · "+d.data.event.name)+"<br>";
+  if(d.data.attendance_role==="CROSS_CLASS_MEMBER"){
+    info+="本次作为外班学长参加"+(d.data.home_class_name?"<br>原班级："+esc(d.data.home_class_name):"")+"<br>";
+  }
   if(d.data.group_value) info+=esc(d.data.group_type||"分组")+"："+esc(d.data.group_value)+"<br>";
   else if(d.data.class_name) info+="班级："+esc(d.data.class_name)+"<br>";
   else if(d.data.center) info+="分中心："+esc(d.data.center)+"<br>";
@@ -353,28 +410,7 @@ async function submitCheckin(quantity){
       for(var i=1;i<=remaining;i++){var option=document.createElement("option");option.value=i;option.textContent=i+" 人";select.appendChild(option)}
       document.getElementById("multiPanel").classList.add("show");
       m(d.msg||"请选择到场人数","success");
-    }else if(d.ok){
-      document.getElementById("formCard").style.display="none";
-      document.getElementById("multiPanel").classList.remove("show");
-      document.getElementById("eventPanel").classList.remove("show");
-      document.getElementById("resultCard").classList.add("show");
-      document.getElementById("welcomeText").textContent="欢迎 "+d.data.name+"学长！";
-      var shGrp=d.data.show_group!=="false",shDin=d.data.show_dinner_table!=="false";
-      var seatHtml="";
-      if(shGrp && d.data.group_num) seatHtml+='<div class="seat-item">大会现场：第 '+d.data.group_num+' 组</div>';
-      if(shDin && d.data.dinner_table_num) seatHtml+='<div class="seat-item">空巴晚宴：第 '+d.data.dinner_table_num+' 桌</div>';
-      document.getElementById("seatArea").innerHTML=seatHtml;
-      var info="";
-      if(d.data.event) info+="活动："+esc(d.data.event.event_date+" · "+d.data.event.activity_type_name+" · "+d.data.event.name)+"<br>";
-      if(d.data.group_value) info+=esc(d.data.group_type||"分组")+"："+esc(d.data.group_value)+"<br>";
-      else if(d.data.class_name) info+="班级："+esc(d.data.class_name)+"<br>";
-      else if(d.data.center) info+="分中心："+esc(d.data.center)+"<br>";
-      else if(d.data.group_name) info+="小组："+esc(d.data.group_name)+"<br>";
-      if(d.data.company) info+="公司："+esc(d.data.company);
-      if(d.data.multi_total>1) info+=(info?"<br>":"")+"多人报名：已签到 "+d.data.multi_checked+"/"+d.data.multi_total+" 人"+(d.checked_count?"（本次 "+d.checked_count+" 人）":"");
-      if(d.already) info=(info?info+"<br>":"")+"（已签到 · "+esc(formatChinaDateTime(d.data.checked_at))+"）";
-      document.getElementById("resultInfo").innerHTML=info||"签到成功";
-    }
+    }else if(d.ok){showSuccess(d);}
     else{m(d.msg,"error");document.getElementById("formCard").style.display="block";}
   }catch(e){m("网络错误","error");document.getElementById("formCard").style.display="block";}
   btn.disabled=false;btn.textContent=originalText;

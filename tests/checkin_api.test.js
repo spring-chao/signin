@@ -495,7 +495,7 @@ async function request(path, method, body, token, extraHeaders) {
   assert(allTodayPublic.data.display_events.some(row => row.event_id === "batch-upcoming"), "签到页应显示当天全部即将开始的活动，而不只显示一场下一活动");
   db.collections.events.push({
     _id: "event-class-name", event_id: "class-name-1", name: "炎武四班班级学习会 - 上午", event_date: today,
-    activity_type: "class_meeting", status: "active", lifecycle_status: "CONFIRMED"
+    activity_type: "class_meeting", class_org_unit_id: "class-four", status: "active", lifecycle_status: "CONFIRMED"
   });
   db.collections.registrations.push(
     { _id: "reg-class-unique", batch_id: "class-name-1", name: "赵唯一", phone: "13900000001", company: "唯一公司", class_name: "四班", group_name: "第三组" },
@@ -520,6 +520,86 @@ async function request(path, method, body, token, extraHeaders) {
   const missingName = await request("/checkin/lookup", "POST", { name: "不存在的人" });
   assert.equal(missingName.data.status, "NOT_FOUND");
   assert.equal(missingName.data.phone_assist, true, "姓名找不到时应提供手机号辅助通道");
+
+  api._test.setRequestOpsHandler(async function(pathname, params) {
+    if (pathname === "/api/v1/checkin-rosters/cross-class-members") {
+      assert.equal(params.event_class_org_unit_id, "class-four");
+      return {
+        success: true,
+        data: {
+          source: "PLATFORM_ORG_RELATIONS",
+          query_mode: "EXACT_NAME_CURRENT_STUDY_CLASS",
+          fallback_mode: "FAIL_CLOSED",
+          event_class_org_unit_id: "class-four",
+          members: String(params.name) === "跨班学长" ? [{
+            member_id: "platform-cross-1",
+            member_code: "CROSS001",
+            name: "跨班学长",
+            company_name: "跨班科技",
+            primary_org_name: "园区分中心",
+            home_class_org_unit_id: "class-other",
+            home_class_name: "炎武二班",
+            home_group_name: "第3组"
+          }] : []
+        }
+      };
+    }
+    throw new Error("unexpected ops request: " + pathname);
+  });
+  const crossLookup = await request("/checkin/lookup", "POST", { name: "跨班学长", event_id: "class-name-1" });
+  assert.equal(crossLookup.data.status, "CROSS_CLASS", "本班名单没有姓名时应查询其他班级的当前正式学长");
+  assert.equal(crossLookup.data.candidates.length, 1);
+  assert.equal(crossLookup.data.candidates[0].home_class_name, "炎武二班");
+  assert.equal(crossLookup.data.candidates[0].phone, undefined, "跨班候选不得暴露手机号");
+  assert.equal(crossLookup.data.candidates[0].member_id, undefined, "跨班候选不得暴露运营平台内部主键");
+  const crossConfirmed = await request("/checkin/cross-confirm", "POST", {
+    event_id: "class-name-1",
+    name: "跨班学长",
+    candidate_token: crossLookup.data.candidates[0].candidate_token
+  });
+  assert.equal(crossConfirmed.data.ok, true, "外班学长必须在重新核验当前组织关系后才能签到");
+  assert.equal(crossConfirmed.data.data.attendance_role, "CROSS_CLASS_MEMBER");
+  const crossRegistration = db.collections.registrations.find(row => row.batch_id === "class-name-1" && row.platform_member_id === "platform-cross-1");
+  assert(crossRegistration, "跨班签到应留下独立报名事实");
+  assert.equal(crossRegistration.home_class_name, "炎武二班", "跨班签到不得改写学长原班级");
+  assert.equal(crossRegistration.event_class_org_unit_id, "class-four");
+  const crossStats = await request("/stats?event_id=class-name-1", "GET", undefined, token);
+  assert.equal(crossStats.data.home_class_total, 3, "班会应到人数只计算本班名单");
+  assert.equal(crossStats.data.home_class_checked, 1);
+  assert.equal(crossStats.data.cross_class_checked, 1);
+  assert.equal(crossStats.data.onsite_total, 2, "现场到场人数应包含本班和外班实际签到");
+
+  db.collections.events.push(
+    { _id: "event-reconcile-1", event_id: "reconcile-1", event_group_id: "reconcile-group", session_order: 1, session_name: "上午", name: "名单对账班会 - 上午", event_date: today, activity_type: "class_meeting", class_org_unit_id: "class-reconcile", status: "active", lifecycle_status: "CONFIRMED", checkin_start_at: "2099-05-01T00:00:00.000Z", checkin_end_at: "2099-05-01T01:00:00.000Z" },
+    { _id: "event-reconcile-2", event_id: "reconcile-2", event_group_id: "reconcile-group", session_order: 2, session_name: "下午", name: "名单对账班会 - 下午", event_date: today, activity_type: "class_meeting", class_org_unit_id: "class-reconcile", status: "active", lifecycle_status: "CONFIRMED", checkin_start_at: "2099-05-01T05:00:00.000Z", checkin_end_at: "2099-05-01T06:00:00.000Z" }
+  );
+  db.collections.registrations.push(
+    { _id: "reg-reconcile-1", batch_id: "reconcile-1", name: "原有学长", phone: "13800000031", member_code: "RECON001", class_name: "对账班", attendance_role: "HOME_CLASS_MEMBER" },
+    { _id: "reg-reconcile-2", batch_id: "reconcile-2", name: "原有学长", phone: "13800000031", member_code: "RECON001", class_name: "对账班", attendance_role: "HOME_CLASS_MEMBER" }
+  );
+  api._test.setRequestOpsHandler(async function(pathname, params) {
+    if (pathname !== "/api/v1/checkin-rosters/members") throw new Error("unexpected ops request: " + pathname);
+    assert.equal(params.class_org_unit_id, "class-reconcile");
+    var members = [
+      { member_id: "platform-reconcile-1", member_code: "RECON001", name: "原有学长", phone: "13800000031", class_name: "对账班", relation_org_id: "class-reconcile" },
+      { member_id: "platform-reconcile-2", member_code: "RECON002", name: "新增学长", phone: "13800000032", class_name: "对账班", relation_org_id: "class-reconcile" }
+    ];
+    return { success: true, data: { source: "PLATFORM_ORG_RELATIONS", query_mode: "ORG_UNIT_ID", fallback_mode: "FAIL_CLOSED", member_count: members.length, scope: { relation_type: "STUDY_CLASS", org_unit_id: "class-reconcile", class_org_unit_id: "class-reconcile" }, members: members, version: { source_version: "reconcile-v1" } } };
+  });
+  const reconciliation = await request("/class_roster_reconciliation?event_id=reconcile-1", "GET", undefined, token);
+  assert.equal(reconciliation.data.ok, true);
+  assert.equal(reconciliation.data.current_effective_count, 2);
+  assert.equal(reconciliation.data.activity_roster_count, 1);
+  assert.equal(reconciliation.data.additions.length, 1, "对账必须指出创建后新增、尚未同步的成员");
+  assert.equal(reconciliation.data.can_sync, true);
+  const syncedRoster = await request("/sync_class_roster", "POST", { event_id: "reconcile-1" }, token);
+  assert.equal(syncedRoster.data.ok, true);
+  assert.equal(syncedRoster.data.added_count, 2, "应只增补到当前及后续未开始场次");
+  assert.equal(db.collections.registrations.filter(row => row.batch_id === "reconcile-1").length, 2);
+  assert.equal(db.collections.registrations.filter(row => row.batch_id === "reconcile-2").length, 2);
+  assert.equal(db.collections.event_audit_logs.filter(row => row.action === "event.roster.incremental_sync" && row.event_group_id === "reconcile-group").length, 2, "每个被同步场次都必须写审计记录");
+  api._test.setRequestOpsHandler(null);
+
   const secondStats = await request("/stats?event_id=batch-2", "GET", undefined, token);
   assert.equal(secondStats.data.total, 1);
   assert.equal(secondStats.data.checked, 1);
