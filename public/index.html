@@ -6,52 +6,68 @@
 <title>盛和塾签到</title>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
-body{font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;background:linear-gradient(135deg,#1a1a2e,#16213e,#0f3460);min-height:100vh;color:#fff}
-.container{max-width:420px;margin:0 auto;padding:20px}
-.header{text-align:center;padding:20px 0 16px}
-.header .brand{font-size:22px;font-weight:700;margin-bottom:4px;letter-spacing:2px;background:linear-gradient(135deg,#fbbf24,#f59e0b);-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text}
-.header .motto{font-size:12px;color:#64748b;letter-spacing:3px}
-.header .icon-line{font-size:36px;margin:12px 0 6px}
-.header h1{font-size:18px;font-weight:600;margin-bottom:4px}
-.active-events{display:none;margin-top:12px;padding:10px 12px;border-radius:10px;background:rgba(59,130,246,.1);color:#bfdbfe;font-size:13px;line-height:1.8;text-align:left}
-.active-events.show{display:block}
-.card{background:rgba(255,255,255,.06);border-radius:16px;padding:24px;margin-bottom:16px;border:1px solid rgba(255,255,255,.08)}
-.card h3{font-size:15px;margin-bottom:16px;color:#e2e8f0}
+body{font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;background:linear-gradient(160deg,#431019 0%,#5a151c 46%,#741f28 100%);min-height:100vh;color:#2e1719}
+.container{max-width:460px;margin:0 auto;padding:18px 16px 28px}
+.header{text-align:center;padding:12px 0 18px;color:#fff}
+.brand-lockup{display:inline-flex;align-items:center;gap:10px;padding:9px 16px 9px 10px;border-radius:18px;background:#f7f1e8;box-shadow:0 10px 24px rgba(25,5,8,.22);color:#881b1b}
+.brand-seal{width:40px;height:40px;display:grid;place-items:center;border:2px solid #881b1b;border-radius:12px;font-size:22px;font-weight:800;line-height:1}
+.header .brand{font-size:21px;font-weight:800;line-height:1.1;letter-spacing:4px}
+.header .brand-region{font-size:11px;letter-spacing:3px;margin-top:4px;color:#6e3535;text-align:left}
+.header .motto{font-size:12px;color:#f5d9d2;letter-spacing:3px;margin-top:13px}
+.header h1{font-size:20px;font-weight:700;margin:16px 0 0;color:#fff}
+.activity-shell{display:none;margin:0 0 16px;padding:16px;border-radius:18px;background:#f7f1e8;box-shadow:0 12px 28px rgba(25,5,8,.18)}
+.activity-shell.show{display:block}
+.activity-heading{display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;color:#5b181d}
+.activity-heading strong{font-size:17px}
+.activity-heading span{font-size:12px;color:#9a5d5d}
+.activity-list{display:grid;gap:10px}
+.activity-card{width:100%;padding:13px 14px;text-align:left;border:1px solid #ead9d2;border-radius:14px;background:#fffaf4;color:#3e2021;cursor:pointer;transition:.18s ease;box-shadow:0 4px 12px rgba(90,21,28,.06)}
+.activity-card:hover,.activity-card.selected{border-color:#a43a40;background:#fff3ed;box-shadow:0 6px 16px rgba(136,27,27,.14)}
+.activity-card .activity-top{display:flex;align-items:center;gap:8px}
+.activity-card .activity-dot{width:9px;height:9px;border-radius:50%;background:#a8a09a;flex:0 0 auto}
+.activity-card.open .activity-dot{background:#2c9b68;box-shadow:0 0 0 4px rgba(44,155,104,.12)}
+.activity-card .activity-name{font-size:15px;font-weight:700;flex:1;min-width:0}
+.activity-card .activity-state{font-size:12px;color:#846363;white-space:nowrap}
+.activity-card.open .activity-state{color:#228153;font-weight:700}
+.activity-card .activity-meta{font-size:12px;color:#8a6a6a;margin:7px 0 0 17px}
+.activity-card .activity-action{font-size:12px;color:#9b3538;margin:8px 0 0 17px}
+.card{background:#f7f1e8;border-radius:20px;padding:22px;margin-bottom:16px;border:1px solid rgba(255,255,255,.45);box-shadow:0 12px 28px rgba(25,5,8,.18)}
+.card h3{font-size:17px;margin-bottom:16px;color:#5b181d}
 .input-group{margin-bottom:14px}
-.input-group label{display:block;font-size:13px;color:#94a3b8;margin-bottom:6px}
-.input-group input{width:100%;padding:14px 16px;border-radius:10px;border:1px solid rgba(255,255,255,.12);background:rgba(255,255,255,.06);color:#fff;font-size:16px;outline:none}
-.input-group input:focus{border-color:#3b82f6;background:rgba(255,255,255,.1)}
-.btn{width:100%;padding:15px;border:none;border-radius:12px;font-size:17px;font-weight:600;cursor:pointer;background:linear-gradient(135deg,#3b82f6,#2563eb);color:#fff;letter-spacing:1px}
+.input-group label{display:block;font-size:13px;color:#805b5b;margin-bottom:6px}
+.input-group input{width:100%;padding:14px 16px;border-radius:11px;border:1px solid #ddc9c3;background:#fffaf4;color:#3b2020;font-size:16px;outline:none}
+.input-group input:focus{border-color:#a43a40;background:#fff}
+.btn{width:100%;padding:15px;border:none;border-radius:12px;font-size:17px;font-weight:700;cursor:pointer;background:linear-gradient(135deg,#8d242b,#68151d);color:#fff8f0;letter-spacing:1px;box-shadow:0 8px 16px rgba(104,21,29,.2)}
 .btn:active{transform:scale(.97)}
 .btn:disabled{opacity:.5;pointer-events:none}
-.multi-panel{display:none;margin-top:14px;padding:14px;border-radius:10px;background:rgba(59,130,246,.12);border:1px solid rgba(59,130,246,.25)}
+.multi-panel{display:none;margin-top:14px;padding:14px;border-radius:12px;background:#fff8f2;border:1px solid #ead9d2}
 .multi-panel.show{display:block}
-.multi-panel .tip{font-size:14px;line-height:1.6;color:#bfdbfe;margin-bottom:10px}
-.multi-panel select{width:100%;padding:12px;border-radius:8px;border:1px solid rgba(255,255,255,.15);background:#16213e;color:#fff;font-size:16px;margin-bottom:10px}
+.multi-panel .tip{font-size:14px;line-height:1.6;color:#795858;margin-bottom:10px}
+.multi-panel select{width:100%;padding:12px;border-radius:8px;border:1px solid #ddc9c3;background:#fff;color:#3b2020;font-size:16px;margin-bottom:10px}
 .multi-panel .btn{padding:12px;font-size:15px}
-.identity-tip{font-size:13px;line-height:1.6;color:#bfdbfe;margin:-6px 0 14px}
-.text-btn{display:block;width:100%;margin-top:10px;padding:8px;border:0;background:transparent;color:#93c5fd;font-size:13px;cursor:pointer}
+.identity-tip{font-size:13px;line-height:1.6;color:#795858;margin:-6px 0 14px}
+.text-btn{display:block;width:100%;margin-top:10px;padding:8px;border:0;background:transparent;color:#8d242b;font-size:13px;cursor:pointer}
 .candidate-list{display:grid;gap:10px}
-.candidate-card{width:100%;padding:12px;text-align:left;border:1px solid rgba(147,197,253,.35);border-radius:10px;background:rgba(30,64,175,.18);color:#fff;cursor:pointer}
+.candidate-card{width:100%;padding:12px;text-align:left;border:1px solid #d8b5ae;border-radius:10px;background:#fff;color:#3e2021;cursor:pointer}
 .candidate-card:disabled{opacity:.55;cursor:default}
 .candidate-card .candidate-name{font-size:16px;font-weight:700;margin-bottom:4px}
-.candidate-card .candidate-meta{font-size:13px;line-height:1.6;color:#bfdbfe}
+.candidate-card .candidate-meta{font-size:13px;line-height:1.6;color:#795858}
 .msg{margin-top:14px;padding:14px 16px;border-radius:10px;font-size:14px;text-align:center;display:none}
 .msg.show{display:block}
-.msg.success{background:rgba(34,197,94,.15);color:#4ade80}
-.msg.error{background:rgba(239,68,68,.15);color:#f87171}
-.result-card{background:rgba(34,197,94,.08);border:1px solid rgba(34,197,94,.2);border-radius:14px;padding:24px 20px;text-align:center;display:none}
+.msg.success{background:#e7f4ec;color:#237b50}
+.msg.error{background:#fbe5e3;color:#a23737}
+.result-card{background:#f7f1e8;border:1px solid #e2c8c1;border-radius:16px;padding:24px 20px;text-align:center;display:none}
 .result-card.show{display:block}
 .result-card .check-icon{font-size:56px;margin-bottom:8px}
-.result-card .welcome{font-size:20px;font-weight:700;margin-bottom:12px;color:#4ade80}
-.result-card .seat-item{font-size:22px;font-weight:700;color:#fbbf24;margin:6px 0;padding:10px 16px;background:rgba(251,191,36,.1);border-radius:10px;display:inline-block}
+.result-card .welcome{font-size:20px;font-weight:700;margin-bottom:12px;color:#2c8558}
+.result-card .seat-item{font-size:22px;font-weight:700;color:#8d242b;margin:6px 0;padding:10px 16px;background:#f7e4dc;border-radius:10px;display:inline-block}
 .result-card .seat-item:empty{display:none}
-.result-card .info{font-size:13px;color:#94a3b8;line-height:1.6;margin-top:8px}
-.loading{text-align:center;padding:60px 20px;color:#64748b}
-.spinner{display:inline-block;width:30px;height:30px;border:3px solid rgba(255,255,255,.1);border-top-color:#3b82f6;border-radius:50%;animation:spin .8s linear infinite;margin-bottom:12px}
+.result-card .info{font-size:13px;color:#795858;line-height:1.6;margin-top:8px}
+.loading{text-align:center;padding:60px 20px;color:#f5d9d2}
+.spinner{display:inline-block;width:30px;height:30px;border:3px solid rgba(255,255,255,.2);border-top-color:#f7f1e8;border-radius:50%;animation:spin .8s linear infinite;margin-bottom:12px}
 @keyframes spin{to{transform:rotate(360deg)}}
-.footer{text-align:center;padding:10px;font-size:11px;color:#475569}
-.footer a{color:#64748b}
+.footer{text-align:center;padding:10px;font-size:11px;color:#f0cbc2}
+.footer a{color:#f0cbc2}
 </style>
 </head>
 <body>
@@ -59,11 +75,16 @@ body{font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;backgr
   <div id="loadingArea" class="loading"><div class="spinner"></div><div>加载中...</div></div>
   <div id="mainArea" style="display:none">
     <div class="header">
-      <div class="brand">盛和塾</div>
+      <div class="brand-lockup" aria-label="盛和塾｜苏州">
+        <div class="brand-seal">盛</div>
+        <div><div class="brand">盛和塾</div><div class="brand-region">苏州 · SIGN IN</div></div>
+      </div>
       <div class="motto">提高心性 拓展经营</div>
-      <div class="icon-line">&#x1f4cb;</div>
-      <h1 id="eventName"></h1>
-      <div class="active-events" id="activeEvents"></div>
+      <h1 id="eventName">活动签到</h1>
+      <div class="activity-shell" id="activityShell">
+        <div class="activity-heading"><strong>今日签到活动</strong><span id="activityCount"></span></div>
+        <div class="activity-list" id="activeEvents"></div>
+      </div>
     </div>
     <div class="card" id="formCard">
       <h3>&#x270d;&#xfe0f; 签到</h3>
@@ -99,7 +120,7 @@ body{font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;backgr
 </div>
 <script>
 var API="https://shengheshu-d2g2zyyl99f6c6fc2-1453587887.ap-shanghai.app.tcloudbase.com/api";
-var pendingName="",pendingPhone="",pendingEventId="",eventRefreshTimer=null,checkinMode="phone",phoneAssistActive=false,nameCandidates=[];
+var pendingName="",pendingPhone="",pendingEventId="",eventRefreshTimer=null,checkinMode="phone",phoneAssistActive=false,nameCandidates=[],activityGroups=[],activityDisplayEvents=[],activityResponse=null,selectedActivityEventId="";
 function formatChinaDateTime(value, options){
   var date=new Date(value);if(isNaN(date.getTime()))return "";
   return date.toLocaleString("zh-CN",Object.assign({timeZone:"Asia/Shanghai"},options||{}));
@@ -108,8 +129,8 @@ function formatChinaTime(value){return formatChinaDateTime(value,{hour:"2-digit"
 
 function hideCandidatePanel(){nameCandidates=[];document.getElementById("candidatePanel").classList.remove("show");document.getElementById("candidateList").innerHTML="";}
 
-function configureCheckinMode(d,hasActiveEvents,nextEvent){
-  var classAvailable=Boolean(d.class_meeting_available);
+function configureCheckinMode(d,hasActiveEvents,nextEvent,selectedEvent){
+  var classAvailable=selectedEvent?selectedEvent.activity_type==="class_meeting":Boolean(d.class_meeting_available);
   if(!phoneAssistActive) checkinMode=classAvailable?"name":"phone";
   var classMode=checkinMode==="name";
   var tip=document.getElementById("identityTip"),phoneGroup=document.getElementById("phoneInputGroup"),assist=document.getElementById("phoneAssistBtn"),submit=document.getElementById("submitBtn");
@@ -129,23 +150,65 @@ function configureCheckinMode(d,hasActiveEvents,nextEvent){
   submit.textContent=hasActiveEvents?(classMode?"查找我的报名":"确认签到"):(nextEvent?"尚未到签到时间":"当前暂无开放签到的活动");
 }
 
+function activityName(item){
+  var name=String(item&&item.name||"盛和塾活动"),session=String(item&&item.session_name||"").trim(),suffix=session?" - "+session:"";
+  return suffix&&name.slice(-suffix.length)===suffix?name.slice(0,-suffix.length):name;
+}
+function activityTime(item){
+  var start=item&&item.checkin_start_at?formatChinaTime(item.checkin_start_at):"",end=item&&item.checkin_end_at?formatChinaTime(item.checkin_end_at):"";
+  var session=item&&item.session_name?String(item.session_name):"";
+  if(start&&end)return (session?session+" · ":"")+start+"–"+end;
+  return session||"时间待定";
+}
+function activityState(item){
+  if(item&&item.checkin_status==="open")return "当前可签到";
+  if(item&&item.checkin_status==="upcoming")return (item.checkin_start_at?formatChinaTime(item.checkin_start_at)+" 开放":"尚未开放");
+  return "暂不可签到";
+}
+function renderActivityCards(events,activeEvents,nextEvent,response){
+  activityDisplayEvents=events||[];activityResponse=response||activityResponse||{};
+  var groupsByKey={};
+  activityDisplayEvents.forEach(function(item){var key=String(item.event_group_id||item.event_id||"");(groupsByKey[key]||(groupsByKey[key]=[])).push(item);});
+  activityGroups=Object.keys(groupsByKey).map(function(key){
+    var rows=groupsByKey[key].slice().sort(function(a,b){return Number(a.session_order||0)-Number(b.session_order||0)||String(a.checkin_start_at||"").localeCompare(String(b.checkin_start_at||""));});
+    var selected=rows.find(function(row){return String(row.event_id)===String(selectedActivityEventId);})||rows.find(function(row){return row.checkin_status==="open";})||rows.find(function(row){return row.checkin_status==="upcoming";})||rows[0];
+    return {key:key,rows:rows,selected:selected};
+  });
+  var shell=document.getElementById("activityShell"),list=document.getElementById("activeEvents");
+  if(!activityGroups.length){shell.classList.remove("show");list.innerHTML="";selectedActivityEventId="";configureCheckinMode(activityResponse,false,nextEvent,null);return;}
+  var selectedGroup=activityGroups.find(function(group){return group.rows.some(function(row){return String(row.event_id)===String(selectedActivityEventId);});})||activityGroups[0];
+  selectedActivityEventId=String(selectedGroup.selected.event_id||"");
+  document.getElementById("activityCount").textContent=activityGroups.length+"场";
+  list.innerHTML="";
+  activityGroups.forEach(function(group){
+    var item=group.selected,isSelected=String(item.event_id)===String(selectedActivityEventId),button=document.createElement("button");
+    button.type="button";button.className="activity-card"+(item.checkin_status==="open"?" open":"")+(isSelected?" selected":"");
+    var sessionExtra=group.rows.length>1?" · 今日"+group.rows.length+"个场次":"";
+    button.innerHTML='<div class="activity-top"><span class="activity-dot"></span><span class="activity-name">'+esc(activityName(item))+'</span><span class="activity-state">'+esc(activityState(item))+'</span></div><div class="activity-meta">'+esc(activityTime(item)+sessionExtra)+'</div><div class="activity-action">'+(isSelected?(item.checkin_status==="open"?"已选择 · 进入签到":"已选择 · 尚未开放"):"选择此活动")+' ›</div>';
+    button.addEventListener("click",function(){selectActivityGroup(group.key);});
+    list.appendChild(button);
+  });
+  shell.classList.add("show");
+  var selectedEvent=selectedGroup.selected,selectedOpen=selectedEvent&&selectedEvent.checkin_status==="open";
+  configureCheckinMode(activityResponse,Boolean(selectedOpen),selectedEvent||nextEvent);
+}
+function selectActivityGroup(key){
+  var group=activityGroups.find(function(item){return String(item.key)===String(key);});
+  if(!group)return;
+  selectedActivityEventId=String(group.selected.event_id||"");
+  hideCandidatePanel();
+  document.getElementById("eventPanel").classList.remove("show");
+  document.getElementById("multiPanel").classList.remove("show");
+  renderActivityCards(activityDisplayEvents,activityResponse&&activityResponse.active_events||[],activityResponse&&activityResponse.next_event,activityResponse);
+}
+
 async function init(){
   try{
     var r=await fetch(API+"/event");var d=await r.json();
-    document.getElementById("eventName").textContent=d.event_name||"盛和塾签到";
-    var activeEvents=(d.active_events||[]).slice(),displayEvents=(d.display_events||activeEvents).slice().sort(function(a,b){return String(a.checkin_start_at||"").localeCompare(String(b.checkin_start_at||""))||Number(a.session_order||0)-Number(b.session_order||0)||String(a.name||"").localeCompare(String(b.name||""));}),nextEvent=d.next_event||null,eventsBox=document.getElementById("activeEvents");
-    var lines=[];
-    displayEvents.forEach(function(item){
-      var state=item.checkin_status==="open"?"当前可签到":(item.checkin_status==="upcoming"?formatChinaTime(item.checkin_start_at)+" 开始":"");
-      lines.push("• "+esc(item.name)+(state?"（"+esc(state)+"）":""));
-    });
-    if(lines.length){
-      var title=activeEvents.length?"当前可签到":"今日活动安排";
-      eventsBox.innerHTML='<strong>'+title+'</strong><br>'+lines.join('<br>');
-      eventsBox.classList.add('show');
-    } else eventsBox.classList.remove('show');
+    document.getElementById("eventName").textContent="活动签到";
+    var activeEvents=(d.active_events||[]).slice(),displayEvents=(d.display_events||activeEvents).slice().sort(function(a,b){return String(a.checkin_start_at||"").localeCompare(String(b.checkin_start_at||""))||Number(a.session_order||0)-Number(b.session_order||0)||String(a.name||"").localeCompare(String(b.name||""));}),nextEvent=d.next_event||null;
+    renderActivityCards(displayEvents,activeEvents,nextEvent,d);
     var hasActiveEvents=Number(d.active_event_count||0)>0;
-    configureCheckinMode(d,hasActiveEvents,nextEvent);
     if(eventRefreshTimer)clearInterval(eventRefreshTimer);
     eventRefreshTimer=displayEvents.length?setInterval(init,25000):null;
     document.getElementById("loadingArea").style.display="none";
@@ -168,7 +231,7 @@ async function doCheckin(){
   if(!phone){m("请输入手机号","error");return}
   if(phone.length!==11||!/^\d+$/.test(phone)){m("请输入正确的11位手机号","error");return}
   pendingPhone=phone;
-  pendingEventId="";
+  pendingEventId=selectedActivityEventId||"";
   document.getElementById("eventPanel").classList.remove("show");
   document.getElementById("multiPanel").classList.remove("show");
   hideCandidatePanel();
@@ -189,7 +252,7 @@ async function lookupName(){
   var btn=document.getElementById("submitBtn"),originalText=btn.textContent;
   btn.disabled=true;btn.textContent="查找中...";hideCandidatePanel();
   try{
-    var r=await fetch(API+"/checkin/lookup",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({name:pendingName})});
+    var r=await fetch(API+"/checkin/lookup",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({name:pendingName,event_id:selectedActivityEventId||""})});
     var d=await r.json();
     if(d.status==="UNIQUE"){await confirmNameCandidate((d.candidates||[])[0]);}
     else if(d.status==="MULTIPLE"){renderCandidates(d.candidates||[]);m("找到多位同名学长，请选择您本人","success");}
