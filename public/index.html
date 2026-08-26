@@ -29,6 +29,13 @@ body{font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;backgr
 .multi-panel .tip{font-size:14px;line-height:1.6;color:#bfdbfe;margin-bottom:10px}
 .multi-panel select{width:100%;padding:12px;border-radius:8px;border:1px solid rgba(255,255,255,.15);background:#16213e;color:#fff;font-size:16px;margin-bottom:10px}
 .multi-panel .btn{padding:12px;font-size:15px}
+.identity-tip{font-size:13px;line-height:1.6;color:#bfdbfe;margin:-6px 0 14px}
+.text-btn{display:block;width:100%;margin-top:10px;padding:8px;border:0;background:transparent;color:#93c5fd;font-size:13px;cursor:pointer}
+.candidate-list{display:grid;gap:10px}
+.candidate-card{width:100%;padding:12px;text-align:left;border:1px solid rgba(147,197,253,.35);border-radius:10px;background:rgba(30,64,175,.18);color:#fff;cursor:pointer}
+.candidate-card:disabled{opacity:.55;cursor:default}
+.candidate-card .candidate-name{font-size:16px;font-weight:700;margin-bottom:4px}
+.candidate-card .candidate-meta{font-size:13px;line-height:1.6;color:#bfdbfe}
 .msg{margin-top:14px;padding:14px 16px;border-radius:10px;font-size:14px;text-align:center;display:none}
 .msg.show{display:block}
 .msg.success{background:rgba(34,197,94,.15);color:#4ade80}
@@ -60,9 +67,15 @@ body{font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;backgr
     </div>
     <div class="card" id="formCard">
       <h3>&#x270d;&#xfe0f; 签到</h3>
+      <div class="identity-tip" id="identityTip"></div>
       <div class="input-group"><label>姓名</label><input type="text" id="nameInput" placeholder="请输入报名时的姓名"></div>
-      <div class="input-group"><label>手机号</label><input type="tel" id="phoneInput" placeholder="请输入11位手机号" maxlength="11"></div>
-      <button class="btn" id="submitBtn" onclick="doCheckin()">&#x2713; 确认签到</button>
+      <div class="input-group" id="phoneInputGroup" style="display:none"><label>手机号</label><input type="tel" id="phoneInput" placeholder="请输入11位手机号" maxlength="11"></div>
+      <button class="btn" id="submitBtn" onclick="doCheckin()">&#x2713; 查找我的报名</button>
+      <button class="text-btn" id="phoneAssistBtn" onclick="showPhoneAssist()" style="display:none">找不到自己？使用手机号辅助查找</button>
+      <div class="multi-panel" id="candidatePanel">
+        <div class="tip" id="candidateText">找到多位同名学长，请选择您本人：</div>
+        <div class="candidate-list" id="candidateList"></div>
+      </div>
       <div class="multi-panel" id="eventPanel">
         <div class="tip">您报名了多个开放活动，请选择本次签到活动：</div>
         <select id="eventSelect"></select>
@@ -86,12 +99,35 @@ body{font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;backgr
 </div>
 <script>
 var API="https://shengheshu-d2g2zyyl99f6c6fc2-1453587887.ap-shanghai.app.tcloudbase.com/api";
-var pendingName="",pendingPhone="",pendingEventId="",eventRefreshTimer=null;
+var pendingName="",pendingPhone="",pendingEventId="",eventRefreshTimer=null,checkinMode="phone",phoneAssistActive=false,nameCandidates=[];
 function formatChinaDateTime(value, options){
   var date=new Date(value);if(isNaN(date.getTime()))return "";
   return date.toLocaleString("zh-CN",Object.assign({timeZone:"Asia/Shanghai"},options||{}));
 }
 function formatChinaTime(value){return formatChinaDateTime(value,{hour:"2-digit",minute:"2-digit",hour12:false});}
+
+function hideCandidatePanel(){nameCandidates=[];document.getElementById("candidatePanel").classList.remove("show");document.getElementById("candidateList").innerHTML="";}
+
+function configureCheckinMode(d,hasActiveEvents,nextEvent){
+  var classAvailable=Boolean(d.class_meeting_available);
+  if(!phoneAssistActive) checkinMode=classAvailable?"name":"phone";
+  var classMode=checkinMode==="name";
+  var tip=document.getElementById("identityTip"),phoneGroup=document.getElementById("phoneInputGroup"),assist=document.getElementById("phoneAssistBtn"),submit=document.getElementById("submitBtn");
+  if(classMode){
+    tip.textContent="班会签到请输入姓名，系统会自动匹配报名记录。";
+    phoneGroup.style.display="none";
+    assist.style.display=hasActiveEvents?"block":"none";
+  }else{
+    tip.textContent=phoneAssistActive?"手机号仅用于辅助查找，不会改变班会报名记录。":"请输入姓名和手机号完成签到。";
+    phoneGroup.style.display=hasActiveEvents?"block":"none";
+    document.getElementById("phoneLabel").textContent=phoneAssistActive?"手机号（辅助查找）":"手机号";
+    assist.style.display="none";
+  }
+  document.getElementById("nameInput").disabled=!hasActiveEvents;
+  document.getElementById("phoneInput").disabled=!hasActiveEvents;
+  submit.disabled=!hasActiveEvents;
+  submit.textContent=hasActiveEvents?(classMode?"查找我的报名":"确认签到"):(nextEvent?"尚未到签到时间":"当前暂无开放签到的活动");
+}
 
 async function init(){
   try{
@@ -109,10 +145,7 @@ async function init(){
       eventsBox.classList.add('show');
     } else eventsBox.classList.remove('show');
     var hasActiveEvents=Number(d.active_event_count||0)>0;
-    document.getElementById("submitBtn").disabled=!hasActiveEvents;
-    document.getElementById("submitBtn").textContent=hasActiveEvents?"提交签到":(nextEvent?"尚未到签到时间":"当前暂无开放签到的活动");
-    document.getElementById("nameInput").disabled=!hasActiveEvents;
-    document.getElementById("phoneInput").disabled=!hasActiveEvents;
+    configureCheckinMode(d,hasActiveEvents,nextEvent);
     if(eventRefreshTimer)clearInterval(eventRefreshTimer);
     eventRefreshTimer=displayEvents.length?setInterval(init,25000):null;
     document.getElementById("loadingArea").style.display="none";
@@ -125,14 +158,76 @@ function esc(v){return String(v==null?"":v).replace(/[&<>"']/g,function(ch){retu
 
 async function doCheckin(){
   var name=document.getElementById("nameInput").value.trim();
+  if(!name){m("请输入姓名","error");return}
+  pendingName=name;
+  if(checkinMode==="name"){
+    await lookupName();
+    return;
+  }
   var phone=document.getElementById("phoneInput").value.trim().replace(/\s/g,"").replace(/-/g,"");
-  if(!name||!phone){m("请输入姓名和手机号","error");return}
+  if(!phone){m("请输入手机号","error");return}
   if(phone.length!==11||!/^\d+$/.test(phone)){m("请输入正确的11位手机号","error");return}
-  pendingName=name;pendingPhone=phone;
+  pendingPhone=phone;
   pendingEventId="";
   document.getElementById("eventPanel").classList.remove("show");
   document.getElementById("multiPanel").classList.remove("show");
+  hideCandidatePanel();
   await submitCheckin(null);
+}
+
+function showPhoneAssist(){
+  phoneAssistActive=true;checkinMode="phone";
+  document.getElementById("phoneInputGroup").style.display="block";
+  document.getElementById("phoneLabel").textContent="手机号（辅助查找）";
+  document.getElementById("phoneAssistBtn").style.display="none";
+  document.getElementById("identityTip").textContent="手机号仅用于辅助查找，不会改变班会报名记录。";
+  document.getElementById("submitBtn").textContent="确认签到";
+  document.getElementById("phoneInput").focus();
+}
+
+async function lookupName(){
+  var btn=document.getElementById("submitBtn"),originalText=btn.textContent;
+  btn.disabled=true;btn.textContent="查找中...";hideCandidatePanel();
+  try{
+    var r=await fetch(API+"/checkin/lookup",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({name:pendingName})});
+    var d=await r.json();
+    if(d.status==="UNIQUE"){await confirmNameCandidate((d.candidates||[])[0]);}
+    else if(d.status==="MULTIPLE"){renderCandidates(d.candidates||[]);m("找到多位同名学长，请选择您本人","success");}
+    else{m(d.msg||"没有找到这个姓名","error");if(d.phone_assist)document.getElementById("phoneAssistBtn").style.display="block";}
+  }catch(e){m("网络错误，请稍后重试","error");}
+  btn.disabled=false;btn.textContent=checkinMode==="name"?originalText:"确认签到";
+}
+
+function renderCandidates(candidates){
+  nameCandidates=candidates||[];
+  var list=document.getElementById("candidateList");list.innerHTML="";
+  nameCandidates.forEach(function(candidate,index){
+    var button=document.createElement("button");button.type="button";button.className="candidate-card";
+    var meta=[];
+    if(candidate.company)meta.push(candidate.company);
+    if(candidate.center)meta.push(candidate.center);
+    if(candidate.class_name)meta.push(candidate.class_name);
+    if(candidate.group_name)meta.push(candidate.group_name);
+    if(candidate.phone_last4)meta.push("手机号后4位 "+candidate.phone_last4);
+    if(candidate.event&&candidate.event.name)meta.push(candidate.event.name);
+    button.innerHTML='<div class="candidate-name">'+esc(candidate.name)+(candidate.checked_in?'（已签到）':'')+'</div><div class="candidate-meta">'+esc(meta.join(" · "))+'</div>';
+    button.disabled=Boolean(candidate.checked_in);
+    button.addEventListener("click",function(){confirmNameCandidate(nameCandidates[index]);});
+    list.appendChild(button);
+  });
+  document.getElementById("candidatePanel").classList.add("show");
+}
+
+async function confirmNameCandidate(candidate){
+  if(!candidate||!candidate.registration_id||!candidate.event_id){m("报名信息不完整，请重新查询","error");return}
+  var btn=document.getElementById("submitBtn"),originalText=btn.textContent;
+  btn.disabled=true;btn.textContent="签到中...";
+  try{
+    var r=await fetch(API+"/checkin/confirm",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({event_id:candidate.event_id,registration_id:candidate.registration_id})});
+    var d=await r.json();
+    if(d.ok)showSuccess(d);else m(d.msg||"签到失败","error");
+  }catch(e){m("网络错误，请稍后重试","error");}
+  btn.disabled=false;btn.textContent=originalText;
 }
 
 async function confirmMultiCheckin(){
@@ -146,6 +241,31 @@ async function confirmEventCheckin(){
   if(!pendingEventId){m("请选择本次签到活动","error");return}
   document.getElementById("eventPanel").classList.remove("show");
   await submitCheckin(null);
+}
+
+function showSuccess(d){
+  document.getElementById("formCard").style.display="none";
+  hideCandidatePanel();
+  document.getElementById("multiPanel").classList.remove("show");
+  document.getElementById("eventPanel").classList.remove("show");
+  document.getElementById("phoneAssistBtn").style.display="none";
+  document.getElementById("resultCard").classList.add("show");
+  document.getElementById("welcomeText").textContent="欢迎 "+d.data.name+"学长！";
+  var shGrp=d.data.show_group!=="false",shDin=d.data.show_dinner_table!=="false";
+  var seatHtml="";
+  if(shGrp && d.data.group_num) seatHtml+='<div class="seat-item">大会现场：第 '+d.data.group_num+' 组</div>';
+  if(shDin && d.data.dinner_table_num) seatHtml+='<div class="seat-item">空巴晚宴：第 '+d.data.dinner_table_num+' 桌</div>';
+  document.getElementById("seatArea").innerHTML=seatHtml;
+  var info="";
+  if(d.data.event) info+="活动："+esc(d.data.event.event_date+" · "+d.data.event.activity_type_name+" · "+d.data.event.name)+"<br>";
+  if(d.data.group_value) info+=esc(d.data.group_type||"分组")+"："+esc(d.data.group_value)+"<br>";
+  else if(d.data.class_name) info+="班级："+esc(d.data.class_name)+"<br>";
+  else if(d.data.center) info+="分中心："+esc(d.data.center)+"<br>";
+  else if(d.data.group_name) info+="小组："+esc(d.data.group_name)+"<br>";
+  if(d.data.company) info+="公司："+esc(d.data.company);
+  if(d.data.multi_total>1) info+=(info?"<br>":"")+"多人报名：已签到 "+d.data.multi_checked+"/"+d.data.multi_total+" 人"+(d.checked_count?"（本次 "+d.checked_count+" 人）":"");
+  if(d.already) info=(info?info+"<br>":"")+"（已签到 · "+esc(formatChinaDateTime(d.data.checked_at))+"）";
+  document.getElementById("resultInfo").innerHTML=info||"签到成功";
 }
 
 async function submitCheckin(quantity){

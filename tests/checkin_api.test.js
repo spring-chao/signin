@@ -493,6 +493,33 @@ async function request(path, method, body, token, extraHeaders) {
   });
   const allTodayPublic = await request("/event", "GET");
   assert(allTodayPublic.data.display_events.some(row => row.event_id === "batch-upcoming"), "签到页应显示当天全部即将开始的活动，而不只显示一场下一活动");
+  db.collections.events.push({
+    _id: "event-class-name", event_id: "class-name-1", name: "炎武四班班级学习会 - 上午", event_date: today,
+    activity_type: "class_meeting", status: "active", lifecycle_status: "CONFIRMED"
+  });
+  db.collections.registrations.push(
+    { _id: "reg-class-unique", batch_id: "class-name-1", name: "赵唯一", phone: "13900000001", company: "唯一公司", class_name: "四班", group_name: "第三组" },
+    { _id: "reg-class-1", batch_id: "class-name-1", name: "林同学", phone: "13900000002", company: "甲科技", class_name: "四班", group_name: "第二组" },
+    { _id: "reg-class-2", batch_id: "class-name-1", name: "林同学", phone: "13900000003", company: "乙管理", class_name: "四班", group_name: "第五组" }
+  );
+  const classPublic = await request("/event", "GET");
+  assert.equal(classPublic.data.class_meeting_active_count, 2, "公开接口应标记当前开放的班会活动");
+  const uniqueName = await request("/checkin/lookup", "POST", { name: "赵唯一" });
+  assert.equal(uniqueName.data.status, "UNIQUE", "班会姓名唯一时应返回唯一候选");
+  assert.equal(uniqueName.data.candidates[0].phone, undefined, "姓名查询不得暴露完整手机号");
+  assert.equal(uniqueName.data.candidates[0].event_id, "class-name-1");
+  const nameConfirmed = await request("/checkin/confirm", "POST", { event_id: "class-name-1", registration_id: "reg-class-unique" });
+  assert.equal(nameConfirmed.data.ok, true, "班会应能通过报名 ID 确认签到");
+  assert(db.collections.checkins.some(row => row.registration_id === "reg-class-unique"), "班会姓名签到必须写入报名 ID");
+  const nameConfirmedAgain = await request("/checkin/confirm", "POST", { event_id: "class-name-1", registration_id: "reg-class-unique" });
+  assert.equal(nameConfirmedAgain.data.already, true, "班会重复确认应返回已签到");
+  const multipleName = await request("/checkin/lookup", "POST", { name: "林同学" });
+  assert.equal(multipleName.data.status, "MULTIPLE", "班会同名时应返回候选列表");
+  assert.equal(multipleName.data.candidates.length, 2);
+  assert(multipleName.data.candidates.every(row => row.phone_last4), "同名候选可使用手机号后4位辅助识别");
+  const missingName = await request("/checkin/lookup", "POST", { name: "不存在的人" });
+  assert.equal(missingName.data.status, "NOT_FOUND");
+  assert.equal(missingName.data.phone_assist, true, "姓名找不到时应提供手机号辅助通道");
   const secondStats = await request("/stats?event_id=batch-2", "GET", undefined, token);
   assert.equal(secondStats.data.total, 1);
   assert.equal(secondStats.data.checked, 1);
