@@ -222,7 +222,7 @@ select option{background:#1e293b;color:#e2e8f0}
       <h3>&#x2795; 新增临时报名</h3>
       <div class="form-grid">
         <div class="form-field"><label for="manualName">姓名 <span>（必填）</span></label><input id="manualName" type="text" maxlength="50" placeholder="学长姓名"></div>
-        <div class="form-field"><label for="manualPhone">手机号 <span>（必填）</span></label><input id="manualPhone" type="tel" inputmode="numeric" maxlength="11" placeholder="11位手机号"></div>
+        <div class="form-field"><label for="manualPhone" id="manualPhoneLabel">手机号 <span>（选填）</span></label><input id="manualPhone" type="tel" inputmode="numeric" maxlength="11" placeholder="可留空，仅作为联系方式"></div>
         <div class="form-field"><label for="manualCenter">分中心</label><input id="manualCenter" type="text" maxlength="50" list="centerOptions" placeholder="园区/园区分中心均可"></div>
         <div class="form-field"><label for="manualClass">班级</label><input id="manualClass" type="text" maxlength="50" placeholder="如：广东一班"></div>
         <div class="form-field"><label for="manualGroup">小组</label><input id="manualGroup" type="text" maxlength="50" placeholder="如：第一组"></div>
@@ -369,6 +369,7 @@ select option{background:#1e293b;color:#e2e8f0}
       </div>
       <input type="file" id="fileInput" accept=".xls,.xlsx" style="display:none" onchange="handleFile(event)">
       <div id="colMapInfo" class="col-map" style="display:none"></div>
+      <div id="courseRosterQuality" class="roster-quality"></div>
       <div id="uploadPreview" class="upload-preview"></div>
       <button class="btn primary full" id="upBtn" onclick="uploadData()" style="display:none">确认新增活动并导入</button>
       <div class="msg" id="uploadMsg"></div>
@@ -1145,7 +1146,7 @@ async function addManualRegistration() {
   var currentEvent=currentEvents.find(function(row){return row.event_id===currentEventId;});
   if (!currentEvent || currentEvent.lifecycle_status==="CANCELLED" || ["upcoming","open"].indexOf(currentEvent.checkin_status)===-1) { showMsg(msg, "当前管理活动已结束、已关闭或已取消，不能新增临时报名", "error"); return; }
   if (!payload.name) { showMsg(msg, "请输入姓名", "error"); return; }
-  if (!/^\d{11}$/.test(payload.phone)) { showMsg(msg, "请输入正确的11位手机号", "error"); return; }
+  if (payload.phone && !/^\d{11}$/.test(payload.phone)) { showMsg(msg, "手机号格式异常，将作为联系方式保留，不影响签到资格", "info"); }
   showMsg(msg, "正在新增报名，请稍候…", "info");
   btn.disabled = true; btn.textContent = "新增中...";
   try {
@@ -1220,12 +1221,13 @@ async function exportExcel() {
     
     // Build Excel using SheetJS
     var rows = d.rows || [];
-    var headers = ["序号","姓名","手机号","公司","分中心","班级","小组","签到身份","原班级","组号","桌号","签到状态","签到时间","跟进备注"];
+    var headers = ["序号","实际到场姓名","原报名姓名","手机号","公司","分中心","班级","小组","签到身份","原班级","组号","桌号","签到状态","签到时间","跟进备注"];
     var data = [];
     rows.forEach(function(row, idx) {
       data.push([
         idx + 1,
         row.name,
+        row.registered_name || row.name,
         row.phone,
         row.company,
         row.center,
@@ -1243,7 +1245,7 @@ async function exportExcel() {
     var ws = XLSX.utils.aoa_to_sheet([headers].concat(data));
     // Set column widths
     ws["!cols"] = [
-      {wch:6},{wch:10},{wch:15},{wch:18},{wch:14},{wch:12},{wch:10},{wch:12},{wch:12},{wch:6},{wch:6},{wch:10},{wch:20},{wch:24}
+      {wch:6},{wch:14},{wch:14},{wch:15},{wch:18},{wch:14},{wch:12},{wch:10},{wch:12},{wch:12},{wch:6},{wch:6},{wch:10},{wch:20},{wch:24}
     ];
     var wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, "签到名单");
@@ -1330,6 +1332,7 @@ function buildAttendanceTabHtml(tabName, readOnly) {
       if(r.group_num) extra+=" · 组"+r.group_num;
       if(r.dinner_table_num) extra+=" · 桌"+r.dinner_table_num;
       if(r.attendance_role==="CROSS_CLASS_MEMBER") extra+=" · 外班学长"+(r.home_class_name?"（"+r.home_class_name+"）":"");
+      if(r.registered_name && r.registered_name!==r.name) extra+=" · 原报名姓名："+r.registered_name;
       h += '<div class="list-item"><div><span class="li-name">'+esc(r.name)+'</span><span class="li-meta">'+extra+' · '+esc(r.center||r.class_name||r.group_name||"")+'</span></div><span class="li-meta">'+esc(r.checked_at||"")+'</span></div>';
     });
   }
@@ -1390,13 +1393,15 @@ function detectColumns(headers) {
   return map;
 }
 
-function findHeaderRow(rows) {
+function findHeaderRow(rows, options) {
+  options = options || {};
+  var requirePhone = options.requirePhone === true;
   var best = null;
   var scanLimit = Math.min(100, rows.length);
   for (var i = 0; i < scanLimit; i++) {
     if (!Array.isArray(rows[i])) continue;
     var columns = detectColumns(rows[i]);
-    if (columns.name < 0 || columns.phone < 0) continue;
+    if (columns.name < 0 || (requirePhone && columns.phone < 0)) continue;
     var recognized = Object.keys(columns).filter(function(key){return columns[key] >= 0;}).length;
     if (!best || recognized > best.recognized) {
       best = { rowIndex:i, columns:columns, recognized:recognized };
@@ -1405,13 +1410,43 @@ function findHeaderRow(rows) {
   return best;
 }
 
+function buildCourseImportQuality(rows) {
+  rows = Array.isArray(rows) ? rows : [];
+  var validPhone = 0, missingPhone = 0, invalidPhone = 0, duplicateMap = {};
+  rows.forEach(function(item) {
+    item = item || {};
+    var name = String(item.name || "").trim();
+    var phone = normalizeRosterPhone(item.phone);
+    if (!phone) missingPhone++;
+    else if (/^1\d{10}$/.test(phone)) validPhone++;
+    else invalidPhone++;
+    var key = name.replace(/\s+/g, "").toLowerCase() + "|" + phone;
+    duplicateMap[key] = (duplicateMap[key] || 0) + 1;
+  });
+  var duplicateGroups = Object.keys(duplicateMap).filter(function(key){return duplicateMap[key] > 1;});
+  var repeatedSlots = duplicateGroups.reduce(function(sum,key){return sum + duplicateMap[key] - 1;},0);
+  return {member_count:rows.length, valid_phone_count:validPhone, missing_phone_count:missingPhone, invalid_phone_count:invalidPhone, duplicate_groups:duplicateGroups.length, repeated_slots:repeatedSlots};
+}
+
+function renderCourseImportQuality(quality) {
+  var box = document.getElementById("courseRosterQuality");
+  if (!box || !quality) { if (box) { box.className="roster-quality"; box.innerHTML=""; } return; }
+  var warning = quality.missing_phone_count + quality.invalid_phone_count;
+  var text = "课程名单共 "+quality.member_count+" 条；姓名为必填，手机号正常 "+quality.valid_phone_count+" 条";
+  if (quality.missing_phone_count) text += "；缺手机号 "+quality.missing_phone_count+" 条";
+  if (quality.invalid_phone_count) text += "；手机号格式异常 "+quality.invalid_phone_count+" 条";
+  if (quality.repeated_slots) text += "；检测到 "+quality.repeated_slots+" 个重复名额，保留为独立报名位";
+  box.className="roster-quality show "+(warning ? "warn" : "good");
+  box.innerHTML='<div class="quality-title">'+(warning?'ℹ️ 活动名单已读取，手机号问题不会阻断导入':'✅ 活动名单已读取')+'</div><div class="quality-summary">'+esc(text)+'</div>';
+}
+
 function normalizeRosterPhone(value) {
   return String(value || "").trim().replace(/\s/g, "").replace(/-/g, "");
 }
 
 function buildRosterQuality(rows) {
   rows = Array.isArray(rows) ? rows : [];
-  var issues = [], validPhoneMap = {}, validNameCount = 0, validPhoneCount = 0;
+  var issues = [], validPhoneMap = {}, validNameCount = 0, validPhoneCount = 0, missingPhoneCount = 0, invalidPhoneCount = 0;
   rows.forEach(function(item, index) {
     item = item || {};
     var name = String(item.name || "").trim();
@@ -1419,9 +1454,13 @@ function buildRosterQuality(rows) {
     var issueCodes = [];
     if (name) validNameCount++;
     else issueCodes.push("MISSING_NAME");
-    if (!phone) issueCodes.push("MISSING_PHONE");
-    else if (!/^1\d{10}$/.test(phone)) issueCodes.push("INVALID_PHONE");
-    else {
+    if (!phone) {
+      missingPhoneCount++;
+      // Phone is contact data only; it no longer blocks a roster import.
+    } else if (!/^1\d{10}$/.test(phone)) {
+      invalidPhoneCount++;
+      // Keep the quality counts for an operator warning, but do not block.
+    } else {
       validPhoneCount++;
       validPhoneMap[phone] = (validPhoneMap[phone] || 0) + 1;
     }
@@ -1436,8 +1475,8 @@ function buildRosterQuality(rows) {
     valid_name_count: validNameCount,
     valid_phone_count: validPhoneCount,
     missing_name_count: issues.filter(function(item){return item.issue_codes.indexOf("MISSING_NAME")>=0;}).length,
-    missing_phone_count: issues.filter(function(item){return item.issue_codes.indexOf("MISSING_PHONE")>=0;}).length,
-    invalid_phone_count: issues.filter(function(item){return item.issue_codes.indexOf("INVALID_PHONE")>=0;}).length,
+    missing_phone_count: missingPhoneCount,
+    invalid_phone_count: invalidPhoneCount,
     issue_count: issues.length,
     issues: issues,
     shared_phone_group_count: sharedPhoneGroups.length,
@@ -1462,6 +1501,9 @@ function renderOpsRosterQuality(quality) {
     return;
   }
   var summary = "共 "+quality.member_count+" 人；✅手机号正常 "+quality.valid_phone_count+" 人";
+  if (quality.missing_phone_count || quality.invalid_phone_count) {
+    summary += "；手机号缺失 "+quality.missing_phone_count+" 条、格式异常 "+quality.invalid_phone_count+" 条（不影响姓名签到）";
+  }
   if (quality.shared_phone_member_count) {
     summary += "；ℹ️ "+quality.shared_phone_member_count+" 人共用联系电话（允许，不作为重复错误）";
   }
@@ -1502,8 +1544,9 @@ function handleFile(e) {
       var wb = XLSX.read(evt.target.result, {type:"array"});
       var arr = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], {header:1, defval:""});
       
-      var header = findHeaderRow(arr);
-      if (!header) throw new Error("前100行未找到同时包含“姓名”和“手机号”的表头，请检查列名");
+      var activityType = document.getElementById("activityTypeInput").value;
+      var header = findHeaderRow(arr, {requirePhone:false});
+      if (!header) throw new Error("前100行未找到包含“姓名”的表头，请检查列名");
       var headerRow = header.rowIndex;
       var dataStart = headerRow + 1;
       var col = header.columns;
@@ -1517,7 +1560,7 @@ function handleFile(e) {
         return '<span class="warn">'+label+'=未识别</span>';
       }
       mapHtml += colStatus("name","姓名") + "　";
-      mapHtml += colStatus("phone","手机号") + "<br>";
+      mapHtml += colStatus("phone","手机号（选填）") + "<br>";
       mapHtml += colStatus("company","公司") + "　";
       mapHtml += colStatus("center","分中心") + "　";
       mapHtml += colStatus("class_name","班级") + "　";
@@ -1531,10 +1574,10 @@ function handleFile(e) {
       for (var i = dataStart; i < arr.length; i++) {
         var row = arr[i]; if (!row) continue;
         var nameIdx = col.name, phoneIdx = col.phone;
-        if (nameIdx < 0 || phoneIdx < 0) break;
+        if (nameIdx < 0) break;
         var n = String(row[nameIdx]||"").trim();
         if (!n || n === "undefined" || n === "nan") continue;
-        var ph = String(row[phoneIdx]||"").trim();
+        var ph = phoneIdx >= 0 ? String(row[phoneIdx]||"").trim() : "";
         ph = ph.replace(/\s/g,"").replace(/-/g,"");
         if (ph.indexOf(".") >= 0) {
           var num = parseFloat(ph);
@@ -1565,6 +1608,7 @@ function handleFile(e) {
         renderOpsRosterQuality(opsRosterQuality);
         updateClassMeetingRosterGate();
       }
+      renderCourseImportQuality(buildCourseImportQuality(excelData));
       showMsg(document.getElementById("uploadMsg"), "已解析 "+excelData.length+" 条记录，正在核对名单变化...", "info");
       await loadUploadPreview();
     } catch(ex) { showMsg(document.getElementById("uploadMsg"), "解析失败："+ex.message, "error"); }
@@ -1648,6 +1692,10 @@ async function handleActivityTypeChange() {
   var isClass=type==="class_meeting";
   opsRosterQuality=null;
   renderOpsRosterQuality(null);
+  renderCourseImportQuality(null);
+  var manualPhoneLabel=document.getElementById("manualPhoneLabel"), manualPhone=document.getElementById("manualPhone");
+  if (manualPhoneLabel) manualPhoneLabel.innerHTML="手机号 <span>（选填）</span>";
+  if (manualPhone) manualPhone.placeholder="可留空，仅作为联系方式";
   document.getElementById("threeSessionPanel").style.display=isClass?"block":"none";
   document.getElementById("singleCheckinStartField").style.display=isClass?"none":"";
   document.getElementById("singleCheckinEndField").style.display=isClass?"none":"";
@@ -1875,6 +1923,9 @@ async function loadUploadPreview() {
   }
   uploadPreview = d;
   var eventHtml = '新活动：'+esc(d.event_date+' · '+d.activity_type_name+' · '+d.new_event_name)+'<br>签到时间：'+esc(formatChinaDateTime(d.checkin_start_at))+' 至 '+esc(formatChinaDateTime(d.checkin_end_at));
+  var phoneQuality=d.course_phone_quality||{};
+  var phoneHint=(Number(phoneQuality.missing_count||0)+Number(phoneQuality.invalid_count||0))
+    ? '<div class="form-help" style="margin-top:8px">手机号仅作辅助联系：缺失 '+Number(phoneQuality.missing_count||0)+' 条，格式异常 '+Number(phoneQuality.invalid_count||0)+' 条，不影响姓名签到和导入。</div>' : '';
   box.innerHTML = '<div class="preview-title">新增活动核对</div>'+
     '<div class="preview-summary">本次将导入 <strong>'+d.new_total+'</strong> 人</div>'+
     '<div class="preview-events">'+eventHtml+'</div>'+
@@ -1882,7 +1933,7 @@ async function loadUploadPreview() {
       '<div class="preview-item"><div class="value">'+d.new_total+'</div><div class="caption">活动报名</div></div>'+
       '<div class="preview-item repeat"><div class="value">'+d.duplicate_groups+'</div><div class="caption">重复报名组</div></div>'+
       '<div class="preview-item repeat"><div class="value">'+d.repeated_slots+'</div><div class="caption">重复额外名额</div></div>'+
-    '</div>';
+    '</div>'+phoneHint;
   box.className = "upload-preview show";
   btn.style.display = "block";
   btn.textContent = "确认新增活动并导入";

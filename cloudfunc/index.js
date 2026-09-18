@@ -22,7 +22,11 @@ const REQUIRED_COLLECTIONS = ["config", "events", "registrations", "checkins", "
 const ATTENDANCE_ROLES = {
   HOME_CLASS_MEMBER: "HOME_CLASS_MEMBER",
   CROSS_CLASS_MEMBER: "CROSS_CLASS_MEMBER",
-  GUEST: "GUEST"
+  GUEST: "GUEST",
+  COURSE_REGISTRANT: "COURSE_REGISTRANT",
+  COURSE_TEAM_MEMBER: "COURSE_TEAM_MEMBER",
+  EVENT_REGISTRANT: "EVENT_REGISTRANT",
+  EVENT_TEAM_MEMBER: "EVENT_TEAM_MEMBER"
 };
 const ACTIVITY_TYPES = {
   national_report: "全国报告会",
@@ -118,12 +122,15 @@ function normalizeRosterPhone(value) {
   return String(value || "").trim().replace(/\s/g, "").replace(/-/g, "");
 }
 
-function validateClassMeetingRoster(members) {
+function validateClassMeetingRoster(members, options) {
+  const requirePhone = options ? options.requirePhone === true : true;
   const rows = Array.isArray(members) ? members : [];
   const issues = [];
   const validPhoneIndexes = new Map();
   let validNameCount = 0;
   let validPhoneCount = 0;
+  let missingPhoneCount = 0;
+  let invalidPhoneCount = 0;
 
   rows.forEach((member, index) => {
     const item = member && typeof member === "object" ? member : {};
@@ -132,9 +139,13 @@ function validateClassMeetingRoster(members) {
     const issueCodes = [];
     if (name) validNameCount += 1;
     else issueCodes.push("MISSING_NAME");
-    if (!phone) issueCodes.push("MISSING_PHONE");
-    else if (!/^1\d{10}$/.test(phone)) issueCodes.push("INVALID_PHONE");
-    else {
+    if (!phone) {
+      missingPhoneCount += 1;
+      if (requirePhone) issueCodes.push("MISSING_PHONE");
+    } else if (!/^1\d{10}$/.test(phone)) {
+      invalidPhoneCount += 1;
+      if (requirePhone) issueCodes.push("INVALID_PHONE");
+    } else {
       validPhoneCount += 1;
       const indexes = validPhoneIndexes.get(phone) || [];
       indexes.push(index);
@@ -161,8 +172,8 @@ function validateClassMeetingRoster(members) {
     valid_name_count: validNameCount,
     valid_phone_count: validPhoneCount,
     missing_name_count: issues.filter(item => item.issue_codes.includes("MISSING_NAME")).length,
-    missing_phone_count: issues.filter(item => item.issue_codes.includes("MISSING_PHONE")).length,
-    invalid_phone_count: issues.filter(item => item.issue_codes.includes("INVALID_PHONE")).length,
+    missing_phone_count: missingPhoneCount,
+    invalid_phone_count: invalidPhoneCount,
     issue_count: issues.length,
     issues,
     shared_phone_group_count: sharedPhoneGroups.length,
@@ -1278,6 +1289,8 @@ exports.main = async (event, context) => {
 
     const normalizedRows = [];
     const identityCounts = {};
+    let missingPhoneCount = 0;
+    let invalidPhoneCount = 0;
     const restoreCheckins = payload.restore_checkins === true;
     for (let i = 0; i < rows.length; i++) {
       const row = rows[i] || {};
@@ -1294,13 +1307,24 @@ exports.main = async (event, context) => {
       };
       if (!cleanRow.name && !cleanRow.phone) continue;
       if (!cleanRow.name) return { error: "第" + (i + 1) + "条缺少姓名，未导入" };
-      if (!/^\d{11}$/.test(cleanRow.phone)) return { error: "第" + (i + 1) + "条手机号格式错误，未导入" };
+      if (!/^\d{11}$/.test(cleanRow.phone)) {
+        if (!cleanRow.phone) missingPhoneCount++;
+        else invalidPhoneCount++;
+      }
       const key = identityKey(cleanRow);
       identityCounts[key] = (identityCounts[key] || 0) + 1;
       normalizedRows.push(cleanRow);
     }
     if (normalizedRows.length === 0) return { error: "没有可导入的有效报名数据" };
-    return { eventName, eventDate, checkinStartAt, checkinEndAt, activityType, groupField, normalizedRows, identityCounts, restoreCheckins };
+    return {
+      eventName, eventDate, checkinStartAt, checkinEndAt, activityType, groupField,
+      normalizedRows, identityCounts, restoreCheckins,
+      phoneQuality: {
+        missing_count: missingPhoneCount,
+        invalid_count: invalidPhoneCount,
+        valid_count: normalizedRows.length - missingPhoneCount - invalidPhoneCount
+      }
+    };
   }
 
   function countIdentities(rows) {
@@ -1329,7 +1353,7 @@ exports.main = async (event, context) => {
       return (rows || []).map(row => JSON.stringify(fields.map(field => String(row[field] || "")))).sort();
     }
     return crypto.createHash("sha256").update(JSON.stringify(
-      stableRows(registrations, ["_id", "name", "phone", "center", "class_name", "group_name", "company", "group_num", "dinner_table_num", "attendance_status", "attendance_note", "batch_id"])
+      stableRows(registrations, ["_id", "name", "registered_name", "actual_attendee_name", "phone", "center", "class_name", "group_name", "company", "group_num", "dinner_table_num", "attendance_status", "attendance_note", "batch_id"])
     )).digest("hex");
   }
 
@@ -1389,6 +1413,14 @@ exports.main = async (event, context) => {
     return normalizeActivityType(item && item.activity_type) === "class_meeting";
   }
 
+  function isCourseEvent(item) {
+    return normalizeActivityType(item && item.activity_type) === "course";
+  }
+
+  function isRosterRegistrationEvent(item) {
+    return !isClassMeetingEvent(item);
+  }
+
   function normalizePersonName(value) {
     return String(value || "").trim().replace(/\s+/g, "").toLowerCase();
   }
@@ -1400,6 +1432,8 @@ exports.main = async (event, context) => {
   function registrationAttendanceRole(registration, eventItem) {
     const stored = String(registration && registration.attendance_role || "").trim();
     if (Object.prototype.hasOwnProperty.call(ATTENDANCE_ROLES, stored)) return stored;
+    if (isCourseEvent(eventItem)) return ATTENDANCE_ROLES.COURSE_REGISTRANT;
+    if (isRosterRegistrationEvent(eventItem)) return ATTENDANCE_ROLES.EVENT_REGISTRANT;
     // Existing class rosters predate the explicit role field. They remain the
     // event's home-class baseline; only new manual additions become guests.
     if (isClassMeetingEvent(eventItem) && String(registration && registration.source || "") !== "manual") {
@@ -1434,6 +1468,8 @@ exports.main = async (event, context) => {
   function rosterRegistrationData(member, eventItem, source) {
     return {
       name: String(member && member.name || "").trim(),
+      registered_name: String(member && member.name || "").trim(),
+      actual_attendee_name: "",
       phone: normalizePhone(member && member.phone),
       center: normalizeCenterValue(member && (member.primary_org_name || member.center)),
       class_name: normalizeGroupValue(member && member.class_name),
@@ -1474,7 +1510,7 @@ exports.main = async (event, context) => {
     }));
     return {
       members,
-      quality: validateClassMeetingRoster(members),
+      quality: validateClassMeetingRoster(members, { requirePhone: false }),
       version: normalized.version || null
     };
   }
@@ -1612,8 +1648,50 @@ exports.main = async (event, context) => {
     return candidate;
   }
 
+  function courseRegistrationCandidate(reg, eventItem, checkedAt) {
+    const candidate = nameCheckinCandidate(reg, eventItem, checkedAt, false);
+    candidate.registered_name = String(reg && (reg.registered_name || reg.name) || "").trim();
+    candidate.actual_attendee_name = String(reg && reg.actual_attendee_name || "").trim();
+    // A course candidate must never require or expose a complete phone number.
+    delete candidate.phone_last4;
+    return candidate;
+  }
+
+  function normalizeCompany(value) {
+    return String(value || "").trim().replace(/\s+/g, "").toLowerCase();
+  }
+
+  async function courseTeamCandidateToken(eventItem, attendeeName, company) {
+    const value = [
+      "course_team_checkin",
+      String(eventItem && (eventItem.event_id || eventItem._id) || ""),
+      normalizePersonName(attendeeName),
+      normalizeCompany(company)
+    ].join("\u001f");
+    return crypto.createHmac("sha256", await getAuthSecret()).update(value).digest("base64url");
+  }
+
+  function courseTeamAvailableRows(registrations, checkins, company) {
+    const checkedIds = new Set((checkins || []).map(row => String(row.registration_id || "")).filter(Boolean));
+    const targetCompany = normalizeCompany(company);
+    return (registrations || []).filter(reg =>
+      normalizeCompany(reg && reg.company) === targetCompany &&
+      !checkedIds.has(String(reg && reg._id || "")) &&
+      !String(reg && reg.actual_attendee_name || "").trim()
+    );
+  }
+
+  function courseTeamContactName(registrations) {
+    const first = (registrations || [])[0];
+    return String(first && (first.registered_name || first.name) || "").trim();
+  }
+
   async function activeClassMeetingEvents() {
     return (await getTodayEvents()).filter(item => isPublicCheckinEligible(item) && isClassMeetingEvent(item));
+  }
+
+  async function activeNameCheckinEvents() {
+    return (await getTodayEvents()).filter(item => isPublicCheckinEligible(item));
   }
 
   // ===== CHECKIN =====
@@ -1621,11 +1699,13 @@ exports.main = async (event, context) => {
     const name = String(data.name || "").trim();
     if (!name) return { statusCode: 200, headers: h, body: JSON.stringify({ ok: false, status: "INVALID", msg: "请输入姓名" }) };
     try {
-      let events = await activeClassMeetingEvents();
       const requestedEventId = String(data.event_id || "").trim();
-      if (requestedEventId) events = events.filter(item => String(item.event_id || item._id || "") === requestedEventId);
-      if (!events.length) {
-        return { statusCode: 200, headers: h, body: JSON.stringify({ ok: false, status: "NO_CLASS_EVENT", phone_assist: true, msg: requestedEventId ? "当前班会场次已关闭或尚未开始" : "当前没有开放的班会签到活动，请使用手机号辅助查找" }) };
+      const allNameEvents = await activeNameCheckinEvents();
+      const events = requestedEventId
+        ? allNameEvents.filter(item => String(item.event_id || item._id || "") === requestedEventId)
+        : allNameEvents;
+      if (requestedEventId && !events.length) {
+        return { statusCode: 200, headers: h, body: JSON.stringify({ ok: false, status: "NO_EVENT", phone_assist: false, msg: "当前活动已关闭或尚未开始，请重新选择活动" }) };
       }
 
       const eventById = new Map(events.map(item => [String(item.event_id || item._id || ""), item]));
@@ -1637,13 +1717,19 @@ exports.main = async (event, context) => {
         const eventId = String(item.event_id || item._id || "");
         checkinsByEvent.set(eventId, await rowsForBatch("checkins", eventId, 5000));
       }));
+      const matchedEventIds = [...new Set(matches.map(reg => String(reg.batch_id || "")))];
+      if (!requestedEventId && matchedEventIds.length > 1) {
+        return { statusCode: 200, headers: h, body: JSON.stringify({ ok: false, status: "NEEDS_EVENT", needs_event: true, events: events.filter(item => matchedEventIds.includes(String(item.event_id || item._id || ""))).map(publicEvent), msg: "检测到您报名了多个活动，请先选择本次活动" }) };
+      }
       const candidates = matches.map(reg => {
         const eventItem = eventById.get(String(reg.batch_id || ""));
         const checkin = (checkinsByEvent.get(String(reg.batch_id || "")) || []).find(row => String(row.registration_id || "") === String(reg._id || ""));
-        return nameCheckinCandidate(reg, eventItem, checkin && checkin.checked_at, matches.length > 1);
+        return isClassMeetingEvent(eventItem)
+          ? nameCheckinCandidate(reg, eventItem, checkin && checkin.checked_at, matches.length > 1)
+          : courseRegistrationCandidate(reg, eventItem, checkin && checkin.checked_at);
       });
       if (!candidates.length) {
-        if (events.length === 1 && String(events[0] && events[0].class_org_unit_id || "").trim()) {
+        if (events.length === 1 && isClassMeetingEvent(events[0]) && String(events[0] && events[0].class_org_unit_id || "").trim()) {
           try {
             const externalMembers = await lookupCrossClassMembers(events[0], name);
             if (externalMembers.length) {
@@ -1660,11 +1746,15 @@ exports.main = async (event, context) => {
             // integration outage into a false positive or auto-registration.
           }
         }
-        return { statusCode: 200, headers: h, body: JSON.stringify({ ok: false, status: "NOT_FOUND", phone_assist: true, msg: "没有找到这个姓名，请确认姓名是否与报名名单一致" }) };
+        if (events.length === 1 && isRosterRegistrationEvent(events[0])) {
+          const eventId = String(events[0].event_id || events[0]._id || "");
+          return { statusCode: 200, headers: h, body: JSON.stringify({ ok: false, status: "TEAM_REQUIRED", event_id: eventId, attendee_name: name, phone_assist: false, msg: "没有在当前活动报名表中找到该姓名；如果是团队报名，请使用一个剩余报名名额" }) };
+        }
+        return { statusCode: 200, headers: h, body: JSON.stringify({ ok: false, status: "NOT_FOUND", phone_assist: false, msg: "没有找到这个姓名，请确认姓名是否与当前活动报名名单一致" }) };
       }
       return { statusCode: 200, headers: h, body: JSON.stringify({ ok: true, status: candidates.length === 1 ? "UNIQUE" : "MULTIPLE", candidates }) };
     } catch (e) {
-      return { statusCode: 200, headers: h, body: JSON.stringify({ ok: false, status: "ERROR", msg: "姓名查询失败，请使用手机号辅助查找" }) };
+      return { statusCode: 200, headers: h, body: JSON.stringify({ ok: false, status: "ERROR", msg: "姓名查询失败，请稍后重试" }) };
     }
   }
 
@@ -1673,18 +1763,24 @@ exports.main = async (event, context) => {
     const registrationId = String(data.registration_id || "").trim();
     if (!eventId || !registrationId) return { statusCode: 200, headers: h, body: JSON.stringify({ ok: false, msg: "报名信息不完整，请重新查询" }) };
     try {
-      const eventItem = (await activeClassMeetingEvents()).find(item => String(item.event_id || item._id || "") === eventId);
-      if (!eventItem) return { statusCode: 200, headers: h, body: JSON.stringify({ ok: false, msg: "当前班会已关闭或尚未开始，请重新查询" }) };
+      const eventItem = (await activeNameCheckinEvents()).find(item => String(item.event_id || item._id || "") === eventId);
+      if (!eventItem) return { statusCode: 200, headers: h, body: JSON.stringify({ ok: false, msg: "当前活动已关闭或尚未开始，请重新查询" }) };
       const registrations = await getAll("registrations", 5000, { _id: registrationId });
       const reg = registrations.find(item => String(item._id || "") === registrationId && String(item.batch_id || "") === eventId);
       if (!reg) return { statusCode: 200, headers: h, body: JSON.stringify({ ok: false, msg: "报名信息已变化，请重新查询" }) };
+      if (isRosterRegistrationEvent(eventItem) && data.name && normalizePersonName(data.name) !== normalizePersonName(reg.name)) {
+        return { statusCode: 200, headers: h, body: JSON.stringify({ ok: false, msg: "姓名与活动报名记录不一致，请重新查询" }) };
+      }
       const currentCheckins = await rowsForBatch("checkins", eventId, 5000);
       const existing = currentCheckins.find(row => String(row.registration_id || "") === registrationId);
       const ds = await getDisplaySettings();
       const gf = groupFieldForEvent(eventItem, [reg]);
+      const role = registrationAttendanceRole(reg, eventItem);
       const displayData = {
-        ...nameCheckinCandidate(reg, eventItem, existing && existing.checked_at, false),
-        attendance_role_label: registrationAttendanceRole(reg, eventItem) === ATTENDANCE_ROLES.HOME_CLASS_MEMBER ? "本班学长" : "来宾",
+        ...(isRosterRegistrationEvent(eventItem)
+          ? courseRegistrationCandidate(reg, eventItem, existing && existing.checked_at)
+          : nameCheckinCandidate(reg, eventItem, existing && existing.checked_at, false)),
+        attendance_role_label: role === ATTENDANCE_ROLES.HOME_CLASS_MEMBER ? "本班学长" : role === ATTENDANCE_ROLES.CROSS_CLASS_MEMBER ? "外班学长" : role === ATTENDANCE_ROLES.EVENT_TEAM_MEMBER || role === ATTENDANCE_ROLES.COURSE_TEAM_MEMBER ? "团队报名名额" : role === ATTENDANCE_ROLES.COURSE_REGISTRANT || role === ATTENDANCE_ROLES.EVENT_REGISTRANT ? "活动报名" : "来宾",
         group_type: gf.label,
         group_value: normalizeDimensionValue(reg, gf.field),
         show_group: ds.show_group,
@@ -1697,6 +1793,8 @@ exports.main = async (event, context) => {
       await db.collection("checkins").add({
         registration_id: registrationId,
         name: String(reg.name || "").trim(),
+        registered_name: String(reg.registered_name || reg.name || "").trim(),
+        actual_attendee_name: String(reg.name || "").trim(),
         phone: normalizePhone(reg.phone),
         center: normalizeCenterValue(reg.center),
         class_name: normalizeGroupValue(reg.class_name),
@@ -1704,7 +1802,7 @@ exports.main = async (event, context) => {
         company: String(reg.company || "").trim(),
         member_code: String(reg.member_code || "").trim(),
         platform_member_id: String(reg.platform_member_id || "").trim(),
-        attendance_role: registrationAttendanceRole(reg, eventItem),
+        attendance_role: role,
         home_class_org_unit_id: String(reg.home_class_org_unit_id || eventItem.class_org_unit_id || "").trim(),
         home_class_name: String(reg.home_class_name || reg.class_name || "").trim(),
         event_class_org_unit_id: String(reg.event_class_org_unit_id || eventItem.class_org_unit_id || "").trim(),
@@ -1714,11 +1812,142 @@ exports.main = async (event, context) => {
         batch_id: eventId,
         checked_at: now
       });
+      if (isRosterRegistrationEvent(eventItem)) {
+        await db.collection("registrations").doc(registrationId).update({
+          actual_attendee_name: String(reg.name || "").trim(),
+          actual_attendee_at: now,
+          actual_attendee_source: "DIRECT_NAME_CHECKIN"
+        });
+      }
       displayData.checked_in = true;
       displayData.checked_at = now;
+      if (isRosterRegistrationEvent(eventItem)) displayData.actual_attendee_name = String(reg.name || "").trim();
       return { statusCode: 200, headers: h, body: JSON.stringify({ ok: true, msg: "签到成功", data: displayData }) };
     } catch (e) {
       return { statusCode: 200, headers: h, body: JSON.stringify({ ok: false, msg: "签到失败，请稍后重试" }) };
+    }
+  }
+
+  if ((p === "/checkin/team-lookup" || p === "/checkin/course-team-lookup") && method === "POST") {
+    const eventId = String(data.event_id || "").trim();
+    const attendeeName = String(data.name || "").trim();
+    const company = String(data.company || "").trim();
+    if (!eventId || !attendeeName || !company) {
+      return { statusCode: 200, headers: h, body: JSON.stringify({ ok: false, status: "INVALID", msg: "请输入姓名和报名企业/团队名称" }) };
+    }
+    try {
+      const eventItem = (await activeNameCheckinEvents()).find(item =>
+        String(item.event_id || item._id || "") === eventId && isRosterRegistrationEvent(item)
+      );
+      if (!eventItem) return { statusCode: 200, headers: h, body: JSON.stringify({ ok: false, msg: "当前活动已关闭或尚未开始，请重新查询" }) };
+      const registrations = await rowsForBatch("registrations", eventId, 5000);
+      const checkins = await rowsForBatch("checkins", eventId, 5000);
+      const companyRows = registrations.filter(row => normalizeCompany(row.company) === normalizeCompany(company));
+      const available = courseTeamAvailableRows(registrations, checkins, company);
+      if (!companyRows.length) return { statusCode: 200, headers: h, body: JSON.stringify({ ok: false, status: "NOT_FOUND", msg: "没有找到该企业/团队的活动报名名额，请核对名称或联系工作人员" }) };
+      if (!available.length) return { statusCode: 200, headers: h, body: JSON.stringify({ ok: false, status: "NO_SLOTS", msg: "该企业/团队的报名名额已全部使用" }) };
+      const candidateToken = await courseTeamCandidateToken(eventItem, attendeeName, company);
+      return { statusCode: 200, headers: h, body: JSON.stringify({
+        ok: true,
+        status: "AVAILABLE",
+        event_id: eventId,
+        attendee_name: attendeeName,
+        company: String(companyRows[0].company || company).trim(),
+        registered_contact_name: courseTeamContactName(companyRows),
+        total_slots: companyRows.length,
+        checked_slots: companyRows.length - available.length,
+        remaining_slots: available.length,
+        candidate_token: candidateToken,
+        event: publicEvent(eventItem)
+      }) };
+    } catch (e) {
+      return { statusCode: 200, headers: h, body: JSON.stringify({ ok: false, msg: "团队报名名额查询失败，请稍后重试" }) };
+    }
+  }
+
+  if ((p === "/checkin/team-confirm" || p === "/checkin/course-team-confirm") && method === "POST") {
+    const eventId = String(data.event_id || "").trim();
+    const attendeeName = String(data.name || "").trim();
+    const company = String(data.company || "").trim();
+    const candidateToken = String(data.candidate_token || "").trim();
+    if (!eventId || !attendeeName || !company || !candidateToken) {
+      return { statusCode: 200, headers: h, body: JSON.stringify({ ok: false, msg: "团队报名信息不完整，请重新查询" }) };
+    }
+    try {
+      const eventItem = (await activeNameCheckinEvents()).find(item =>
+        String(item.event_id || item._id || "") === eventId && isRosterRegistrationEvent(item)
+      );
+      if (!eventItem) return { statusCode: 200, headers: h, body: JSON.stringify({ ok: false, msg: "当前活动已关闭或尚未开始，请重新查询" }) };
+      const expectedToken = await courseTeamCandidateToken(eventItem, attendeeName, company);
+      const expected = Buffer.from(expectedToken, "base64url");
+      const actual = Buffer.from(candidateToken, "base64url");
+      if (actual.length !== expected.length || !crypto.timingSafeEqual(actual, expected)) {
+        return { statusCode: 200, headers: h, body: JSON.stringify({ ok: false, msg: "团队报名信息已变化，请重新查询" }) };
+      }
+      const registrations = await rowsForBatch("registrations", eventId, 5000);
+      const checkins = await rowsForBatch("checkins", eventId, 5000);
+      const available = courseTeamAvailableRows(registrations, checkins, company);
+      const registration = available[0];
+      if (!registration) return { statusCode: 200, headers: h, body: JSON.stringify({ ok: false, msg: "该企业/团队的报名名额已全部使用" }) };
+      const registrationId = String(registration._id || "");
+      const now = new Date().toISOString();
+      const updatedRegistration = {
+        ...registration,
+        attendance_role: ATTENDANCE_ROLES.EVENT_TEAM_MEMBER,
+        actual_attendee_name: attendeeName,
+        actual_attendee_at: now,
+        actual_attendee_source: "EVENT_TEAM_SELF_CHECKIN"
+      };
+      await db.collection("registrations").doc(registrationId).update({
+        attendance_role: ATTENDANCE_ROLES.EVENT_TEAM_MEMBER,
+        actual_attendee_name: attendeeName,
+        actual_attendee_at: now,
+        actual_attendee_source: "EVENT_TEAM_SELF_CHECKIN"
+      });
+      await db.collection("checkins").add({
+        registration_id: registrationId,
+        name: attendeeName,
+        registered_name: String(registration.registered_name || registration.name || "").trim(),
+        actual_attendee_name: attendeeName,
+        phone: normalizePhone(registration.phone),
+        center: normalizeCenterValue(registration.center),
+        class_name: normalizeGroupValue(registration.class_name),
+        group_name: normalizeGroupValue(registration.group_name),
+        company: String(registration.company || company).trim(),
+        attendance_role: ATTENDANCE_ROLES.EVENT_TEAM_MEMBER,
+        registration_source: String(registration.registration_source || registration.source || ""),
+        group_num: registration.group_num || null,
+        dinner_table_num: registration.dinner_table_num || null,
+        batch_id: eventId,
+        checked_at: now
+      });
+      const allCompanyRows = registrations.filter(row => normalizeCompany(row.company) === normalizeCompany(company));
+      const remainingRows = courseTeamAvailableRows(allCompanyRows, [...checkins, { registration_id: registrationId }], company);
+      const ds = await getDisplaySettings();
+      const displayData = {
+        ...courseRegistrationCandidate(updatedRegistration, eventItem, now),
+        name: attendeeName,
+        actual_attendee_name: attendeeName,
+        attendance_role: ATTENDANCE_ROLES.EVENT_TEAM_MEMBER,
+        attendance_role_label: "团队报名名额",
+        show_group: ds.show_group,
+        show_dinner_table: ds.show_dinner_table,
+        multi_total: allCompanyRows.length,
+        multi_checked: allCompanyRows.length - remainingRows.length,
+        checked_at: now,
+        event: publicEvent(eventItem)
+      };
+      return { statusCode: 200, headers: h, body: JSON.stringify({
+        ok: true,
+        msg: "签到成功",
+        data: displayData,
+        checked_count: 1,
+        total_slots: allCompanyRows.length,
+        checked_slots: allCompanyRows.length - remainingRows.length,
+        remaining_slots: remainingRows.length
+      }) };
+    } catch (e) {
+      return { statusCode: 200, headers: h, body: JSON.stringify({ ok: false, msg: "团队签到失败，请重新查询后再试" }) };
     }
   }
 
@@ -1759,6 +1988,8 @@ exports.main = async (event, context) => {
         const now = new Date().toISOString();
         const created = await db.collection("registrations").add({
           name: String(matchedMember.name || "").trim(),
+          registered_name: String(matchedMember.name || "").trim(),
+          actual_attendee_name: "",
           phone: "",
           center: normalizeCenterValue(matchedMember.primary_org_name),
           class_name: String(matchedMember.home_class_name || "").trim(),
@@ -1784,6 +2015,8 @@ exports.main = async (event, context) => {
         registration = {
           _id: created.id || created._id || "",
           name: String(matchedMember.name || "").trim(),
+          registered_name: String(matchedMember.name || "").trim(),
+          actual_attendee_name: "",
           phone: "",
           center: normalizeCenterValue(matchedMember.primary_org_name),
           class_name: String(matchedMember.home_class_name || "").trim(),
@@ -1821,6 +2054,8 @@ exports.main = async (event, context) => {
       await db.collection("checkins").add({
         registration_id: registrationId,
         name: String(registration.name || "").trim(),
+        registered_name: String(registration.registered_name || registration.name || "").trim(),
+        actual_attendee_name: String(registration.name || "").trim(),
         phone: "",
         center: normalizeCenterValue(registration.center),
         class_name: normalizeGroupValue(registration.class_name),
@@ -1847,7 +2082,30 @@ exports.main = async (event, context) => {
   if (p === "/checkin" && method === "POST") {
     const name = (data.name || "").trim();
     const phone = (data.phone || "").trim().replace(/\s/g, "").replace(/-/g, "");
-    if (!name || !phone) return { statusCode: 200, headers: h, body: JSON.stringify({ ok: false, msg: "请输入姓名和手机号" }) };
+    if (!name) return { statusCode: 200, headers: h, body: JSON.stringify({ ok: false, msg: "请输入姓名" }) };
+    if (!phone) {
+      try {
+        const lookupResponse = await exports.main({
+          path: "/checkin/lookup",
+          httpMethod: "POST",
+          headers: event.headers || {},
+          body: JSON.stringify({ name, event_id: data.event_id || "" })
+        });
+        const lookupData = lookupResponse.body ? JSON.parse(lookupResponse.body) : {};
+        if (lookupData.status === "UNIQUE" && lookupData.candidates && lookupData.candidates[0]) {
+          const candidate = lookupData.candidates[0];
+          return await exports.main({
+            path: "/checkin/confirm",
+            httpMethod: "POST",
+            headers: event.headers || {},
+            body: JSON.stringify({ event_id: candidate.event_id, registration_id: candidate.registration_id, name: candidate.name })
+          });
+        }
+        return { statusCode: 200, headers: h, body: JSON.stringify(lookupData) };
+      } catch (e) {
+        return { statusCode: 200, headers: h, body: JSON.stringify({ ok: false, msg: "姓名签到失败，请重新查询" }) };
+      }
+    }
     if (phone.length !== 11 || !/^\d+$/.test(phone)) return { statusCode: 200, headers: h, body: JSON.stringify({ ok: false, msg: "请输入正确的11位手机号" }) };
     try {
       const activeEvents = (await getTodayEvents()).filter(item => isPublicCheckinEligible(item));
@@ -1967,12 +2225,14 @@ exports.main = async (event, context) => {
       const activeIds = activeEvents.map(item => String(item.event_id || item._id || ""));
       const classMeetingActiveCount = activeEvents.filter(isClassMeetingEvent).length;
       const classMeetingAvailable = displayEvents.some(isClassMeetingEvent);
+      const courseAvailable = displayEvents.some(isCourseEvent);
+      const nameCheckinAvailable = displayEvents.length > 0;
       const activeRegistrationRows = await Promise.all(activeIds.map(eventId => rowsForBatch("registrations", eventId, 5000)));
       const total = activeRegistrationRows.reduce((sum, rows) => sum + rows.length, 0);
       const eventName = activeEvents.length === 1
         ? (activeEvents[0].name || "盛和塾活动签到")
         : (activeEvents.length > 1 || displayEvents.length ? "盛和塾活动签到" : "当前暂无可签到活动");
-      return { statusCode: 200, headers: h, body: JSON.stringify({ event_name: eventName, active_event_count: activeEvents.length, class_meeting_active_count: classMeetingActiveCount, class_meeting_available: classMeetingAvailable, active_events: activeEvents.map(publicEvent), next_event: nextEvent ? publicEvent(nextEvent) : null, display_events: displayEvents.map(publicEvent), show_group: ds.show_group, show_dinner_table: ds.show_dinner_table, total }) };
+      return { statusCode: 200, headers: h, body: JSON.stringify({ event_name: eventName, active_event_count: activeEvents.length, class_meeting_active_count: classMeetingActiveCount, class_meeting_available: classMeetingAvailable, course_available: courseAvailable, name_checkin_available: nameCheckinAvailable, active_events: activeEvents.map(publicEvent), next_event: nextEvent ? publicEvent(nextEvent) : null, display_events: displayEvents.map(publicEvent), show_group: ds.show_group, show_dinner_table: ds.show_dinner_table, total }) };
     } catch (e) {
       return { statusCode: 200, headers: h, body: JSON.stringify({ event_name: "签到活动加载失败", active_event_count: 0, active_events: [], show_group: "true", show_dinner_table: "true", total: 0 }) };
     }
@@ -2104,7 +2364,7 @@ exports.main = async (event, context) => {
         group_num: null,
         dinner_table_num: null
       }));
-      const rosterQuality = validateClassMeetingRoster(attendees);
+      const rosterQuality = validateClassMeetingRoster(attendees, { requirePhone: false });
       return { statusCode: 200, headers: h, body: JSON.stringify({
         ok: true,
         scope,
@@ -2248,11 +2508,13 @@ exports.main = async (event, context) => {
         dinner_table_num: null,
         attendance_status: "pending",
         attendance_note: "",
+        registered_name: String(data.name || "").trim(),
+        actual_attendee_name: "",
+        registration_source: "MANUAL",
         source: "manual",
         created_at: new Date().toISOString()
       };
       if (!registration.name) return { statusCode: 200, headers: h, body: JSON.stringify({ ok: false, msg: "请输入姓名" }) };
-      if (!/^\d{11}$/.test(registration.phone)) return { statusCode: 200, headers: h, body: JSON.stringify({ ok: false, msg: "请输入正确的11位手机号" }) };
 
       const selectedEvent = await getRequestedEvent(data.event_id);
       if (!selectedEvent) return { statusCode: 200, headers: h, body: JSON.stringify({ ok: false, msg: "请先选择活动" }) };
@@ -2261,6 +2523,9 @@ exports.main = async (event, context) => {
         registration.attendance_role = ATTENDANCE_ROLES.GUEST;
         registration.event_class_org_unit_id = String(selectedEvent.class_org_unit_id || "").trim();
         registration.registration_source = "MANUAL_GUEST";
+      } else {
+        registration.attendance_role = isCourseEvent(selectedEvent) ? ATTENDANCE_ROLES.COURSE_REGISTRANT : ATTENDANCE_ROLES.EVENT_REGISTRANT;
+        registration.registration_source = "MANUAL_EVENT";
       }
       const targetEvents = await manualRegistrationTargetEvents(selectedEvent);
       const unavailableEvent = targetEvents.find(item => !canManageEventRegistrations(item));
@@ -2386,6 +2651,8 @@ exports.main = async (event, context) => {
         var attendanceRole = registrationAttendanceRole(r, selectedEvent);
         return {
           name: r.name || "",
+          registered_name: r.registered_name || r.name || "",
+          actual_attendee_name: r.actual_attendee_name || "",
           phone: r.phone || "",
           company: r.company || "",
           center: normalizeCenterValue(r.center),
@@ -2397,7 +2664,7 @@ exports.main = async (event, context) => {
           sign_time: ck ? (ck.checked_at || "") : "",
           attendance_note: ck ? "" : (r.attendance_note || ""),
           attendance_role: attendanceRole,
-          attendance_role_label: attendanceRole === ATTENDANCE_ROLES.CROSS_CLASS_MEMBER ? "外班学长" : (attendanceRole === ATTENDANCE_ROLES.HOME_CLASS_MEMBER ? "本班学长" : "来宾"),
+           attendance_role_label: attendanceRole === ATTENDANCE_ROLES.CROSS_CLASS_MEMBER ? "外班学长" : (attendanceRole === ATTENDANCE_ROLES.HOME_CLASS_MEMBER ? "本班学长" : (attendanceRole === ATTENDANCE_ROLES.EVENT_TEAM_MEMBER || attendanceRole === ATTENDANCE_ROLES.COURSE_TEAM_MEMBER ? "团队报名名额" : (attendanceRole === ATTENDANCE_ROLES.EVENT_REGISTRANT || attendanceRole === ATTENDANCE_ROLES.COURSE_REGISTRANT ? "活动报名" : "来宾"))),
           home_class_name: r.home_class_name || r.class_name || "",
           event_class_name: selectedEvent.class_name || ""
         };
@@ -2452,8 +2719,10 @@ exports.main = async (event, context) => {
         if (attendance.checkedIndexes.has(index)) groups[gv].checked++;
       });
       const nc = regs.filter((a, index) => homeIndexes.has(index) && !attendance.checkedIndexes.has(index)).map(a => ({
-        registration_id: a._id || "",
-        name: a.name,
+           registration_id: a._id || "",
+           name: a.name,
+           registered_name: a.registered_name || a.name || "",
+           actual_attendee_name: a.actual_attendee_name || "",
         phone: a.phone || "",
         center: normalizeCenterValue(a.center),
         class_name: normalizeGroupValue(a.class_name),
@@ -2470,6 +2739,8 @@ exports.main = async (event, context) => {
       }, { pending: 0, late: 0, leave: 0 });
       const rc = cks.sort((a, b) => (b.checked_at || "").localeCompare(a.checked_at || "")).slice(0, 20).map(r => ({
         name: r.name,
+        registered_name: r.registered_name || r.name || "",
+        actual_attendee_name: r.actual_attendee_name || r.name || "",
         center: normalizeCenterValue(r.center),
         class_name: normalizeGroupValue(r.class_name),
         home_class_name: normalizeGroupValue(r.home_class_name),
@@ -2477,7 +2748,7 @@ exports.main = async (event, context) => {
         company: r.company || "",
         group_num: r.group_num || null,
         dinner_table_num: r.dinner_table_num || null,
-        attendance_role: registrationAttendanceRole(r, selectedEvent),
+        attendance_role: Object.prototype.hasOwnProperty.call(ATTENDANCE_ROLES, String(r.attendance_role || "")) ? String(r.attendance_role) : registrationAttendanceRole(r, selectedEvent),
         checked_at: r.checked_at
       }));
       return { statusCode: 200, headers: h, body: JSON.stringify({
@@ -2534,13 +2805,15 @@ exports.main = async (event, context) => {
         checkin_start_at: upload.checkinStartAt,
         checkin_end_at: upload.checkinEndAt,
         activity_type: upload.activityType,
-        activity_type_name: ACTIVITY_TYPES[upload.activityType],
+         activity_type_name: ACTIVITY_TYPES[upload.activityType],
         old_total: 0,
         new_total: upload.normalizedRows.length,
         added: upload.normalizedRows.length,
         removed: 0,
         duplicate_groups: duplicateGroups,
-        repeated_slots: repeatedSlots,
+         repeated_slots: repeatedSlots,
+         phone_quality: upload.phoneQuality,
+         course_phone_quality: upload.phoneQuality,
         old_checked: 0,
         restored_checkins: restoredCheckins,
         preview_issued_at: issuedAt,
@@ -2575,11 +2848,27 @@ exports.main = async (event, context) => {
     try {
       for (const row of normalizedRows) {
         const { restore_checked_at: restoreCheckedAt, ...registrationData } = row;
-        const result = await db.collection("registrations").add({ ...registrationData, batch_id: batchId });
+        const isClassMeeting = activityType === "class_meeting";
+        const registrationRole = isClassMeeting
+          ? ATTENDANCE_ROLES.HOME_CLASS_MEMBER
+          : activityType === "course" ? ATTENDANCE_ROLES.COURSE_REGISTRANT : ATTENDANCE_ROLES.EVENT_REGISTRANT;
+        const registrationToWrite = {
+          ...registrationData,
+          registered_name: String(row.name || "").trim(),
+          actual_attendee_name: "",
+          registration_source: "EXCEL_UPLOAD",
+          source: "excel_upload",
+          attendance_role: registrationRole,
+          batch_id: batchId
+        };
+        const result = await db.collection("registrations").add(registrationToWrite);
         stagedDocs.push({ _id: result.id || result._id });
         if (restoreCheckedAt) {
-          const checkinResult = await db.collection("checkins").add({ registration_id: result.id || result._id || "", name: row.name, phone: row.phone, center: normalizeCenterValue(row.center), class_name: normalizeGroupValue(row.class_name), group_name: normalizeGroupValue(row.group_name), company: row.company, group_num: row.group_num, dinner_table_num: row.dinner_table_num, batch_id: batchId, checked_at: restoreCheckedAt });
+          const checkinResult = await db.collection("checkins").add({ registration_id: result.id || result._id || "", name: row.name, registered_name: row.name, actual_attendee_name: row.name, phone: row.phone, center: normalizeCenterValue(row.center), class_name: normalizeGroupValue(row.class_name), group_name: normalizeGroupValue(row.group_name), company: row.company, attendance_role: registrationRole, registration_source: "EXCEL_UPLOAD", group_num: row.group_num, dinner_table_num: row.dinner_table_num, batch_id: batchId, checked_at: restoreCheckedAt });
           stagedCheckinDocs.push({ _id: checkinResult.id || checkinResult._id });
+          if (!isClassMeeting) {
+            await db.collection("registrations").doc(result.id || result._id).update({ actual_attendee_name: String(row.name || "").trim(), actual_attendee_at: restoreCheckedAt, actual_attendee_source: "RESTORED_CHECKIN" });
+          }
         }
       }
       await setConfig("event_name", eventName);
@@ -2674,7 +2963,7 @@ exports.main = async (event, context) => {
         return { statusCode: 200, headers: h, body: JSON.stringify({ ok: false, msg: "班级名单格式不正确，未创建签到活动" }) };
       }
       const rosterMembers = data.roster_members;
-      const rosterQuality = validateClassMeetingRoster(rosterMembers);
+      const rosterQuality = validateClassMeetingRoster(rosterMembers, { requirePhone: false });
       if (!rosterQuality.passed) {
         const emptyRoster = rosterQuality.issues.some(item => item.issue_codes.includes("EMPTY_ROSTER"));
         return { statusCode: 200, headers: h, body: JSON.stringify({
@@ -2682,7 +2971,7 @@ exports.main = async (event, context) => {
           code: "ROSTER_QUALITY_INVALID",
           msg: emptyRoster
             ? "班级名单为空，不能创建三场签到；请先读取运营系统名单"
-            : "班级名单存在 " + rosterQuality.issue_count + " 条资料问题，不能创建三场签到；请先在运营平台补全姓名和手机号后重新读取名单",
+            : "班级名单存在 " + rosterQuality.issue_count + " 条资料问题，不能创建三场签到；请先在运营平台补全缺失姓名后重新读取名单",
           roster_quality: rosterQuality
         }) };
       }

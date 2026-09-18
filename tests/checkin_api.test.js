@@ -519,7 +519,7 @@ async function request(path, method, body, token, extraHeaders) {
   assert(multipleName.data.candidates.every(row => row.phone_last4), "同名候选可使用手机号后4位辅助识别");
   const missingName = await request("/checkin/lookup", "POST", { name: "不存在的人" });
   assert.equal(missingName.data.status, "NOT_FOUND");
-  assert.equal(missingName.data.phone_assist, true, "姓名找不到时应提供手机号辅助通道");
+  assert.equal(missingName.data.phone_assist, false, "统一姓名签到规则下不应要求手机号辅助认证");
 
   api._test.setRequestOpsHandler(async function(pathname, params) {
     if (pathname === "/api/v1/checkin-rosters/cross-class-members") {
@@ -743,9 +743,8 @@ async function request(path, method, body, token, extraHeaders) {
     class_org_unit_id: "class-invalid-roster",
     roster_members: [{ name: "资料待完善", phone: "" }]
   }, token);
-  assert.equal(invalidRosterSessions.data.ok, false, "班会创建接口必须阻断缺少手机号的名单");
-  assert.equal(invalidRosterSessions.data.code, "ROSTER_QUALITY_INVALID");
-  assert.equal(db.collections.events.length, eventsBeforeInvalidRoster, "名单质量失败时不得创建任何场次");
+  assert.equal(invalidRosterSessions.data.ok, true, "统一姓名签到规则下班会名单缺少手机号仍可创建");
+  assert.equal(db.collections.events.length, eventsBeforeInvalidRoster + 3, "班会创建应生成上午、下午和空巴三场");
 
   const deleteCurrentEvent = await request("/clear_all", "POST", { event_id: "batch-2" }, token);
   assert.equal(deleteCurrentEvent.data.ok, true);

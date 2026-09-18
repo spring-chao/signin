@@ -83,7 +83,8 @@ assert.equal(arbitraryOrder.phone, 2);
 assert.equal(arbitraryOrder.name, 3);
 assert.equal(arbitraryOrder.center, 4);
 
-assert.equal(context.findHeaderRow([["姓名"], ["手机号"]]), null, "姓名和手机号必须在同一表头行");
+assert(context.findHeaderRow([["姓名"]]), "统一签到规则下只要识别到姓名即可读取名单");
+assert.equal(context.findHeaderRow([["姓名"], ["手机号"]], {requirePhone:true}), null, "严格手机号模式仍要求姓名和手机号在同一表头行");
 const tooLate = Array.from({ length: 102 }, () => []);
 tooLate[100] = ["姓名", "手机号"];
 assert.equal(context.findHeaderRow(tooLate), null, "只扫描前100行以避免误识别正文");

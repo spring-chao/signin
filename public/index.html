@@ -102,6 +102,15 @@ body{font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;backgr
         <button class="btn" id="crossClassConfirmBtn" onclick="confirmCrossClassCandidate()">确认作为外班学长参加</button>
         <button class="text-btn" type="button" onclick="hideCrossClassPanel()">不是我</button>
       </div>
+      <div class="multi-panel" id="courseTeamPanel">
+        <div class="tip" id="courseTeamText"></div>
+        <div class="input-group"><label for="courseTeamCompany">报名企业 / 团队名称</label><input type="text" id="courseTeamCompany" maxlength="100" placeholder="请输入报名表中的企业或团队名称"></div>
+        <button class="btn" id="courseTeamLookupBtn" onclick="lookupCourseTeam()">查找团队报名名额</button>
+        <div class="multi-panel" id="courseTeamConfirmPanel">
+          <div class="tip" id="courseTeamConfirmText"></div>
+          <button class="btn" id="courseTeamConfirmBtn" onclick="confirmCourseTeam()">确认使用一个报名名额</button>
+        </div>
+      </div>
       <div class="multi-panel" id="eventPanel">
         <div class="tip">您报名了多个开放活动，请选择本次签到活动：</div>
         <select id="eventSelect"></select>
@@ -125,7 +134,7 @@ body{font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;backgr
 </div>
 <script>
 var API="https://shengheshu-d2g2zyyl99f6c6fc2-1453587887.ap-shanghai.app.tcloudbase.com/api";
-var pendingName="",pendingPhone="",pendingEventId="",eventRefreshTimer=null,checkinMode="phone",phoneAssistActive=false,nameCandidates=[],crossClassCandidate=null,activityGroups=[],activityDisplayEvents=[],activityResponse=null,selectedActivityEventId="";
+var pendingName="",pendingPhone="",pendingEventId="",eventRefreshTimer=null,checkinMode="phone",phoneAssistActive=false,nameCandidates=[],crossClassCandidate=null,courseTeamCandidate=null,activityGroups=[],activityDisplayEvents=[],activityResponse=null,selectedActivityEventId="";
 function formatChinaDateTime(value, options){
   var date=new Date(value);if(isNaN(date.getTime()))return "";
   return date.toLocaleString("zh-CN",Object.assign({timeZone:"Asia/Shanghai"},options||{}));
@@ -134,18 +143,18 @@ function formatChinaTime(value){return formatChinaDateTime(value,{hour:"2-digit"
 
 function hideCandidatePanel(){nameCandidates=[];document.getElementById("candidatePanel").classList.remove("show");document.getElementById("candidateList").innerHTML="";}
 function hideCrossClassPanel(){crossClassCandidate=null;document.getElementById("crossClassPanel").classList.remove("show");}
+function hideCourseTeamPanel(){courseTeamCandidate=null;document.getElementById("courseTeamPanel").classList.remove("show");document.getElementById("courseTeamConfirmPanel").classList.remove("show");document.getElementById("courseTeamCompany").value="";}
 
 function configureCheckinMode(d,hasActiveEvents,nextEvent,selectedEvent){
-  var classAvailable=selectedEvent?selectedEvent.activity_type==="class_meeting":Boolean(d.class_meeting_available);
-  if(!phoneAssistActive) checkinMode=classAvailable?"name":"phone";
+  if(!phoneAssistActive) checkinMode="name";
   var classMode=checkinMode==="name";
   var tip=document.getElementById("identityTip"),phoneGroup=document.getElementById("phoneInputGroup"),assist=document.getElementById("phoneAssistBtn"),submit=document.getElementById("submitBtn");
   if(classMode){
-    tip.textContent="班会签到请输入姓名，系统会优先匹配本班名单；外班学长可确认后参加。";
+    tip.textContent=selectedEvent&&selectedEvent.activity_type==="class_meeting"?"请输入姓名，系统会匹配当前班级名单；外班学长可确认后参加。":"请输入姓名，系统会匹配当前活动报名名额；团队报名可按提示使用剩余名额。";
     phoneGroup.style.display="none";
-    assist.style.display=hasActiveEvents?"block":"none";
+    assist.style.display="none";
   }else{
-    tip.textContent=phoneAssistActive?"手机号仅用于辅助查找，不会改变班会报名记录。":"请输入姓名和手机号完成签到。";
+    tip.textContent="请输入姓名，系统会匹配当前活动报名名额。";
     phoneGroup.style.display=hasActiveEvents?"block":"none";
     document.getElementById("phoneLabel").textContent=phoneAssistActive?"手机号（辅助查找）":"手机号";
     assist.style.display="none";
@@ -204,6 +213,7 @@ function selectActivityGroup(key){
   selectedActivityEventId=String(group.selected.event_id||"");
   hideCandidatePanel();
   hideCrossClassPanel();
+  hideCourseTeamPanel();
   document.getElementById("eventPanel").classList.remove("show");
   document.getElementById("multiPanel").classList.remove("show");
   renderActivityCards(activityDisplayEvents,activityResponse&&activityResponse.active_events||[],activityResponse&&activityResponse.next_event,activityResponse);
@@ -257,16 +267,52 @@ function showPhoneAssist(){
 
 async function lookupName(){
   var btn=document.getElementById("submitBtn"),originalText=btn.textContent;
-  btn.disabled=true;btn.textContent="查找中...";hideCandidatePanel();hideCrossClassPanel();
+   btn.disabled=true;btn.textContent="查找中...";hideCandidatePanel();hideCrossClassPanel();hideCourseTeamPanel();
   try{
     var r=await fetch(API+"/checkin/lookup",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({name:pendingName,event_id:selectedActivityEventId||""})});
     var d=await r.json();
     if(d.status==="UNIQUE"){await confirmNameCandidate((d.candidates||[])[0]);}
     else if(d.status==="MULTIPLE"){renderCandidates(d.candidates||[]);m("找到多位同名学长，请选择您本人","success");}
     else if(d.status==="CROSS_CLASS"){renderCrossClassCandidates(d.candidates||[]);}
-    else{m(d.msg||"没有找到这个姓名","error");if(d.phone_assist)document.getElementById("phoneAssistBtn").style.display="block";}
+     else if(d.status==="TEAM_REQUIRED"){showCourseTeamPanel(d);}
+     else if(d.status==="NEEDS_EVENT"){m(d.msg||"请先选择活动","error");}
+     else{m(d.msg||"没有找到这个姓名","error");if(d.phone_assist)document.getElementById("phoneAssistBtn").style.display="block";}
   }catch(e){m("网络错误，请稍后重试","error");}
   btn.disabled=false;btn.textContent=checkinMode==="name"?originalText:"确认签到";
+}
+
+function showCourseTeamPanel(data){
+  pendingEventId=String(data.event_id||selectedActivityEventId||"");
+  document.getElementById("courseTeamText").textContent="没有在当前活动报名表中找到“"+(data.attendee_name||pendingName)+"”。如果您是企业/团队统一报名，请输入报名表中的企业或团队名称；系统会使用一个尚未签到的报名名额。";
+  document.getElementById("courseTeamPanel").classList.add("show");
+  document.getElementById("courseTeamConfirmPanel").classList.remove("show");
+  document.getElementById("courseTeamCompany").focus();
+}
+
+async function lookupCourseTeam(){
+  var company=document.getElementById("courseTeamCompany").value.trim();
+  if(!company){m("请输入报名企业或团队名称","error");return;}
+  var btn=document.getElementById("courseTeamLookupBtn"),old=btn.textContent;btn.disabled=true;btn.textContent="查询中...";
+  try{
+    var r=await fetch(API+"/checkin/team-lookup",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({event_id:pendingEventId||selectedActivityEventId,name:pendingName,company:company})});
+    var d=await r.json();
+    if(!d.ok){m(d.msg||"没有找到团队报名名额","error");return;}
+    courseTeamCandidate=d;
+    document.getElementById("courseTeamConfirmText").textContent=(d.registered_contact_name?"报名联系人："+d.registered_contact_name+"。":"")+"该企业/团队共报名 "+d.total_slots+" 个名额，已使用 "+d.checked_slots+" 个，剩余 "+d.remaining_slots+" 个。确认使用其中一个名额签到吗？";
+    document.getElementById("courseTeamConfirmPanel").classList.add("show");
+  }catch(e){m("网络错误，请稍后重试","error");}
+  finally{btn.disabled=false;btn.textContent=old;}
+}
+
+async function confirmCourseTeam(){
+  if(!courseTeamCandidate){m("请重新查询团队报名名额","error");return;}
+  var btn=document.getElementById("courseTeamConfirmBtn"),old=btn.textContent;btn.disabled=true;btn.textContent="签到中...";
+  try{
+    var r=await fetch(API+"/checkin/team-confirm",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({event_id:courseTeamCandidate.event_id,name:pendingName,company:courseTeamCandidate.company,candidate_token:courseTeamCandidate.candidate_token})});
+    var d=await r.json();
+    if(d.ok)showSuccess(d);else m(d.msg||"签到失败","error");
+  }catch(e){m("网络错误，请稍后重试","error");}
+  finally{btn.disabled=false;btn.textContent=old;}
 }
 
 function renderCandidates(candidates){
@@ -339,7 +385,7 @@ async function confirmNameCandidate(candidate){
   var btn=document.getElementById("submitBtn"),originalText=btn.textContent;
   btn.disabled=true;btn.textContent="签到中...";
   try{
-    var r=await fetch(API+"/checkin/confirm",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({event_id:candidate.event_id,registration_id:candidate.registration_id})});
+     var r=await fetch(API+"/checkin/confirm",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({event_id:candidate.event_id,registration_id:candidate.registration_id,name:candidate.name})});
     var d=await r.json();
     if(d.ok)showSuccess(d);else m(d.msg||"签到失败","error");
   }catch(e){m("网络错误，请稍后重试","error");}
@@ -363,6 +409,7 @@ function showSuccess(d){
   document.getElementById("formCard").style.display="none";
   hideCandidatePanel();
   hideCrossClassPanel();
+  hideCourseTeamPanel();
   document.getElementById("multiPanel").classList.remove("show");
   document.getElementById("eventPanel").classList.remove("show");
   document.getElementById("phoneAssistBtn").style.display="none";
@@ -377,6 +424,9 @@ function showSuccess(d){
   if(d.data.event) info+="活动："+esc(d.data.event.event_date+" · "+d.data.event.activity_type_name+" · "+d.data.event.name)+"<br>";
   if(d.data.attendance_role==="CROSS_CLASS_MEMBER"){
     info+="本次作为外班学长参加"+(d.data.home_class_name?"<br>原班级："+esc(d.data.home_class_name):"")+"<br>";
+  }
+  if(d.data.attendance_role==="COURSE_TEAM_MEMBER"||d.data.attendance_role==="EVENT_TEAM_MEMBER"){
+    info+="本次使用团队报名名额签到"+(d.data.registered_name?"<br>报名登记姓名："+esc(d.data.registered_name):"")+"<br>";
   }
   if(d.data.group_value) info+=esc(d.data.group_type||"分组")+"："+esc(d.data.group_value)+"<br>";
   else if(d.data.class_name) info+="班级："+esc(d.data.class_name)+"<br>";
