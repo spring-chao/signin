@@ -23,9 +23,13 @@ jobs:
           node --check cloudfunc/index.js
           node --check tests/checkin_api.test.js
           node --check tests/admin_import_parser.test.js
+          node --check tests/public_page.test.js
 
       - name: Run API regression tests
         run: node tests/checkin_api.test.js
 
       - name: Run import parser regression tests
         run: node tests/admin_import_parser.test.js
+
+      - name: Run public page regression tests
+        run: node tests/public_page.test.js
