@@ -34,8 +34,11 @@ jobs:
       - name: Prepare public artifact
         shell: bash
         run: |
-          mkdir -p _site
-          cp -R public/. _site/
+          mkdir -p _site/v2 _site/v3
+          cp public/index.html _site/index.html
+          cp public/index.html _site/v2/index.html
+          cp public/index.html _site/v3/index.html
+          cp public/build-info.json _site/build-info.json
           node - <<'NODE'
           const fs = require('fs');
           const path = '_site/build-info.json';
