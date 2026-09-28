@@ -139,7 +139,7 @@ tcb hosting delete /v3/admin.html -e {你的环境ID}
 
 ### 9. 生成二维码
 
-新制作二维码统一使用 CloudBase 静态托管详情中显示的完整域名，例如 `https://{环境ID}-{AppID}.tcloudbaseapp.com/index.html`；已经印刷并指向 `/v2/index.html` 或 `/v3/index.html` 的旧二维码继续兼容。不要省略域名中的 `-{AppID}` 后缀，否则该地址无法访问。
+当前应急正式入口为 `https://spring-chao.github.io/signin/`，新制作的签到二维码统一指向该地址。不要继续把 CloudBase 默认域名 `*.tcloudbaseapp.com` 用作扫码入口：平台可能对微信等非标准导航请求添加 `Content-Disposition: attachment`，导致下载提示或风险拦截。后续绑定已备案的自定义域名后，再将二维码统一迁移到自定义域名。
 
 ---
 

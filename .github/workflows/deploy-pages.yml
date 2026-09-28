@@ -1,0 +1,57 @@
+name: Deploy public check-in page
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "public/**"
+      - ".github/workflows/deploy-pages.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure Pages
+        uses: actions/configure-pages@v5
+
+      - name: Prepare public artifact
+        shell: bash
+        run: |
+          mkdir -p _site
+          cp -R public/. _site/
+          node - <<'NODE'
+          const fs = require('fs');
+          const path = '_site/build-info.json';
+          const info = JSON.parse(fs.readFileSync(path, 'utf8'));
+          info.version = `${new Date().toISOString().replace(/[-:]/g, '').replace(/\..*/, '')}-${process.env.GITHUB_SHA.slice(0, 7)}`;
+          info.commit = process.env.GITHUB_SHA;
+          info.deployed_at = new Date().toISOString();
+          info.environment = 'github-pages';
+          fs.writeFileSync(path, `${JSON.stringify(info, null, 2)}\n`);
+          NODE
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
