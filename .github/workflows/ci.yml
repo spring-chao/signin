@@ -21,12 +21,28 @@ jobs:
       - name: Check JavaScript syntax
         run: |
           node --check cloudfunc/index.js
+          node --check cloudfunc/platform-service.js
           node --check tests/checkin_api.test.js
+          node --check tests/course_checkin.test.js
+          node --check tests/platform_integration.test.js
+          node --check tests/cloudbase_sdk_contract.test.js
+          node --check scripts/staging/serve-engine.js
           node --check tests/admin_import_parser.test.js
           node --check tests/public_page.test.js
 
       - name: Run API regression tests
         run: node tests/checkin_api.test.js
+
+      - name: Run course and team regression tests
+        run: node tests/course_checkin.test.js
+
+      - name: Run platform integration and concurrency tests
+        run: node tests/platform_integration.test.js
+
+      - name: Verify official CloudBase transaction contract
+        run: |
+          npm ci --prefix cloudfunc --ignore-scripts --no-audit --no-fund
+          node tests/cloudbase_sdk_contract.test.js
 
       - name: Run import parser regression tests
         run: node tests/admin_import_parser.test.js

@@ -1,6 +1,11 @@
 const cloudbase = require("@cloudbase/node-sdk");
 const crypto = require("crypto");
 const https = require("https");
+const http = require("http");
+const {
+  TRUSTED_CONTEXT, MANAGEMENT_OPERATIONS, verifyServiceKey, normalizeManagementContext,
+  eventInScope, redact, ensureCrossRegistration, persistCheckin, verifyCheckinTicket, documentData, requireDatabaseSuccess
+} = require("./platform-service");
 
 let BUILD_INFO = {
   version: "unknown",
@@ -18,6 +23,7 @@ const LOGIN_RATE_LIMIT_WINDOW_MS = 15 * 60 * 1000;
 const LOGIN_RATE_LIMIT_MAX_FAILURES = 5;
 const loginFailures = new Map();
 let testOpsRequestHandler = null;
+let testPlatformRequestHandler = null;
 const REQUIRED_COLLECTIONS = ["config", "events", "registrations", "checkins", "event_audit_logs"];
 const ATTENDANCE_ROLES = {
   HOME_CLASS_MEMBER: "HOME_CLASS_MEMBER",
@@ -351,12 +357,20 @@ exports._test = {
   adminOperationErrorMessage,
   setRequestOpsHandler(handler) {
     testOpsRequestHandler = typeof handler === "function" ? handler : null;
+  },
+  setPlatformRequestHandler(handler) {
+    testPlatformRequestHandler = typeof handler === "function" ? handler : null;
   }
 };
 
 exports.main = async (event, context) => {
-  const app = cloudbase.init({ env: "shengheshu-d2g2zyyl99f6c6fc2" });
+  const configuredEnvironment = String(process.env.SIGNIN_CLOUDBASE_ENV_ID || "").trim();
+  const deploymentMode = String(process.env.SIGNIN_DEPLOYMENT_MODE || BUILD_INFO.environment || "").toLowerCase();
+  const legacyProductionEnvironment = "shengheshu-d2g2zyyl99f6c6fc2";
+  if (deploymentMode === "staging" && (!configuredEnvironment || configuredEnvironment === legacyProductionEnvironment || !/^[a-z0-9][a-z0-9-]{2,63}$/.test(configuredEnvironment) || /replace|placeholder|example|todo/i.test(configuredEnvironment))) throw new Error("ISOLATED_STAGING_ENVIRONMENT_REQUIRED");
+  const app = cloudbase.init({ env: configuredEnvironment || legacyProductionEnvironment });
   const db = app.database();
+  let platformContext = context && context[TRUSTED_CONTEXT] || null;
   const method = event.httpMethod || "GET";
   const p = event.path || "/";
   const query = event.queryStringParameters || {};
@@ -427,12 +441,15 @@ exports.main = async (event, context) => {
 
   function requestJson(urlText, headers, method, body, timeoutMs) {
     const url = new URL(urlText);
+    if (url.protocol !== "https:" && !(url.protocol === "http:" && ["127.0.0.1", "localhost", "[::1]"].includes(url.hostname))) return Promise.reject(new Error("不允许不安全的运营服务地址"));
     const payload = body === undefined ? null : Buffer.from(JSON.stringify(body));
     return new Promise((resolve, reject) => {
-      const req = https.request({
+      let deadline;
+      const transport = url.protocol === "http:" ? http : https;
+      const req = transport.request({
         method: method || "GET",
         hostname: url.hostname,
-        port: url.port || 443,
+        port: url.port || (url.protocol === "http:" ? 80 : 443),
         path: url.pathname + url.search,
         headers: {
           Accept: "application/json",
@@ -447,6 +464,7 @@ exports.main = async (event, context) => {
         const chunks = [];
         response.on("data", chunk => chunks.push(chunk));
         response.on("end", () => {
+          clearTimeout(deadline);
           const text = Buffer.concat(chunks).toString("utf8");
           let payload = {};
           try { payload = text ? JSON.parse(text) : {}; } catch (e) {
@@ -458,8 +476,9 @@ exports.main = async (event, context) => {
           resolve(payload);
         });
       });
+      deadline = setTimeout(() => req.destroy(new Error("连接运营系统超时")), timeoutMs || 20000);
       req.on("timeout", () => req.destroy(new Error("连接运营系统超时")));
-      req.on("error", reject);
+      req.on("error", error => { clearTimeout(deadline); reject(error); });
       if (payload) req.write(payload);
       req.end();
     });
@@ -491,7 +510,7 @@ exports.main = async (event, context) => {
     const validation = validateRosterIntegrity(
       await requestOps("/api/v1/checkin-rosters/validate")
     );
-    const syncResult = await requestJson(
+    const syncResult = testPlatformRequestHandler ? await testPlatformRequestHandler("/api/v1/attendance/sync/scheduled", {}) : await requestJson(
       connection.base + "/api/v1/attendance/sync/scheduled",
       { "X-API-Key": connection.apiKey },
       "POST",
@@ -501,7 +520,70 @@ exports.main = async (event, context) => {
     return { validation, syncResult };
   }
 
+  async function deliverCheckin(checkin) {
+    if (!checkin || checkin.sync_state !== "PENDING") return true;
+    try {
+      const connection = resolveOpsConnection(process.env);
+      const body = { event_id: checkin.batch_id, registration_id: checkin.registration_id };
+      let result;
+      if (testPlatformRequestHandler) result = await testPlatformRequestHandler("/api/v1/attendance/sync/immediate", body);
+      else {
+        const apiKey = String(process.env.SIGNIN_SERVICE_API_KEY || "");
+        if (!connection.base || !apiKey) throw new Error("SYNC_CONNECTION_UNAVAILABLE");
+        result = await requestJson(connection.base + "/api/v1/attendance/sync/immediate", { "X-API-Key": apiKey }, "POST", body, 2000);
+      }
+      if (!result || result.success !== true || !result.data || !["SUCCESS", "COMPLETED"].includes(String(result.data.status || "").toUpperCase())) throw new Error("SYNC_NOT_COMPLETED");
+      requireDatabaseSuccess(await db.collection("checkins").doc(checkin._id).update({ sync_state: "DELIVERED", sync_delivered_at: new Date().toISOString(), sync_last_error_code: "" }));
+      return true;
+    } catch (error) {
+      // Do not save response bodies or credentials in the durable retry state.
+      try {
+        await db.runTransaction(async transaction => {
+          const doc = transaction.collection("checkins").doc(checkin._id);
+          const latest = documentData(await doc.get());
+          if (!latest || latest.sync_state === "DELIVERED") return;
+          const attempts = Number(latest.sync_attempts || 0) + 1;
+          requireDatabaseSuccess(await doc.update({
+            sync_state: "PENDING", sync_attempts: attempts, sync_last_error_code: "PLATFORM_SYNC_UNAVAILABLE",
+            sync_next_retry_at: new Date(Date.now() + Math.min(60 * 60 * 1000, 30000 * Math.pow(2, Math.min(attempts, 7)))).toISOString()
+          }));
+        });
+      } catch (deliveryStateError) { /* Atomic pending state remains recoverable. */ }
+      return false;
+    }
+  }
+
+  async function saveCheckin(row, registrationPatch, options) {
+    options = { ...(options || {}) };
+    if (!options.deferDelivery) {
+      const eventItem = await getEventById(row.batch_id);
+      if (!eventItem) throw new Error("CHECKIN_EVENT_CLOSED");
+      options.eventDocumentId = eventItem._id;
+      options.validateEvent = isPublicCheckinEligible;
+    }
+    if (platformContext && platformContext.member) {
+      row = { ...row, platform_member_id: platformContext.member.member_id, member_code: platformContext.member.member_code, checkin_source: "WECHAT" };
+    } else if (platformContext && platformContext.operation === "manual_checkin") row = { ...row, checkin_source: "MANUAL" };
+    const saved = await persistCheckin(db, row, registrationPatch, options);
+    if (!(options && options.deferDelivery)) await deliverCheckin({ ...saved.checkin, _id: saved.id });
+    return saved;
+  }
+
+  async function retryPendingCheckins() {
+    const pending = (await db.collection("checkins").where({ sync_state: "PENDING" }).orderBy("sync_next_retry_at", "asc").limit(40).get()).data || [];
+    const due = pending.filter(row => !row.sync_next_retry_at || Date.parse(row.sync_next_retry_at) <= Date.now()).slice(0, 40);
+    let delivered = 0;
+    for (const row of due) if (await deliverCheckin(row)) delivered++;
+    return { pending_count: pending.length, attempted_count: due.length, delivered_count: delivered };
+  }
+
+  if (String(event.Type || event.type || "").toLowerCase() === "timer" && String(event.TriggerName || event.triggerName || "") === "attendanceSyncRetryEvery5Minutes") {
+    return { ok: true, action: "platform_attendance_retry", ...await retryPendingCheckins() };
+  }
+
   if (isScheduledAttendanceSyncEvent(event)) {
+    // Preserve the original scheduled pull's time budget. Durable retry uses
+    // its separate five-minute timer rather than preceding the full pull.
     const result = await requestScheduledAttendanceSync();
     return {
       ok: true,
@@ -842,7 +924,7 @@ exports.main = async (event, context) => {
     let query = db.collection("events");
     if (hasEventQueryCondition(where)) query = query.where(where);
     const keyword = String(filters && filters.keyword || "").trim();
-    const needsClientFiltering = !db.command || typeof db.command.exists !== "function" ||
+    const needsClientFiltering = Boolean(platformContext && platformContext.management) || !db.command || typeof db.command.exists !== "function" ||
       (keyword && typeof db.RegExp !== "function") ||
       (lifecycle === "DRAFT" && (!db.command || typeof db.command.exists !== "function"));
     if (needsClientFiltering) {
@@ -850,7 +932,7 @@ exports.main = async (event, context) => {
       // regex queries. Filter before slicing so page boundaries remain valid.
       const result = await orderEventListQuery(query).limit(10000).get();
       const filtered = (result.data || [])
-        .filter(item => matchesEventListFilter(item, filters || {}))
+        .filter(item => matchesEventListFilter(item, filters || {}) && eventInScope(item, platformContext))
         .filter(isLogicalActivityAnchor)
         .sort(compareEventListOrder);
       const offset = (page - 1) * pageSize;
@@ -870,7 +952,7 @@ exports.main = async (event, context) => {
     if (hasEventQueryCondition(where)) query = query.where(where);
     const result = await orderEventListQuery(query).limit(1000).get();
     const rows = (result.data || []).sort(compareEventListOrder);
-    return (!db.command ? rows.filter(item => matchesEventListFilter(item, filters)) : rows);
+    return (!db.command ? rows.filter(item => matchesEventListFilter(item, filters)) : rows).filter(item => eventInScope(item, platformContext));
   }
 
   async function getEventsByDate(eventDate) {
@@ -965,7 +1047,8 @@ exports.main = async (event, context) => {
       scheduled_end_at: item.scheduled_end_at || "",
       group_field: item.group_field || "",
       org_unit_id: item.org_unit_id || "",
-      class_org_unit_id: item.class_org_unit_id || ""
+      class_org_unit_id: item.class_org_unit_id || "", group_org_unit_id: item.group_org_unit_id || "",
+      center_name: item.center_name || item.center || "", class_name: item.class_name || "", group_name: item.group_name || ""
     };
   }
 
@@ -1012,6 +1095,11 @@ exports.main = async (event, context) => {
   }
 
   async function getAuthSecret() {
+    if (platformContext && (platformContext.management || platformContext.service_request)) {
+      const key = String(process.env.SIGNIN_PLATFORM_API_KEY || "");
+      if (!key) throw new Error("PLATFORM_SERVICE_AUTH_UNAVAILABLE");
+      return crypto.createHmac("sha256", key).update("platform-workflow-tokens-v1").digest("hex");
+    }
     var secret = await getConfig("admin_auth_secret", "");
     if (!secret) {
       secret = crypto.randomBytes(32).toString("hex");
@@ -1060,6 +1148,7 @@ exports.main = async (event, context) => {
   }
 
   async function isAdminRequest() {
+    if (platformContext && platformContext.management) return true;
     const headers = event.headers || {};
     const auth = headers.authorization || headers.Authorization || "";
     const token = auth.replace(/^Bearer\s+/i, "") || data.token || "";
@@ -1074,6 +1163,23 @@ exports.main = async (event, context) => {
     } catch (e) {
       return false;
     }
+  }
+
+  async function validateManagementOrganization(item) {
+    const classId = String(item.class_org_unit_id || ""), groupId = String(item.group_org_unit_id || ""), regionId = String(item.org_unit_id || "");
+    if (!classId && !groupId) return;
+    const options = validateOpsRosterOptions(await requestOps("/api/v1/checkin-rosters/options"));
+    const selectedClass = options.classes.find(row => String(row.id) === classId);
+    if (!selectedClass || !regionId) throw new Error("ACTIVITY_ORGANIZATION_HIERARCHY_INVALID");
+    const allowedOwners = new Set([classId, String(selectedClass.parent_id || selectedClass.org_unit_id || "")].filter(Boolean));
+    if (groupId) {
+      const selectedGroup = options.groups.find(row => String(row.id) === groupId);
+      if (!selectedGroup || String(selectedGroup.parent_id || "") !== classId) throw new Error("ACTIVITY_ORGANIZATION_HIERARCHY_INVALID");
+      allowedOwners.add(groupId);
+    }
+    // The platform uses the most specific owner as primary org_unit_id;
+    // preserve older center/class ancestors only after validating this chain.
+    if (!allowedOwners.has(regionId)) throw new Error("ACTIVITY_ORGANIZATION_HIERARCHY_INVALID");
   }
 
   function unauthorized() {
@@ -1104,8 +1210,244 @@ exports.main = async (event, context) => {
     return { statusCode: 200, headers: h, body: JSON.stringify({ ok: true, token: await issueAdminToken(), expires_in: ADMIN_TOKEN_TTL_MS / 1000 }) };
   }
 
-  const protectedPaths = new Set(["/settings", "/admin_password", "/admin_events", "/event_update", "/event_lifecycle_update", "/registration", "/registration_delete", "/attendance_status", "/export", "/stats", "/ops_roster_options", "/ops_roster_members", "/class_roster_reconciliation", "/sync_class_roster", "/upload_preview", "/upload", "/reset", "/clear_all", "/create_class_meeting_sessions"]);
+  const protectedPaths = new Set(["/settings", "/admin_password", "/admin_events", "/event_detail", "/import_preview", "/import_apply", "/event_update", "/event_lifecycle_update", "/registration", "/registration_delete", "/attendance_status", "/export", "/stats", "/ops_roster_options", "/ops_roster_members", "/class_roster_reconciliation", "/sync_class_roster", "/upload_preview", "/upload", "/reset", "/clear_all", "/create_class_meeting_sessions"]);
   if (protectedPaths.has(p) && !(await isAdminRequest())) return unauthorized();
+
+  if (p.startsWith("/ops/v1/manage/")) {
+    if (method !== "POST") return { statusCode: 405, headers: h, body: JSON.stringify({ ok: false, code: "METHOD_NOT_ALLOWED" }) };
+    if (!verifyServiceKey(event.headers, process.env.SIGNIN_PLATFORM_API_KEY)) return { statusCode: 401, headers: h, body: JSON.stringify({ ok: false, code: "SERVICE_AUTH_REQUIRED" }) };
+    const operation = p.slice("/ops/v1/manage/".length);
+    const spec = MANAGEMENT_OPERATIONS[operation];
+    if (!spec) return { statusCode: 404, headers: h, body: JSON.stringify({ ok: false, code: "OPERATION_NOT_ALLOWED" }) };
+    try {
+      const trusted = normalizeManagementContext(data, spec, operation);
+      trusted.operation = operation;
+      trusted.allow_empty_activity = operation === "create_event";
+      const payload = data.payload && typeof data.payload === "object" && !Array.isArray(data.payload) ? { ...data.payload } : {};
+      let targetEvent = null, targetRegistration = null;
+      if (spec.registration) {
+        targetRegistration = (await getAll("registrations", 1, { _id: String(payload.registration_id || "") }))[0];
+        if (!targetRegistration) throw new Error("REGISTRATION_NOT_FOUND");
+        if (payload.event_id && String(payload.event_id) !== String(targetRegistration.batch_id)) throw new Error("REGISTRATION_EVENT_MISMATCH");
+        payload.event_id = String(targetRegistration.batch_id || "");
+      }
+      if (spec.create || spec.roster) {
+        const owner = payload.group_org_unit_id || payload.class_org_unit_id || payload.org_unit_id;
+        if (!owner || !eventInScope(payload, trusted)) throw new Error("ACTIVITY_ORGANIZATION_REQUIRED");
+        if (spec.create) await validateManagementOrganization(payload);
+        if (operation === "create_class_meeting_sessions") {
+          if (!payload.class_org_unit_id || !payload.org_unit_id) throw new Error("CLASS_ORGANIZATION_REQUIRED");
+          // New management never accepts a browser-authored class snapshot.
+          const params = { class_org_unit_id: String(payload.class_org_unit_id), group_org_unit_id: "" };
+          const roster = validateOpsRosterData(await requestOps("/api/v1/checkin-rosters/members", params), params);
+          payload.roster_members = roster.members;
+          payload.roster_source = "ops_roster";
+          payload.roster_version = roster.version || "";
+          trusted.roster_verified = true;
+        } else if (spec.create && ["class_meeting", "group_meeting"].includes(String(payload.activity_type || ""))) {
+          const params = buildOpsRosterParams(payload, payload.activity_type === "group_meeting" ? "group" : "class");
+          if (!params.class_org_unit_id || (payload.activity_type === "group_meeting" && !params.group_org_unit_id)) throw new Error("STUDY_ORGANIZATION_REQUIRED");
+          const roster = validateOpsRosterData(await requestOps("/api/v1/checkin-rosters/members", params), params);
+          payload.attendees = roster.members.map(member => ({ ...member, platform_member_id: member.member_id, company: member.company_name || member.company }));
+          trusted.roster_verified = true;
+        }
+      } else if (!spec.list && !spec.global) {
+        if (!payload.event_id) throw new Error("EVENT_ID_REQUIRED");
+        targetEvent = await getEventById(payload.event_id);
+        if (!targetEvent || !eventInScope(targetEvent, trusted)) throw new Error("EVENT_SCOPE_DENIED");
+        // Group handlers may affect more than the selected session.
+        if (targetEvent.event_group_id && (await getEventGroupById(targetEvent.event_group_id)).some(item => !eventInScope(item, trusted))) throw new Error("EVENT_GROUP_SCOPE_DENIED");
+      }
+      if (operation === "display_settings") {
+        for (const key of Object.keys(payload)) if (!["show_group", "show_dinner_table"].includes(key)) throw new Error("SETTING_NOT_ALLOWED");
+      }
+      if (operation === "event_update") {
+        const merged = { ...targetEvent, ...payload };
+        if (!eventInScope(merged, trusted)) throw new Error("EVENT_SCOPE_DENIED");
+        await validateManagementOrganization(merged);
+      }
+      if (operation === "manual_checkin") {
+        const registrations = await rowsForBatch("registrations", String(targetEvent.event_id || targetEvent._id), 5000);
+        if (isTeamRegistrationSlot(targetRegistration, registrations)) throw new Error("TEAM_ACTUAL_ATTENDEE_REQUIRED");
+      }
+      const before = redact(targetRegistration || targetEvent);
+      let auditId = "";
+      if (spec.mutation) {
+        const written = await db.collection("event_audit_logs").add({
+          actor: trusted.actor.id, action: "platform." + operation,
+          target: payload.registration_id || payload.event_id || "new_activity",
+          timestamp: new Date().toISOString(), before, after: null, result: "PENDING"
+        });
+        auditId = written.id || written._id;
+      }
+      let delegatedPath = spec.path || "/" + operation;
+      if (operation === "create_event") {
+        payload.attendees = trusted.roster_verified ? payload.attendees : [];
+        const previewResponse = await exports.main({ path: "/upload_preview", httpMethod: "POST", headers: {}, body: JSON.stringify(payload) }, { [TRUSTED_CONTEXT]: trusted });
+        const preview = JSON.parse(previewResponse.body);
+        if (!preview.ok) {
+          if (auditId) await db.collection("event_audit_logs").doc(auditId).update({ result: "REJECTED" });
+          return previewResponse;
+        }
+        payload.preview_issued_at = preview.preview_issued_at;
+        payload.preview_token = preview.preview_token;
+        delegatedPath = "/upload";
+      }
+      const response = await exports.main({
+        path: delegatedPath, httpMethod: spec.method, headers: {},
+        queryStringParameters: spec.method === "GET" ? payload : {},
+        body: spec.method === "POST" ? JSON.stringify(payload) : ""
+      }, { [TRUSTED_CONTEXT]: trusted });
+      const result = response.body ? JSON.parse(response.body) : {};
+      // Roster options are sourced centrally but are still restricted to this
+      // operator's expanded organizational scope.
+      if (operation === "ops_roster_options" && trusted.allowed_org_unit_ids !== null) {
+        if (Array.isArray(result.groups)) result.groups = result.groups.filter(item => trusted.allowed_org_unit_ids.includes(String(item.id)));
+        const parentClasses = new Set((result.groups || []).map(item => String(item.parent_id || "")));
+        if (Array.isArray(result.classes)) result.classes = result.classes.filter(item => trusted.allowed_org_unit_ids.includes(String(item.id)) || parentClasses.has(String(item.id)));
+        for (const field of ["special_cohorts", "centers", "org_units"]) if (Array.isArray(result[field])) result[field] = result[field].filter(item => trusted.allowed_org_unit_ids.includes(String(item.id)) || (result.classes || []).some(child => String(child.parent_id || "") === String(item.id)));
+      }
+      if (auditId) {
+        const afterEventId = result.event_id || payload.event_id || result.events && result.events[0] && result.events[0].event_id;
+        const after = result.ok === false ? before : redact(payload.registration_id ? (await getAll("registrations", 1, { _id: String(payload.registration_id) }))[0] || null : result.event || (afterEventId ? await getEventById(afterEventId) : result));
+        const audit = { actor: trusted.actor.id, action: "platform." + operation, target: payload.registration_id || afterEventId || "display_settings", before, after, timestamp: new Date().toISOString() };
+        await db.collection("event_audit_logs").doc(auditId).update({ ...audit, result: result.ok === false ? "REJECTED" : "SUCCESS" });
+        result.audit = audit;
+      }
+      const sanitized = operation === "export" ? result : redact(result);
+      if (operation === "upload_preview" || operation === "import_preview") sanitized.preview_token = result.preview_token;
+      response.body = JSON.stringify(sanitized);
+      return response;
+    } catch (error) {
+      const code = /^[A-Z_]+$/.test(String(error.message)) ? String(error.message) : "MANAGEMENT_UNAVAILABLE";
+      return { statusCode: /PERMISSION|SCOPE|ORGANIZATION/.test(code) ? 403 : code === "MANAGEMENT_UNAVAILABLE" ? 503 : 400, headers: h, body: JSON.stringify({ ok: false, code, msg: "平台签到管理请求未通过校验" }) };
+    }
+  }
+
+  if (p === "/native/v1/checkin/confirm") {
+    if (method !== "POST") return { statusCode: 405, headers: h, body: JSON.stringify({ ok: false, code: "METHOD_NOT_ALLOWED" }) };
+    let authorized;
+    try {
+      if (Object.keys(data).some(key => key !== "ticket")) throw new Error("CHECKIN_TICKET_INVALID");
+      authorized = verifyCheckinTicket(data.ticket, String(process.env.SIGNIN_PLATFORM_API_KEY || ""));
+    } catch (error) {
+      return { statusCode: 401, headers: h, body: JSON.stringify({ ok: false, code: "CHECKIN_TICKET_INVALID", msg: "签到授权已失效，请重新打开活动签到页" }) };
+    }
+    try {
+      return await exports.main({ path: "/ops/v1/member-checkin/confirm", httpMethod: "POST", headers: { "X-API-Key": process.env.SIGNIN_PLATFORM_API_KEY }, body: JSON.stringify({ event_id: authorized.event_id, member: authorized.member }) }, { [TRUSTED_CONTEXT]: { ticket_member: authorized.member, management: false } });
+    } catch (error) {
+      return { statusCode: 503, headers: h, body: JSON.stringify({ ok: false, code: "CHECKIN_ENGINE_UNAVAILABLE", msg: "签到服务暂时不可用，请稍后重试" }) };
+    }
+  }
+
+  if (["/ops/v1/member-checkin/events", "/ops/v1/member-checkin/lookup", "/ops/v1/member-checkin/confirm"].includes(p)) {
+    if (method !== "POST") return { statusCode: 405, headers: h, body: JSON.stringify({ ok: false, code: "METHOD_NOT_ALLOWED" }) };
+    if (!verifyServiceKey(event.headers, process.env.SIGNIN_PLATFORM_API_KEY)) return { statusCode: 401, headers: h, body: JSON.stringify({ ok: false, code: "SERVICE_AUTH_REQUIRED" }) };
+    platformContext = { ...(platformContext || {}), service_request: true };
+    if (p.endsWith("/events")) return { statusCode: 200, headers: h, body: JSON.stringify({ ok: true, events: (await getTodayEvents()).filter(item => isPublicCheckinEligible(item) || isPublicUpcoming(item)).map(publicEvent), fallback_url: "https://spring-chao.github.io/signin/" }) };
+    const member = data.member || {};
+    const memberId = String(member.member_id || "").trim(), memberCode = String(member.member_code || "").trim();
+    if ((!memberId || !memberCode) && p.endsWith("/lookup")) {
+      const eventItem = await getEventById(String(data.event_id || ""));
+      return { statusCode: 200, headers: h, body: JSON.stringify({ ok: Boolean(eventItem), event: eventItem ? publicEvent(eventItem) : null, registration: null, can_checkin: false, status: "UNBOUND", requires_binding: true, msg: "请先完成学员身份绑定" }) };
+    }
+    if (!memberId || !memberCode) return { statusCode: 400, headers: h, body: JSON.stringify({ ok: false, status: "UNBOUND", msg: "请先完成学员身份绑定" }) };
+    try {
+      const eventId = String(data.event_id || "").trim();
+      const eventItem = await getEventById(eventId);
+      if (p.endsWith("/lookup") && eventItem && isPublicUpcoming(eventItem)) return { statusCode: 200, headers: h, body: JSON.stringify({ ok: true, status: "UPCOMING", event: publicEvent(eventItem), registration: null, can_checkin: false, already_checked_in: false, notice: "签到尚未开放" }) };
+      if (!eventItem || !isPublicCheckinEligible(eventItem)) return { statusCode: 200, headers: h, body: JSON.stringify({ ok: false, status: "NO_EVENT", event: eventItem ? publicEvent(eventItem) : null, msg: "当前活动已关闭或尚未开始" }) };
+      const rows = await rowsForBatch("registrations", eventId, 5000);
+      // ID is authoritative. Member code only locates a historical row without
+      // a platform ID; it cannot override a conflicting recorded identity.
+      const matches = rows.filter(row => String(row.platform_member_id || "") === memberId || (!row.platform_member_id && String(row.member_code || "") === memberCode));
+      if (matches.some(row => isTeamRegistrationSlot(row, rows))) return { statusCode: p.endsWith("/lookup") ? 200 : 409, headers: h, body: JSON.stringify({ ok: p.endsWith("/lookup"), status: "TEAM_FALLBACK", event: publicEvent(eventItem), can_checkin: false, requires_fallback: true, fallback_available: true, msg: "团队报名需确认实际参加人，请使用团队备用签到" }) };
+      if (matches.length > 1) return { statusCode: 200, headers: h, body: JSON.stringify({ ok: false, status: "IDENTITY_CONFLICT", msg: "本人报名记录不唯一，请联系现场工作人员" }) };
+      let registration = matches[0];
+      let crossCandidate = null;
+      if (!registration && isClassMeetingEvent(eventItem) && eventItem.class_org_unit_id) {
+        const candidates = await lookupCrossClassMembers(eventItem, String(member.name || ""));
+        const verified = candidates.filter(item => String(item.member_id || "") === memberId && String(item.member_code || "") === memberCode);
+        if (verified.length === 1) crossCandidate = await publicCrossClassCandidate(eventItem, verified[0]);
+      }
+      if (!registration && !crossCandidate) return { statusCode: p.endsWith("/lookup") ? 200 : 409, headers: h, body: JSON.stringify({ ok: p.endsWith("/lookup"), status: "NOT_REGISTERED", event: publicEvent(eventItem), can_checkin: false, requires_fallback: true, fallback_available: true, msg: "当前活动没有本人报名记录，请使用来宾或团队备用签到" }) };
+      if (p.endsWith("/lookup")) {
+        const checkins = registration ? await rowsForBatch("checkins", eventId, 5000) : [];
+        const existing = registration && checkins.find(row => String(row.registration_id) === String(registration._id));
+        return { statusCode: 200, headers: h, body: JSON.stringify({ ok: true, status: crossCandidate ? "CROSS_CLASS" : "READY", event: publicEvent(eventItem), registration_id: registration && registration._id || "", registration: registration ? { ...redact(registration), id: registration._id, registration_id: registration._id } : null, cross_class_member: Boolean(crossCandidate), member: { member_id: memberId, member_code: memberCode, name: member.name || "" }, checked_in: Boolean(existing), already_checked_in: Boolean(existing), can_checkin: !existing, checked_at: existing && existing.checked_at || "", candidate: crossCandidate }) };
+      }
+      if (registration && data.registration_id && String(data.registration_id) !== String(registration._id)) return { statusCode: 403, headers: h, body: JSON.stringify({ ok: false, status: "REGISTRATION_MISMATCH" }) };
+      const response = await exports.main({
+        path: crossCandidate ? "/checkin/cross-confirm" : "/checkin/confirm", httpMethod: "POST", headers: {},
+        body: JSON.stringify(crossCandidate ? { event_id: eventId, name: member.name, candidate_token: crossCandidate.candidate_token } : { event_id: eventId, registration_id: registration._id, name: registration.name })
+      }, { [TRUSTED_CONTEXT]: { member: { member_id: memberId, member_code: memberCode }, ticket_member: platformContext && platformContext.ticket_member, service_request: true, management: false } });
+      const result = JSON.parse(response.body);
+      if (result.ok) {
+        const committed = (await rowsForBatch("checkins", eventId, 5000)).find(row => String(row.platform_member_id || "") === memberId || String(row.member_code || "") === memberCode);
+        result.sync_status = committed && committed.sync_state === "DELIVERED" ? "SYNCED" : "PENDING";
+        response.body = JSON.stringify(result);
+      }
+      return response;
+    } catch (error) {
+      return { statusCode: 503, headers: h, body: JSON.stringify({ ok: false, status: "ERROR", code: "CHECKIN_ENGINE_UNAVAILABLE", msg: "身份签到服务暂时不可用，请稍后重试" }) };
+    }
+  }
+
+  if (p === "/event_detail" && method === "GET" && platformContext && platformContext.management) {
+    const eventItem = await getEventById(query.event_id);
+    if (!eventItem || !eventInScope(eventItem, platformContext)) return { statusCode: 404, headers: h, body: JSON.stringify({ ok: false, code: "EVENT_NOT_FOUND" }) };
+    const eventId = String(eventItem.event_id || eventItem._id);
+    const registrations = await rowsForBatch("registrations", eventId, 5000);
+    const checkins = await rowsForBatch("checkins", eventId, 5000);
+    const state = buildAttendanceState(registrations, checkins);
+    const rows = registrations.map((reg, index) => {
+      const checkin = state.checkinByIndex.get(index);
+      const role = registrationAttendanceRole(reg, eventItem);
+      return {
+        registration_id: String(reg._id), name: checkin && (checkin.actual_attendee_name || checkin.name) || reg.name,
+        registered_name: reg.registered_name || reg.name, actual_attendee_name: checkin && (checkin.actual_attendee_name || checkin.name) || reg.actual_attendee_name || "",
+        checked: Boolean(checkin), checked_at: checkin && checkin.checked_at || "", attendance_status: checkin ? "present" : normalizeAttendanceStatus(reg.attendance_status),
+        attendance_role: role, attendance_role_label: role === ATTENDANCE_ROLES.CROSS_CLASS_MEMBER ? "外班学长" : role === ATTENDANCE_ROLES.HOME_CLASS_MEMBER ? "本班学长" : role === ATTENDANCE_ROLES.EVENT_TEAM_MEMBER || role === ATTENDANCE_ROLES.COURSE_TEAM_MEMBER ? "团队报名名额" : "活动报名",
+        home_class_name: reg.home_class_name || reg.class_name || "", class_name: reg.class_name || "", center: reg.center || "", company: reg.company || "", group_name: reg.group_name || "",
+        is_team: isTeamRegistrationSlot(reg, registrations),
+        platform_member_id: reg.platform_member_id || "", member_code: reg.member_code || ""
+      };
+    });
+    const sessions = eventItem.event_group_id ? (await getEventGroupById(eventItem.event_group_id)).map(publicEvent) : [publicEvent(eventItem)];
+    return { statusCode: 200, headers: h, body: JSON.stringify({ ok: true, event: publicEvent(eventItem), sessions, rows, total: rows.length, checked: state.checkedIndexes.size }) };
+  }
+
+  if (["/import_preview", "/import_apply"].includes(p) && method === "POST" && platformContext && platformContext.management) {
+    const eventItem = await getEventById(data.event_id);
+    if (!eventItem || !eventInScope(eventItem, platformContext)) return { statusCode: 404, headers: h, body: JSON.stringify({ ok: false, code: "EVENT_NOT_FOUND" }) };
+    if (["class_meeting", "group_meeting"].includes(normalizeActivityType(eventItem.activity_type))) return { statusCode: 200, headers: h, body: JSON.stringify({ ok: false, msg: "正式班级/小组名单请从运营组织关系同步" }) };
+    const eventId = String(eventItem.event_id || eventItem._id);
+    const current = await rowsForBatch("registrations", eventId, 5000);
+    const checkins = await rowsForBatch("checkins", eventId, 5000);
+    if (lifecycleStatus(eventItem) === "CANCELLED" || eventItem.status === "closed" || checkins.length || eventTimeState(eventItem) !== "upcoming") return { statusCode: 200, headers: h, body: JSON.stringify({ ok: false, code: "ACTIVITY_ALREADY_STARTED", msg: "只允许在签到开始前追加名单；现有报名和签到事实不会被覆盖" }) };
+    const localDateTime = value => new Date(Date.parse(value) + 8 * 3600000).toISOString().slice(0, 16);
+    const normalized = normalizeUploadPayload({ ...data, event_name: eventItem.name, event_date: eventItem.event_date, activity_type: eventItem.activity_type, checkin_start_at: localDateTime(eventItem.checkin_start_at), checkin_end_at: localDateTime(eventItem.checkin_end_at), restore_checkins: false });
+    if (normalized.error) return { statusCode: 200, headers: h, body: JSON.stringify({ ok: false, msg: normalized.error }) };
+    if (current.length + normalized.normalizedRows.length > 5000) return { statusCode: 200, headers: h, body: JSON.stringify({ ok: false, msg: "活动报名数据不能超过5000条" }) };
+    const stateHash = crypto.createHash("sha256").update(JSON.stringify([publicEvent(eventItem), activeRegistrationFingerprint(current)])).digest("hex");
+    if (p === "/import_preview") {
+      const issuedAt = Date.now();
+      return { statusCode: 200, headers: h, body: JSON.stringify({ ok: true, event_id: eventId, old_total: current.length, new_total: current.length + normalized.normalizedRows.length, added: normalized.normalizedRows.length, removed: 0, preview_issued_at: issuedAt, preview_token: await signUploadPreview(normalized, "append:" + eventId, stateHash, issuedAt) }) };
+    }
+    if (!(await verifyUploadPreview(normalized, "append:" + eventId, stateHash, Number(data.preview_issued_at), data.preview_token))) return { statusCode: 200, headers: h, body: JSON.stringify({ ok: false, needs_preview: true, msg: "名单或活动已变化，请重新预览" }) };
+    const added = [];
+    try {
+      for (const row of normalized.normalizedRows) {
+        const { restore_checked_at, ...clean } = row;
+        const written = await db.collection("registrations").add({ ...clean, registered_name: clean.name, actual_attendee_name: "", attendance_status: "pending", attendance_role: isCourseEvent(eventItem) ? ATTENDANCE_ROLES.COURSE_REGISTRANT : ATTENDANCE_ROLES.EVENT_REGISTRANT, source: "excel_upload", registration_source: "EXCEL_UPLOAD", batch_id: eventId, created_at: new Date().toISOString() });
+        added.push({ _id: written.id || written._id });
+      }
+      return { statusCode: 200, headers: h, body: JSON.stringify({ ok: true, event_id: eventId, added: added.length, msg: "名单已追加" }) };
+    } catch (error) {
+      await deleteDocs("registrations", added);
+      return { statusCode: 200, headers: h, body: JSON.stringify({ ok: false, msg: "名单追加失败，新增行已撤销" }) };
+    }
+  }
 
   async function writeEventAudit(eventItem, previousStatus, nextStatus, reason) {
     await db.collection("event_audit_logs").add({
@@ -1116,7 +1458,7 @@ exports.main = async (event, context) => {
       next_status: nextStatus,
       reason: String(reason || "").trim(),
       source_system: eventItem.source_system || "MANUAL_ADMIN",
-      actor: "admin_token",
+      actor: platformContext && platformContext.actor ? platformContext.actor.id : "admin_token",
       occurred_at: new Date().toISOString()
     });
   }
@@ -1130,7 +1472,7 @@ exports.main = async (event, context) => {
       next_status: "DELETED",
       reason: String(reason || "后台人工永久删除").trim(),
       source_system: eventItem.source_system || "MANUAL_ADMIN",
-      actor: "admin_token",
+      actor: platformContext && platformContext.actor ? platformContext.actor.id : "admin_token",
       occurred_at: new Date().toISOString()
     });
   }
@@ -1177,9 +1519,9 @@ exports.main = async (event, context) => {
       const changes = {
         lifecycle_status: requestedStatus,
         confirmed_at: requestedStatus === "CONFIRMED" ? now : "",
-        confirmed_by: requestedStatus === "CONFIRMED" ? "admin_token" : "",
+        confirmed_by: requestedStatus === "CONFIRMED" ? (platformContext && platformContext.actor ? platformContext.actor.id : "admin_token") : "",
         cancelled_at: requestedStatus === "CANCELLED" ? now : "",
-        cancelled_by: requestedStatus === "CANCELLED" ? "admin_token" : "",
+        cancelled_by: requestedStatus === "CANCELLED" ? (platformContext && platformContext.actor ? platformContext.actor.id : "admin_token") : "",
         updated_at: now
       };
       const snapshots = targetEvents.map(item => ({
@@ -1278,12 +1620,16 @@ exports.main = async (event, context) => {
     const eventDate = String(payload.event_date || "").trim();
     const checkinStartAt = parseChinaDateTime(payload.checkin_start_at);
     const checkinEndAt = parseChinaDateTime(payload.checkin_end_at);
+    const scheduledStartAt = payload.scheduled_start_at ? parseChinaDateTime(payload.scheduled_start_at) : checkinStartAt;
+    const scheduledEndAt = payload.scheduled_end_at ? parseChinaDateTime(payload.scheduled_end_at) : checkinEndAt;
     const activityType = normalizeActivityType(payload.activity_type);
     const groupField = ["center", "class_name", "group_name"].includes(payload.group_field) ? payload.group_field : "";
-    if (!eventName || rows.length === 0) return { error: "活动名称和报名数据不能为空" };
+    const allowEmpty = Boolean(platformContext && platformContext.allow_empty_activity);
+    if (!eventName || (!allowEmpty && rows.length === 0)) return { error: "活动名称和报名数据不能为空" };
     if (!/^\d{4}-\d{2}-\d{2}$/.test(eventDate)) return { error: "请选择正确的活动日期" };
     if (!checkinStartAt || !checkinEndAt) return { error: "请选择完整的签到开始时间和截止时间" };
     if (Date.parse(checkinEndAt) <= Date.parse(checkinStartAt)) return { error: "签到截止时间必须晚于开始时间" };
+    if (!scheduledStartAt || !scheduledEndAt || !(Date.parse(checkinStartAt) <= Date.parse(scheduledStartAt) && Date.parse(scheduledStartAt) <= Date.parse(checkinEndAt) && Date.parse(checkinEndAt) <= Date.parse(scheduledEndAt))) return { error: "时间顺序必须是：签到开放 ≤ 正式开始 ≤ 签到截止 ≤ 正式结束" };
     if (!ACTIVITY_TYPES[String(payload.activity_type || "")]) return { error: "请选择活动类型" };
     if (rows.length > 5000) return { error: "报名数据不能超过5000条" };
 
@@ -1303,6 +1649,7 @@ exports.main = async (event, context) => {
         company: String(row.company || "").trim(),
         group_num: row.group_num || null,
         dinner_table_num: row.dinner_table_num || null,
+        ...(platformContext && platformContext.roster_verified ? { member_code: String(row.member_code || ""), platform_member_id: String(row.platform_member_id || row.member_id || "") } : {}),
         restore_checked_at: restoreCheckins && row.checked_at && !isNaN(Date.parse(row.checked_at)) ? new Date(row.checked_at).toISOString() : ""
       };
       if (!cleanRow.name && !cleanRow.phone) continue;
@@ -1315,7 +1662,7 @@ exports.main = async (event, context) => {
       identityCounts[key] = (identityCounts[key] || 0) + 1;
       normalizedRows.push(cleanRow);
     }
-    if (normalizedRows.length === 0) return { error: "没有可导入的有效报名数据" };
+    if (!allowEmpty && normalizedRows.length === 0) return { error: "没有可导入的有效报名数据" };
     return {
       eventName, eventDate, checkinStartAt, checkinEndAt, activityType, groupField,
       normalizedRows, identityCounts, restoreCheckins,
@@ -1607,6 +1954,15 @@ exports.main = async (event, context) => {
   }
 
   async function lookupCrossClassMembers(eventItem, name) {
+    if (platformContext && platformContext.ticket_member) {
+      const member = platformContext.ticket_member;
+      const homeClass = String(member.home_class_org_unit_id || member.class_org_unit_id || "");
+      if (normalizePersonName(member.name) !== normalizePersonName(name) || !homeClass || homeClass === String(eventItem.class_org_unit_id || "")) return [];
+      // This snapshot was signed from the existing binding and organization
+      // relations for at most five minutes. Reuse the same cross-class rule
+      // without putting a platform outage on the attendance commit path.
+      return [{ ...member, home_class_org_unit_id: homeClass, home_class_name: member.home_class_name || member.class_name || "", home_group_name: member.group_name || "" }];
+    }
     const result = await requestOps("/api/v1/checkin-rosters/cross-class-members", {
       name,
       event_class_org_unit_id: String(eventItem && eventItem.class_org_unit_id || "")
@@ -1679,6 +2035,14 @@ exports.main = async (event, context) => {
       !checkedIds.has(String(reg && reg._id || "")) &&
       !String(reg && reg.actual_attendee_name || "").trim()
     );
+  }
+
+  function isTeamRegistrationSlot(registration, registrations) {
+    if (!registration) return false;
+    if ([ATTENDANCE_ROLES.EVENT_TEAM_MEMBER, ATTENDANCE_ROLES.COURSE_TEAM_MEMBER].includes(String(registration.attendance_role || ""))) return true;
+    if (registration.platform_member_id || registration.member_code) return false;
+    const company = normalizeCompany(registration.company);
+    return Boolean(company && (registrations || []).filter(row => normalizeCompany(row.company) === company).length > 1);
   }
 
   function courseTeamContactName(registrations) {
@@ -1790,7 +2154,7 @@ exports.main = async (event, context) => {
       };
       if (existing) return { statusCode: 200, headers: h, body: JSON.stringify({ ok: true, already: true, msg: "您已签到，无需重复操作", data: displayData }) };
       const now = new Date().toISOString();
-      await db.collection("checkins").add({
+      const saved = await saveCheckin({
         registration_id: registrationId,
         name: String(reg.name || "").trim(),
         registered_name: String(reg.registered_name || reg.name || "").trim(),
@@ -1811,19 +2175,17 @@ exports.main = async (event, context) => {
         dinner_table_num: reg.dinner_table_num || null,
         batch_id: eventId,
         checked_at: now
-      });
-      if (isRosterRegistrationEvent(eventItem)) {
-        await db.collection("registrations").doc(registrationId).update({
+      }, isRosterRegistrationEvent(eventItem) ? {
           actual_attendee_name: String(reg.name || "").trim(),
           actual_attendee_at: now,
           actual_attendee_source: "DIRECT_NAME_CHECKIN"
-        });
-      }
+      } : null);
       displayData.checked_in = true;
-      displayData.checked_at = now;
+      displayData.checked_at = saved.checkin.checked_at;
       if (isRosterRegistrationEvent(eventItem)) displayData.actual_attendee_name = String(reg.name || "").trim();
-      return { statusCode: 200, headers: h, body: JSON.stringify({ ok: true, msg: "签到成功", data: displayData }) };
+      return { statusCode: 200, headers: h, body: JSON.stringify({ ok: true, already: saved.already, msg: saved.already ? "您已签到，无需重复操作" : "签到成功", data: displayData }) };
     } catch (e) {
+      if (platformContext && platformContext.service_request) return { statusCode: 503, headers: h, body: JSON.stringify({ ok: false, code: "CHECKIN_ENGINE_UNAVAILABLE", msg: "签到服务暂时不可用，请稍后重试" }) };
       return { statusCode: 200, headers: h, body: JSON.stringify({ ok: false, msg: "签到失败，请稍后重试" }) };
     }
   }
@@ -1886,25 +2248,26 @@ exports.main = async (event, context) => {
       }
       const registrations = await rowsForBatch("registrations", eventId, 5000);
       const checkins = await rowsForBatch("checkins", eventId, 5000);
+      const previousTeamCheckin = checkins.find(row => normalizePersonName(row.actual_attendee_name || row.name) === normalizePersonName(attendeeName) && normalizeCompany(row.company) === normalizeCompany(company) && row.attendance_role === ATTENDANCE_ROLES.EVENT_TEAM_MEMBER);
+      if (previousTeamCheckin) return { statusCode: 200, headers: h, body: JSON.stringify({ ok: true, already: true, msg: "您已签到，无需重复操作", data: redact(previousTeamCheckin) }) };
       const available = courseTeamAvailableRows(registrations, checkins, company);
-      const registration = available[0];
+      let registration = available[0];
       if (!registration) return { statusCode: 200, headers: h, body: JSON.stringify({ ok: false, msg: "该企业/团队的报名名额已全部使用" }) };
-      const registrationId = String(registration._id || "");
+      let registrationId = String(registration._id || "");
       const now = new Date().toISOString();
-      const updatedRegistration = {
+      let updatedRegistration = {
         ...registration,
         attendance_role: ATTENDANCE_ROLES.EVENT_TEAM_MEMBER,
         actual_attendee_name: attendeeName,
         actual_attendee_at: now,
         actual_attendee_source: "EVENT_TEAM_SELF_CHECKIN"
       };
-      await db.collection("registrations").doc(registrationId).update({
-        attendance_role: ATTENDANCE_ROLES.EVENT_TEAM_MEMBER,
-        actual_attendee_name: attendeeName,
-        actual_attendee_at: now,
-        actual_attendee_source: "EVENT_TEAM_SELF_CHECKIN"
-      });
-      await db.collection("checkins").add({
+      let saved = null;
+      for (const slot of available) {
+        registration = slot;
+        registrationId = String(slot._id);
+        try {
+          saved = await saveCheckin({
         registration_id: registrationId,
         name: attendeeName,
         registered_name: String(registration.registered_name || registration.name || "").trim(),
@@ -1920,7 +2283,20 @@ exports.main = async (event, context) => {
         dinner_table_num: registration.dinner_table_num || null,
         batch_id: eventId,
         checked_at: now
-      });
+      }, {
+        attendance_role: ATTENDANCE_ROLES.EVENT_TEAM_MEMBER,
+        actual_attendee_name: attendeeName, actual_attendee_at: now,
+        actual_attendee_source: "EVENT_TEAM_SELF_CHECKIN"
+      }, { team: true, claimKey: eventId + "|" + normalizeCompany(company) + "|" + normalizePersonName(attendeeName) });
+          registrationId = saved.checkin.registration_id;
+          registration = registrations.find(row => String(row._id) === String(registrationId)) || registration;
+          updatedRegistration = { ...registration, attendance_role: ATTENDANCE_ROLES.EVENT_TEAM_MEMBER, actual_attendee_name: attendeeName };
+          break;
+        } catch (error) {
+          if (error.message !== "CHECKIN_SLOT_CONSUMED") throw error;
+        }
+      }
+      if (!saved) return { statusCode: 200, headers: h, body: JSON.stringify({ ok: false, msg: "该企业/团队的报名名额已全部使用" }) };
       const allCompanyRows = registrations.filter(row => normalizeCompany(row.company) === normalizeCompany(company));
       const remainingRows = courseTeamAvailableRows(allCompanyRows, [...checkins, { registration_id: registrationId }], company);
       const ds = await getDisplaySettings();
@@ -1939,7 +2315,8 @@ exports.main = async (event, context) => {
       };
       return { statusCode: 200, headers: h, body: JSON.stringify({
         ok: true,
-        msg: "签到成功",
+        already: saved.already,
+        msg: saved.already ? "您已签到，无需重复操作" : "签到成功",
         data: displayData,
         checked_count: 1,
         total_slots: allCompanyRows.length,
@@ -1986,7 +2363,7 @@ exports.main = async (event, context) => {
       );
       if (!registration) {
         const now = new Date().toISOString();
-        const created = await db.collection("registrations").add({
+        const created = await ensureCrossRegistration(db, {
           name: String(matchedMember.name || "").trim(),
           registered_name: String(matchedMember.name || "").trim(),
           actual_attendee_name: "",
@@ -2051,7 +2428,7 @@ exports.main = async (event, context) => {
         return { statusCode: 200, headers: h, body: JSON.stringify({ ok: true, already: true, msg: "您已作为外班学长签到，无需重复操作", data: displayData }) };
       }
       const now = new Date().toISOString();
-      await db.collection("checkins").add({
+      const saved = await saveCheckin({
         registration_id: registrationId,
         name: String(registration.name || "").trim(),
         registered_name: String(registration.registered_name || registration.name || "").trim(),
@@ -2072,8 +2449,8 @@ exports.main = async (event, context) => {
         checked_at: now
       });
       displayData.checked_in = true;
-      displayData.checked_at = now;
-      return { statusCode: 200, headers: h, body: JSON.stringify({ ok: true, msg: "外班签到成功", data: displayData }) };
+      displayData.checked_at = saved.checkin.checked_at;
+      return { statusCode: 200, headers: h, body: JSON.stringify({ ok: true, already: saved.already, msg: saved.already ? "您已作为外班学长签到，无需重复操作" : "外班签到成功", data: displayData }) };
     } catch (e) {
       return { statusCode: 200, headers: h, body: JSON.stringify({ ok: false, msg: "外班签到失败，请重新查询后再试" }) };
     }
@@ -2186,7 +2563,7 @@ exports.main = async (event, context) => {
       const now = new Date().toISOString();
       for (const index of selectedIndexes) {
         const reg = matchingRegs[index];
-        await db.collection("checkins").add({ registration_id: reg._id || "", name: String(reg.name || "").trim(), phone, center: normalizeCenterValue(reg.center), class_name: normalizeGroupValue(reg.class_name), group_name: normalizeGroupValue(reg.group_name), company: reg.company || "", member_code: String(reg.member_code || "").trim(), platform_member_id: String(reg.platform_member_id || "").trim(), attendance_role: registrationAttendanceRole(reg, selectedEvent), home_class_org_unit_id: String(reg.home_class_org_unit_id || selectedEvent.class_org_unit_id || "").trim(), home_class_name: String(reg.home_class_name || reg.class_name || "").trim(), event_class_org_unit_id: String(reg.event_class_org_unit_id || selectedEvent.class_org_unit_id || "").trim(), registration_source: String(reg.registration_source || reg.source || ""), group_num: reg.group_num || null, dinner_table_num: reg.dinner_table_num || null, batch_id: selectedEventId, checked_at: now });
+        await saveCheckin({ registration_id: reg._id || "", name: String(reg.name || "").trim(), phone, center: normalizeCenterValue(reg.center), class_name: normalizeGroupValue(reg.class_name), group_name: normalizeGroupValue(reg.group_name), company: reg.company || "", member_code: String(reg.member_code || "").trim(), platform_member_id: String(reg.platform_member_id || "").trim(), attendance_role: registrationAttendanceRole(reg, selectedEvent), home_class_org_unit_id: String(reg.home_class_org_unit_id || selectedEvent.class_org_unit_id || "").trim(), home_class_name: String(reg.home_class_name || reg.class_name || "").trim(), event_class_org_unit_id: String(reg.event_class_org_unit_id || selectedEvent.class_org_unit_id || "").trim(), registration_source: String(reg.registration_source || reg.source || ""), group_num: reg.group_num || null, dinner_table_num: reg.dinner_table_num || null, batch_id: selectedEventId, checked_at: now });
       }
       const newCheckedSlots = checkedSlots + quantity;
       return { statusCode: 200, headers: h, body: JSON.stringify({ ok: true, msg: "签到成功，本次登记" + quantity + "人", checked_count: quantity, data: { ...makeDisplayData(matchingRegs[selectedIndexes[0]]), multi_checked: newCheckedSlots, checked_at: now } }) };
@@ -2254,11 +2631,12 @@ exports.main = async (event, context) => {
       const today = chinaDate();
       const todayPage = await queryEventPage({ page: 1, page_size: 50, date_from: today, date_to: today });
       const todayItems = await summarizeEventRows(todayPage.rows);
-      const selectedEventId = await getConfig("active_batch_id", "");
+      let selectedEventId = await getConfig("active_batch_id", "");
       let selectedItem = null;
       let selectedEvent = null;
       if (selectedEventId) {
         selectedEvent = await getEventById(selectedEventId);
+        if (selectedEvent && !eventInScope(selectedEvent, platformContext)) { selectedEvent = null; selectedEventId = ""; }
         if (selectedEvent) {
           const selectedRows = selectedEvent.event_group_id
             ? await getEventGroupById(selectedEvent.event_group_id)
@@ -2307,6 +2685,28 @@ exports.main = async (event, context) => {
       const eventItem = await getEventById(data.event_id);
       if (!eventItem) return { statusCode: 200, headers: h, body: JSON.stringify({ ok: false, msg: "未找到活动" }) };
       const changes = {};
+      const guardedFields = ["org_unit_id", "class_org_unit_id", "group_org_unit_id", "checkin_start_at", "checkin_end_at", "scheduled_start_at", "scheduled_end_at"];
+      if (guardedFields.some(field => data[field] !== undefined && String(data[field]) !== String(eventItem[field] || ""))) {
+        const hasCheckins = (await rowsForBatch("checkins", String(eventItem.event_id || eventItem._id), 1)).length > 0;
+        if (hasCheckins || (Number.isFinite(Date.parse(eventItem.checkin_start_at || "")) && Date.now() >= Date.parse(eventItem.checkin_start_at))) return { statusCode: 200, headers: h, body: JSON.stringify({ ok: false, code: "ACTIVITY_ALREADY_STARTED", msg: "签到已开始或已产生到场事实，不能修改组织归属和场次时间" }) };
+      }
+      for (const field of ["org_unit_id", "class_org_unit_id", "group_org_unit_id"]) if (data[field] !== undefined) changes[field] = String(data[field] || "").trim();
+      for (const field of ["center_name", "class_name", "group_name"]) if (data[field] !== undefined) changes[field] = String(data[field] || "").trim();
+      for (const field of ["checkin_start_at", "checkin_end_at", "scheduled_start_at", "scheduled_end_at"]) {
+        if (data[field] !== undefined) {
+          const value = String(data[field] || "").trim();
+          const parsed = parseChinaDateTime(value) || (/T.*(?:Z|[+-]\d{2}:\d{2})$/.test(value) && Number.isFinite(Date.parse(value)) ? new Date(value).toISOString() : "");
+          if (!parsed) return { statusCode: 200, headers: h, body: JSON.stringify({ ok: false, msg: "场次时间格式不正确" }) };
+          changes[field] = parsed;
+        }
+      }
+      if (Object.keys(changes).some(field => /_at$/.test(field))) {
+        const merged = { ...eventItem, ...changes };
+        const open = Date.parse(merged.checkin_start_at), close = Date.parse(merged.checkin_end_at);
+        const start = merged.scheduled_start_at ? Date.parse(merged.scheduled_start_at) : open;
+        const end = merged.scheduled_end_at ? Date.parse(merged.scheduled_end_at) : close;
+        if (![open, close, start, end].every(Number.isFinite) || !(open <= start && start <= close && close <= end)) return { statusCode: 200, headers: h, body: JSON.stringify({ ok: false, msg: "时间顺序必须是：签到开放 ≤ 正式开始 ≤ 签到截止 ≤ 正式结束" }) };
+      }
       if (data.name !== undefined) changes.name = String(data.name || "").trim() || eventItem.name;
       if (data.event_date !== undefined) {
         if (!/^\d{4}-\d{2}-\d{2}$/.test(String(data.event_date))) return { statusCode: 200, headers: h, body: JSON.stringify({ ok: false, msg: "活动日期格式不正确" }) };
@@ -2864,7 +3264,7 @@ exports.main = async (event, context) => {
         const result = await db.collection("registrations").add(registrationToWrite);
         stagedDocs.push({ _id: result.id || result._id });
         if (restoreCheckedAt) {
-          const checkinResult = await db.collection("checkins").add({ registration_id: result.id || result._id || "", name: row.name, registered_name: row.name, actual_attendee_name: row.name, phone: row.phone, center: normalizeCenterValue(row.center), class_name: normalizeGroupValue(row.class_name), group_name: normalizeGroupValue(row.group_name), company: row.company, attendance_role: registrationRole, registration_source: "EXCEL_UPLOAD", group_num: row.group_num, dinner_table_num: row.dinner_table_num, batch_id: batchId, checked_at: restoreCheckedAt });
+          const checkinResult = await saveCheckin({ registration_id: result.id || result._id || "", name: row.name, registered_name: row.name, actual_attendee_name: row.name, phone: row.phone, center: normalizeCenterValue(row.center), class_name: normalizeGroupValue(row.class_name), group_name: normalizeGroupValue(row.group_name), company: row.company, attendance_role: registrationRole, registration_source: "EXCEL_UPLOAD", group_num: row.group_num, dinner_table_num: row.dinner_table_num, batch_id: batchId, checked_at: restoreCheckedAt }, null, { deferDelivery: true });
           stagedCheckinDocs.push({ _id: checkinResult.id || checkinResult._id });
           if (!isClassMeeting) {
             await db.collection("registrations").doc(result.id || result._id).update({ actual_attendee_name: String(row.name || "").trim(), actual_attendee_at: restoreCheckedAt, actual_attendee_source: "RESTORED_CHECKIN" });
@@ -2874,7 +3274,7 @@ exports.main = async (event, context) => {
       await setConfig("event_name", eventName);
       await setConfig("group_field", groupField);
       await setConfig("active_batch_id", batchId);
-      const eventResult = await db.collection("events").add({ event_id: batchId, name: eventName, event_date: eventDate, checkin_start_at: checkinStartAt, checkin_end_at: checkinEndAt, activity_type: activityType, status: "active", lifecycle_status: "DRAFT", source_system: "MANUAL_ADMIN", group_field: groupField, created_at: new Date().toISOString() });
+      const eventResult = await db.collection("events").add({ event_id: batchId, name: eventName, event_date: eventDate, checkin_start_at: checkinStartAt, checkin_end_at: checkinEndAt, scheduled_start_at: parseChinaDateTime(data.scheduled_start_at) || checkinStartAt, scheduled_end_at: parseChinaDateTime(data.scheduled_end_at) || checkinEndAt, activity_type: activityType, status: "active", lifecycle_status: "DRAFT", source_system: platformContext ? "PLATFORM_MANAGEMENT" : "MANUAL_ADMIN", group_field: groupField, org_unit_id: String(data.org_unit_id || ""), class_org_unit_id: String(data.class_org_unit_id || ""), group_org_unit_id: String(data.group_org_unit_id || ""), center_name: String(data.center_name || ""), class_name: String(data.class_name || ""), group_name: String(data.group_name || ""), created_at: new Date().toISOString() });
       stagedEventDoc = { _id: eventResult.id || eventResult._id };
       const repeatedSlots = Object.values(identityCounts).reduce((sum, count) => sum + Math.max(0, count - 1), 0);
       const repeatMessage = repeatedSlots ? "，其中多人共用姓名和手机号的额外名额 " + repeatedSlots + " 个" : "";
@@ -3074,11 +3474,12 @@ exports.main = async (event, context) => {
           status: "active",
           lifecycle_status: "CONFIRMED",
           confirmed_at: new Date().toISOString(),
-          confirmed_by: "admin_token",
-          source_system: "MANUAL_ADMIN",
+          confirmed_by: platformContext && platformContext.actor ? platformContext.actor.id : "admin_token",
+          source_system: platformContext ? "PLATFORM_MANAGEMENT" : "MANUAL_ADMIN",
           group_field: groupField,
           org_unit_id: orgUnitId,
           class_org_unit_id: classOrgUnitId,
+          center_name: String(data.center_name || ""), class_name: String(data.class_name || ""), group_name: String(data.group_name || ""),
           roster_snapshot_count: rosterMembers.length,
           roster_snapshot_at: rosterSnapshotAt,
           roster_version: data.roster_version || "",
@@ -3141,6 +3542,7 @@ exports.main = async (event, context) => {
       // Stable ordering prevents offset pagination from skipping or duplicating
       // events while new events are appended.
       let q = db.collection("events").orderBy("created_at", "asc");
+      if (query.event_id) q = q.where({ event_id: String(query.event_id) });
 
       let skip = 0;
       if (cursor) {
@@ -3200,7 +3602,9 @@ exports.main = async (event, context) => {
       return { statusCode: 401, headers: h, body: JSON.stringify({ detail: "API Key 无效" }) };
     }
     try {
-      const session_id = String(query.session_id || "");
+      const session_id = String(query.session_id || query.event_id || "");
+      const registration_id = String(query.registration_id || "").trim();
+      if (query.event_id && query.session_id && String(query.event_id) !== String(query.session_id)) return { statusCode: 400, headers: h, body: JSON.stringify({ detail: "event_id and session_id must match" }) };
       const cursor = String(query.cursor || "");
       const limit = Math.min(parseInt(query.limit || "500", 10), 1000);
 
@@ -3209,7 +3613,7 @@ exports.main = async (event, context) => {
       }
 
       let q = db.collection("registrations")
-        .where({ batch_id: session_id })
+        .where({ batch_id: session_id, ...(registration_id ? { _id: registration_id } : {}) })
         .orderBy("created_at", "asc");
 
       let skip = 0;
@@ -3223,7 +3627,7 @@ exports.main = async (event, context) => {
       // Get checkins for these registrations
       const checkinMap = {};
       if (registrations.length > 0) {
-        const checkins = await getAll("checkins", 5000, { batch_id: session_id });
+        const checkins = await getAll("checkins", registration_id ? 1 : 5000, { batch_id: session_id, ...(registration_id ? { registration_id } : {}) });
         for (const ck of checkins) {
           const regId = String(ck.registration_id || "");
           if (regId) checkinMap[regId] = ck;
@@ -3239,11 +3643,18 @@ exports.main = async (event, context) => {
         const storedRole = String(reg.attendance_role || "").trim();
         const attendanceRole = Object.prototype.hasOwnProperty.call(ATTENDANCE_ROLES, storedRole) ? storedRole : "MEMBER";
         const crossClass = attendanceRole === ATTENDANCE_ROLES.CROSS_CLASS_MEMBER;
+        const teamMember = [ATTENDANCE_ROLES.EVENT_TEAM_MEMBER, ATTENDANCE_ROLES.COURSE_TEAM_MEMBER].includes(attendanceRole);
+        const memberId = String(ck && ck.platform_member_id || (!teamMember && reg.platform_member_id) || "");
+        const memberCode = String(ck && ck.member_code || (!teamMember && reg.member_code) || "");
         return {
           external_record_id: String(reg._id),
           external_registration_id: String(reg._id),
-          member_code: reg.member_code || "",
-          name: reg.name || "",
+          member_code: memberCode,
+          member_id: /^\d+$/.test(memberId) ? Number(memberId) : null,
+          platform_member_id: memberId || null,
+          name: ck && (ck.actual_attendee_name || ck.name) || reg.actual_attendee_name || reg.name || "",
+          registered_name: reg.registered_name || reg.name || "",
+          actual_attendee_name: ck && (ck.actual_attendee_name || ck.name) || reg.actual_attendee_name || "",
           participant_type: attendanceRole,
           // Cross-class attendance is a verified learning fact. Whether it
           // earns credits is an operations policy decision, so do not let the
@@ -3255,9 +3666,9 @@ exports.main = async (event, context) => {
           event_class_org_unit_id: reg.event_class_org_unit_id || "",
           attendance_status: checkedIn ? "PRESENT" : (reg.attendance_status === "leave" ? "LEAVE" : "ABSENT"),
           checked_at: ck ? (ck.checked_at || "") : null,
-          checkin_source: ck ? "QR" : null,
-          revision: 1,
-          updated_at: reg.created_at || ""
+          checkin_source: ck ? (ck.checkin_source || "QR") : null,
+          revision: ck ? 2 : 1,
+          updated_at: ck && ck.checked_at || reg.attendance_status_updated_at || reg.created_at || ""
         };
       });
 

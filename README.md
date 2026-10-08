@@ -2,6 +2,12 @@
 
 微信扫码签到的轻量级云签到系统，基于腾讯云 CloudBase 部署。
 
+本次开发把日常活动管理接入统一运营平台，微信已绑定学员通过活动/场次小程序码确认签到，继续由本仓库的同一签到确认逻辑保存事实。旧 H5 和独立后台已显示 **LEGACY** 兼容标识，原二维码入口保留。代码和隔离验证尚不代表生产已开放。
+
+- [平台管理、微信身份及同步接口契约](docs/platform-integration.md)
+- [隔离 staging 配置和验证](docs/platform-integration-staging.md)
+- [真实 CloudBase SDK 事务核验](docs/cloudbase-sdk-transaction-verification.md)
+
 ## 使用方式
 
 ### 学长签到（微信扫码）
@@ -11,9 +17,9 @@
 3. 先选择本次活动，再输入报名时的**完整姓名**；手机号不再是现场身份认证条件
 4. 姓名唯一时直接签到，同名时用公司、分中心、班级或小组选择本人；团队报名可使用企业/团队的剩余报名名额
 
-### 管理后台（多活动管理）
+### LEGACY 兼容管理后台（多活动管理）
 
-1. 浏览器打开唯一后台入口：`https://{你的域名}/admin.html`
+1. 旧兼容后台入口：`https://{你的域名}/admin.html`；新日常入口使用统一运营平台的活动签到页面。
 2. 输入管理员密码登录。生产环境不提供默认密码，密码摘要通过云函数环境变量 `ADMIN_PASSWORD_HASH` 配置。
 3. 填写活动名称、日期和活动类型，上传 Excel 报名表（支持互动吧导出的 `.xls` / `.xlsx`）
 4. 系统新增独立活动，历史活动及签到记录不会被覆盖；新活动默认是“草稿”，必须在后台“确认举办”后才会进入学员公开签到候选；可切换活动查看、导出、手动关闭或取消签到
@@ -75,9 +81,12 @@ tcb env login set --anonymous-login true -e {你的环境ID}
 - `ADMIN_PASSWORD_HASH`：管理员密码的 SHA-256 十六进制摘要；
 - `OPS_ROSTER_API_KEY`：签到系统读取运营名单的出站密钥；
 - `SIGNIN_SERVICE_API_KEY`：运营平台读取签到数据的入站密钥；
+- `SIGNIN_PLATFORM_API_KEY`：统一平台管理及已绑定身份桥接的独立服务密钥，也用于签发短时签到票据；只存于服务端；
 - `OPS_API_BASE`：运营名单 API 地址。
 
 入站和出站密钥不得复用，也不得写入仓库。
+
+独立云 staging 必须使用 `cloudbaserc.staging.json`，设置 `SIGNIN_DEPLOYMENT_MODE=staging` 及独立的 `SIGNIN_CLOUDBASE_ENV_ID`。空值、生产环境 ID、占位符会在 SDK 初始化前失败关闭。保留的生产配置不在本次开发中修改或执行。云函数依赖已锁定 `@cloudbase/node-sdk@3.18.3`，构建使用 `cloudfunc/package-lock.json` 和 `npm ci --ignore-scripts`。
 
 生产环境为 `checkinApi` 配置 `attendanceSyncWeekdays0000` 定时触发器，
 Cron 为 `0 0 0 ? * MON-FRI *`。它只调用新运营平台的受保护同步入口，

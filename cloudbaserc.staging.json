@@ -1,0 +1,17 @@
+{
+  "version": "2.0",
+  "envId": "REPLACE_WITH_ISOLATED_STAGING_ENV_ID",
+  "functions": [{
+    "name": "checkinApi",
+    "runtime": "Nodejs18.15",
+    "timeout": 120,
+    "installDependency": true,
+    "dir": "cloudfunc",
+    "envVariables": { "SIGNIN_DEPLOYMENT_MODE": "staging", "SIGNIN_CLOUDBASE_ENV_ID": "REPLACE_WITH_ISOLATED_STAGING_ENV_ID" },
+    "securityRule": { "invoke": "ALL_USER" },
+    "triggers": [
+      { "name": "attendanceSyncWeekdays0000", "type": "timer", "config": "0 0 0 ? * MON-FRI *" },
+      { "name": "attendanceSyncRetryEvery5Minutes", "type": "timer", "config": "0 */5 * * * * *" }
+    ]
+  }]
+}
