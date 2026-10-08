@@ -2,6 +2,7 @@ const cloudbase = require("@cloudbase/node-sdk");
 const crypto = require("crypto");
 const https = require("https");
 const http = require("http");
+const { validateStagingEnvironmentId, legacyCheckinUrl } = require("./staging-urls");
 const {
   TRUSTED_CONTEXT, MANAGEMENT_OPERATIONS, verifyServiceKey, normalizeManagementContext,
   eventInScope, redact, ensureCrossRegistration, persistCheckin, verifyCheckinTicket, documentData, requireDatabaseSuccess
@@ -367,7 +368,7 @@ exports.main = async (event, context) => {
   const configuredEnvironment = String(process.env.SIGNIN_CLOUDBASE_ENV_ID || "").trim();
   const deploymentMode = String(process.env.SIGNIN_DEPLOYMENT_MODE || BUILD_INFO.environment || "").toLowerCase();
   const legacyProductionEnvironment = "shengheshu-d2g2zyyl99f6c6fc2";
-  if (deploymentMode === "staging" && (!configuredEnvironment || configuredEnvironment === legacyProductionEnvironment || !/^[a-z0-9][a-z0-9-]{2,63}$/.test(configuredEnvironment) || /replace|placeholder|example|todo/i.test(configuredEnvironment))) throw new Error("ISOLATED_STAGING_ENVIRONMENT_REQUIRED");
+  if (deploymentMode === "staging") validateStagingEnvironmentId(configuredEnvironment);
   const app = cloudbase.init({ env: configuredEnvironment || legacyProductionEnvironment });
   const db = app.database();
   let platformContext = context && context[TRUSTED_CONTEXT] || null;
@@ -1344,7 +1345,7 @@ exports.main = async (event, context) => {
     if (method !== "POST") return { statusCode: 405, headers: h, body: JSON.stringify({ ok: false, code: "METHOD_NOT_ALLOWED" }) };
     if (!verifyServiceKey(event.headers, process.env.SIGNIN_PLATFORM_API_KEY)) return { statusCode: 401, headers: h, body: JSON.stringify({ ok: false, code: "SERVICE_AUTH_REQUIRED" }) };
     platformContext = { ...(platformContext || {}), service_request: true };
-    if (p.endsWith("/events")) return { statusCode: 200, headers: h, body: JSON.stringify({ ok: true, events: (await getTodayEvents()).filter(item => isPublicCheckinEligible(item) || isPublicUpcoming(item)).map(publicEvent), fallback_url: "https://spring-chao.github.io/signin/" }) };
+    if (p.endsWith("/events")) return { statusCode: 200, headers: h, body: JSON.stringify({ ok: true, events: (await getTodayEvents()).filter(item => isPublicCheckinEligible(item) || isPublicUpcoming(item)).map(publicEvent), fallback_url: legacyCheckinUrl(process.env, deploymentMode) }) };
     const member = data.member || {};
     const memberId = String(member.member_id || "").trim(), memberCode = String(member.member_code || "").trim();
     if ((!memberId || !memberCode) && p.endsWith("/lookup")) {

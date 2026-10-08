@@ -1,4 +1,4 @@
-﻿# 盛和塾签到系统 (Seiwajyuku Sign-in System)
+# 盛和塾签到系统 (Seiwajyuku Sign-in System)
 
 微信扫码签到的轻量级云签到系统，基于腾讯云 CloudBase 部署。
 
@@ -87,6 +87,8 @@ tcb env login set --anonymous-login true -e {你的环境ID}
 入站和出站密钥不得复用，也不得写入仓库。
 
 独立云 staging 必须使用 `cloudbaserc.staging.json`，设置 `SIGNIN_DEPLOYMENT_MODE=staging` 及独立的 `SIGNIN_CLOUDBASE_ENV_ID`。空值、生产环境 ID、占位符会在 SDK 初始化前失败关闭。保留的生产配置不在本次开发中修改或执行。云函数依赖已锁定 `@cloudbase/node-sdk@3.18.3`，构建使用 `cloudfunc/package-lock.json` 和 `npm ci --ignore-scripts`。
+
+staging打包只使用 `scripts/release/prepare-staging.ps1`，必须显式提供独立环境ID、平台HTTPS API基址、引擎HTTPS基址及兼容页HTTPS地址；缺少值、生产地址、本机/占位地址、URL凭据、query/fragment或未提交源码时停止。脚本只改仓库外全新输出副本，源静态页与生产默认配置保留。外部测试地址尚未提供时不能准备可部署的测试入口；具体命令见[隔离staging文档](docs/platform-integration-staging.md)。
 
 生产环境为 `checkinApi` 配置 `attendanceSyncWeekdays0000` 定时触发器，
 Cron 为 `0 0 0 ? * MON-FRI *`。它只调用新运营平台的受保护同步入口，

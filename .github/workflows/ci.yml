@@ -22,9 +22,12 @@ jobs:
         run: |
           node --check cloudfunc/index.js
           node --check cloudfunc/platform-service.js
+          node --check cloudfunc/staging-urls.js
+          node --check scripts/release/prepare-staging.js
           node --check tests/checkin_api.test.js
           node --check tests/course_checkin.test.js
           node --check tests/platform_integration.test.js
+          node --check tests/staging_package.test.js
           node --check tests/cloudbase_sdk_contract.test.js
           node --check scripts/staging/serve-engine.js
           node --check tests/admin_import_parser.test.js
@@ -38,6 +41,9 @@ jobs:
 
       - name: Run platform integration and concurrency tests
         run: node tests/platform_integration.test.js
+
+      - name: Verify isolated staging package preparation
+        run: node tests/staging_package.test.js
 
       - name: Verify official CloudBase transaction contract
         run: |

@@ -5,6 +5,9 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+if ($Environment -eq "staging") {
+  throw "staging必须使用prepare-staging.ps1并显式提供独立环境及三个HTTPS地址。"
+}
 $repoRoot = Split-Path -Parent (Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path))
 Push-Location $repoRoot
 try {

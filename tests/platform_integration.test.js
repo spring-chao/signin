@@ -68,6 +68,12 @@ function signTicket(payload) {
   process.env.SIGNIN_CLOUDBASE_ENV_ID = "isolated-test-environment";
   await manage("admin_events", {});
   assert.equal(initializedEnvironments.at(-1), "isolated-test-environment");
+  assert.equal((await request("/ops/v1/member-checkin/events", "POST", {})).data.fallback_url, null, "staging never falls back to the production site");
+  process.env.SIGNIN_LEGACY_URL = "https://spring-chao.github.io/signin/";
+  assert.equal((await request("/ops/v1/member-checkin/events", "POST", {})).data.fallback_url, null);
+  process.env.SIGNIN_LEGACY_URL = "https://legacy.signin-fixture.net/index.html";
+  assert.equal((await request("/ops/v1/member-checkin/events", "POST", {})).data.fallback_url, process.env.SIGNIN_LEGACY_URL);
+  delete process.env.SIGNIN_LEGACY_URL;
   delete process.env.SIGNIN_DEPLOYMENT_MODE; delete process.env.SIGNIN_CLOUDBASE_ENV_ID;
   seedEvent("main");
   seedRegistration("r11", "main");
