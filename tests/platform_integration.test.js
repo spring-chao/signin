@@ -166,6 +166,9 @@ function signTicket(payload) {
   const offlineNative = await request("/native/v1/checkin/confirm", "POST", { ticket }, "");
   assert.equal(offlineNative.data.ok, true, "preloaded ticket commits directly with the platform stopped");
   assert.equal(offlineNative.data.sync_status, "PENDING");
+  const legacyNativeReceipt = await request("/checkin/confirm", "POST", { event_id: "native", registration_id: "r-native" }, "");
+  const resumedNative = await request("/ops/v1/member-checkin/lookup", "POST", { event_id: "native", member });
+  assert.deepEqual(resumedNative.data.receipt, legacyNativeReceipt.data.data, "reopened member success uses the original checkin receipt");
   assert.equal(db.collections.checkins.filter(row => row.batch_id === "native").length, 1);
   seedEvent("native-cross", { activity_type: "class_meeting" });
   const nativeCrossMember = { member_id: "22", member_code: "M22", name: "同名学员", home_class_org_unit_id: "class-2", class_name: "二班", group_name: "二组" };
@@ -333,6 +336,10 @@ function signTicket(payload) {
   failSync = true;
   const guests = await Promise.all(Array.from({ length: 8 }, () => request("/ops/v1/guest-checkin/confirm", "POST", guestBody)));
   assert(guests.every(row => row.data.ok && row.data.checked_at && row.data.sync_status === "PENDING"));
+  assert(guests.every(row => row.data.data.name === guestBody.name && row.data.data.event.event_id === "guest-scene"), "guest success retains the original welcome and activity fields");
+  const guestRepeat = await request("/ops/v1/guest-checkin/confirm", "POST", { ...guestBody, name: "再次输入的不同姓名" });
+  assert.equal(guestRepeat.data.data.name, guestBody.name, "repeated guest receipt uses the saved name");
+  assert.equal(guestRepeat.data.msg, "您已签到，无需重复操作");
   assert.equal(db.collections.checkins.filter(row => row.batch_id === "guest-scene").length, 1);
   assert.equal(db.collections.registrations.filter(row => row.batch_id === "guest-scene" && row.attendance_role === "GUEST").length, 1);
   failSync = false;

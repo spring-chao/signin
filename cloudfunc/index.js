@@ -1076,6 +1076,22 @@ exports.main = async (event, context) => {
     };
   }
 
+  async function nameCheckinReceipt(reg, eventItem, checkedAt) {
+    const ds = await getDisplaySettings();
+    const gf = groupFieldForEvent(eventItem, [reg]);
+    const role = registrationAttendanceRole(reg, eventItem);
+    return {
+      ...(isRosterRegistrationEvent(eventItem)
+        ? courseRegistrationCandidate(reg, eventItem, checkedAt)
+        : nameCheckinCandidate(reg, eventItem, checkedAt, false)),
+      attendance_role_label: role === ATTENDANCE_ROLES.HOME_CLASS_MEMBER ? "本班学长" : role === ATTENDANCE_ROLES.CROSS_CLASS_MEMBER ? "外班学长" : role === ATTENDANCE_ROLES.EVENT_TEAM_MEMBER || role === ATTENDANCE_ROLES.COURSE_TEAM_MEMBER ? "团队报名名额" : role === ATTENDANCE_ROLES.COURSE_REGISTRANT || role === ATTENDANCE_ROLES.EVENT_REGISTRANT ? "活动报名" : "来宾",
+      group_type: gf.label, group_value: normalizeDimensionValue(reg, gf.field),
+      ...(role === ATTENDANCE_ROLES.CROSS_CLASS_MEMBER ? { home_class_name: String(reg.home_class_name || reg.class_name || "").trim() } : {}),
+      show_group: ds.show_group, show_dinner_table: ds.show_dinner_table,
+      multi_total: 1, checked_at: checkedAt || ""
+    };
+  }
+
   function normalizeGroupValue(value) {
     value = String(value || "").trim();
     return /^(是|否|有|无|yes|no|true|false|0|1)$/i.test(value) ? "" : value;
@@ -1345,12 +1361,16 @@ exports.main = async (event, context) => {
       const registration = { batch_id: eventId, name, registered_name: name, actual_attendee_name: name,
         attendance_role: ATTENDANCE_ROLES.GUEST, platform_member_id: "", member_code: "", phone: "",
         registration_source: "WECHAT_GUEST", source: "wechat_guest", created_at: now };
+      const ds = await getDisplaySettings();
       const saved = await saveCheckin({ ...registration, registration_id: registrationId,
         checkin_source: "WECHAT", checked_at: now }, null, { guestRegistration: registration });
       const committed = documentData(await db.collection("checkins").doc(saved.id).get());
       return { statusCode: 200, headers: h, body: JSON.stringify({ ok: true, already: saved.already,
         checked_at: saved.checkin.checked_at, participant_type: "GUEST", sync_status: committed && committed.sync_state === "DELIVERED" ? "SYNCED" : "PENDING",
-        msg: saved.already ? "本场次已签到" : "来宾签到成功" }) };
+        msg: saved.already ? "您已签到，无需重复操作" : "签到成功",
+        data: { name: saved.checkin.name, attendance_role: ATTENDANCE_ROLES.GUEST,
+          checked_at: saved.checkin.checked_at, event: publicEvent(eventItem),
+          show_group: ds.show_group, show_dinner_table: ds.show_dinner_table, multi_total: 1 } }) };
     } catch (error) {
       return { statusCode: 503, headers: h, body: JSON.stringify({ ok: false, msg: "来宾签到暂时不可用，请重试" }) };
     }
@@ -1406,7 +1426,7 @@ exports.main = async (event, context) => {
       if (p.endsWith("/lookup")) {
         const checkins = registration ? await rowsForBatch("checkins", eventId, 5000) : [];
         const existing = registration && checkins.find(row => String(row.registration_id) === String(registration._id));
-        return { statusCode: 200, headers: h, body: JSON.stringify({ ok: true, status: crossCandidate ? "CROSS_CLASS" : "READY", event: publicEvent(eventItem), registration_id: registration && registration._id || "", registration: registration ? { ...redact(registration), id: registration._id, registration_id: registration._id } : null, cross_class_member: Boolean(crossCandidate), member: { member_id: memberId, member_code: memberCode, name: member.name || "" }, checked_in: Boolean(existing), already_checked_in: Boolean(existing), can_checkin: !existing, checked_at: existing && existing.checked_at || "", candidate: crossCandidate }) };
+        return { statusCode: 200, headers: h, body: JSON.stringify({ ok: true, status: crossCandidate ? "CROSS_CLASS" : "READY", event: publicEvent(eventItem), registration_id: registration && registration._id || "", registration: registration ? { ...redact(registration), id: registration._id, registration_id: registration._id } : null, receipt: existing ? await nameCheckinReceipt(registration, eventItem, existing.checked_at) : null, cross_class_member: Boolean(crossCandidate), member: { member_id: memberId, member_code: memberCode, name: member.name || "" }, checked_in: Boolean(existing), already_checked_in: Boolean(existing), can_checkin: !existing, checked_at: existing && existing.checked_at || "", candidate: crossCandidate }) };
       }
       if (registration && data.registration_id && String(data.registration_id) !== String(registration._id)) return { statusCode: 403, headers: h, body: JSON.stringify({ ok: false, status: "REGISTRATION_MISMATCH" }) };
       const response = await exports.main({
@@ -2169,21 +2189,8 @@ exports.main = async (event, context) => {
       }
       const currentCheckins = await rowsForBatch("checkins", eventId, 5000);
       const existing = currentCheckins.find(row => String(row.registration_id || "") === registrationId);
-      const ds = await getDisplaySettings();
-      const gf = groupFieldForEvent(eventItem, [reg]);
       const role = registrationAttendanceRole(reg, eventItem);
-      const displayData = {
-        ...(isRosterRegistrationEvent(eventItem)
-          ? courseRegistrationCandidate(reg, eventItem, existing && existing.checked_at)
-          : nameCheckinCandidate(reg, eventItem, existing && existing.checked_at, false)),
-        attendance_role_label: role === ATTENDANCE_ROLES.HOME_CLASS_MEMBER ? "本班学长" : role === ATTENDANCE_ROLES.CROSS_CLASS_MEMBER ? "外班学长" : role === ATTENDANCE_ROLES.EVENT_TEAM_MEMBER || role === ATTENDANCE_ROLES.COURSE_TEAM_MEMBER ? "团队报名名额" : role === ATTENDANCE_ROLES.COURSE_REGISTRANT || role === ATTENDANCE_ROLES.EVENT_REGISTRANT ? "活动报名" : "来宾",
-        group_type: gf.label,
-        group_value: normalizeDimensionValue(reg, gf.field),
-        show_group: ds.show_group,
-        show_dinner_table: ds.show_dinner_table,
-        multi_total: 1,
-        checked_at: existing && existing.checked_at || ""
-      };
+      const displayData = await nameCheckinReceipt(reg, eventItem, existing && existing.checked_at);
       if (existing) return { statusCode: 200, headers: h, body: JSON.stringify({ ok: true, already: true, msg: "您已签到，无需重复操作", data: displayData }) };
       const now = new Date().toISOString();
       const saved = await saveCheckin({
