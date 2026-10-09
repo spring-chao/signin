@@ -1317,7 +1317,9 @@ exports.main = async (event, context) => {
         const afterEventId = result.event_id || payload.event_id || result.events && result.events[0] && result.events[0].event_id;
         const after = result.ok === false ? before : redact(payload.registration_id ? (await getAll("registrations", 1, { _id: String(payload.registration_id) }))[0] || null : result.event || (afterEventId ? await getEventById(afterEventId) : result));
         const audit = { actor: trusted.actor.id, action: "platform." + operation, target: payload.registration_id || afterEventId || "display_settings", before, after, timestamp: new Date().toISOString() };
-        await db.collection("event_audit_logs").doc(auditId).update({ ...audit, result: result.ok === false ? "REJECTED" : "SUCCESS" });
+        // SDK update flattens nested snapshots into dotted fields. Replacing
+        // an initial after:null that way fails after the business write.
+        requireDatabaseSuccess(await db.collection("event_audit_logs").doc(auditId).set({ ...audit, result: result.ok === false ? "REJECTED" : "SUCCESS" }));
         result.audit = audit;
       }
       const sanitized = operation === "export" ? result : redact(result);
