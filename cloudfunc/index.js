@@ -3687,11 +3687,14 @@ exports.main = async (event, context) => {
           name: ck && (ck.actual_attendee_name || ck.name) || reg.actual_attendee_name || reg.name || "",
           registered_name: reg.registered_name || reg.name || "",
           actual_attendee_name: ck && (ck.actual_attendee_name || ck.name) || reg.actual_attendee_name || "",
-          participant_type: attendanceRole,
+          // Platform persistence uses MEMBER/GUEST/OBSERVER, while engine
+          // roles keep home/cross class and registration statistics distinct.
+          participant_type: attendanceRole === ATTENDANCE_ROLES.GUEST || teamMember ? "GUEST" : "MEMBER",
+          attendance_role: attendanceRole,
           // Cross-class attendance is a verified learning fact. Whether it
           // earns credits is an operations policy decision, so do not let the
           // incremental sync award it automatically.
-          score_eligible: !crossClass,
+          score_eligible: !crossClass && attendanceRole !== ATTENDANCE_ROLES.GUEST && !teamMember,
           score_eligibility_reason: crossClass ? "CROSS_CLASS_POLICY_PENDING" : "DEFAULT_MEMBER_POLICY",
           home_class_org_unit_id: reg.home_class_org_unit_id || "",
           home_class_name: reg.home_class_name || reg.class_name || "",

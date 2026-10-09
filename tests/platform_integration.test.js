@@ -215,8 +215,15 @@ function signTicket(payload) {
   assert.equal(db.collections.registrations.filter(row => row.batch_id === "cross" && row.platform_member_id === "22").length, 1);
   assert.equal(db.collections.checkins.filter(row => row.batch_id === "cross").length, 1);
   const crossPull = await request("/ops/v1/attendance/records?session_id=cross", "GET", {}, process.env.SIGNIN_SERVICE_API_KEY);
+  assert.equal(crossPull.data.items[0].participant_type, "MEMBER");
+  assert.equal(crossPull.data.items[0].attendance_role, "CROSS_CLASS_MEMBER");
   assert.equal(crossPull.data.items[0].score_eligible, false);
   assert.equal(crossPull.data.items[0].home_class_org_unit_id, "class-2");
+  seedEvent("home-platform-type", { activity_type: "class_meeting" });
+  seedRegistration("home-platform-r", "home-platform-type", { attendance_role: "HOME_CLASS_MEMBER" });
+  const homePull = await request("/ops/v1/attendance/records?session_id=home-platform-type", "GET", {}, process.env.SIGNIN_SERVICE_API_KEY);
+  assert.equal(homePull.data.items[0].participant_type, "MEMBER");
+  assert.equal(homePull.data.items[0].attendance_role, "HOME_CLASS_MEMBER");
 
   const metadata = { event_name: "空名单新活动", event_date: tomorrow, activity_type: "course", org_unit_id: "center-1", checkin_start_at: tomorrow + "T08:00", checkin_end_at: tomorrow + "T10:00", scheduled_start_at: tomorrow + "T09:00", scheduled_end_at: tomorrow + "T12:00" };
   const created = await manage("create_event", metadata);
@@ -335,6 +342,8 @@ function signTicket(payload) {
   assert(!db.collections.checkins.some(row => row.registration_id === "real-same-name"), "guest never consumes a same-name member registration");
   const guestPull = await request("/ops/v1/attendance/records?session_id=guest-scene", "GET", {}, process.env.SIGNIN_SERVICE_API_KEY);
   assert(guestPull.data.items.filter(row => row.participant_type === "GUEST").every(row => row.member_id === null && !row.member_code));
+  assert(guestPull.data.items.filter(row => row.attendance_role === "GUEST").every(row => row.score_eligible === false));
+  assert(guestPull.data.items.every(row => ["MEMBER", "GUEST", "OBSERVER"].includes(row.participant_type)), "platform participant types obey its existing MySQL constraint");
   db.collections.events.find(row => row.event_id === "guest-scene").status = "closed";
   assert.equal((await request("/ops/v1/guest-checkin/confirm", "POST", { ...guestBody, guest_id: "c".repeat(64) })).status, 409);
   assert.equal(db.collections.registrations.filter(row => row.batch_id === "guest-scene" && row.attendance_role === "GUEST").length, 2);
