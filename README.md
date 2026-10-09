@@ -210,7 +210,10 @@ node tests/checkin_api.test.js
 node tests/course_checkin.test.js
 node --check cloudfunc/index.js
 node tests/admin_import_parser.test.js
+node tests/shared_staging.test.js
 ```
+
+已购 CloudBase 标准版可作为同环境测试资源准备的基础；显式 `-SharedNamespace` 模式生成专用测试函数和五个带前缀的集合映射，普通 staging 的独立环境保护保留。准备包不会创建资源或上传小程序；真实资源操作的范围、独立平台测试 SQL 库和 HTTPS 连接仍需核验。具体隔离边界与命令见 [平台签到隔离验证](docs/platform-integration-staging.md)。
 
 ## 技术说明
 

@@ -4,7 +4,8 @@ param(
   [Parameter(Mandatory=$true)][string]$EngineUrl,
   [Parameter(Mandatory=$true)][string]$LegacyUrl,
   [string]$OutputDirectory = "",
-  [string]$Version = ""
+  [string]$Version = "",
+  [string]$SharedNamespace = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -15,5 +16,6 @@ $taskPreparationArguments = @(
 )
 if ($OutputDirectory) { $taskPreparationArguments += @('--output-directory', $OutputDirectory) }
 if ($Version) { $taskPreparationArguments += @('--version', $Version) }
+if ($SharedNamespace) { $taskPreparationArguments += @('--shared-namespace', $SharedNamespace) }
 & node @taskPreparationArguments
 if ($LASTEXITCODE -ne 0) { throw "隔离staging打包失败，未执行部署。" }

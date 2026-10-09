@@ -11,6 +11,7 @@ assert.equal(require("../cloudfunc/package.json").dependencies["@cloudbase/node-
 const { Db } = require(packageRoot);
 const { EJSON } = require(require.resolve("bson", { paths: [packageRoot] }));
 const { persistCheckin, ensureCrossRegistration, documentData, requireDatabaseSuccess } = require("../cloudfunc/platform-service");
+const { createScopedDatabase } = require("../cloudfunc/staging-database");
 let requests = [], committed = {}, transactions = new Map(), nextId = 1, failAction = "", conflictOnce = false;
 Db.reqClass = class IsolatedTransport {
   async send(action, params = {}) {
@@ -84,5 +85,28 @@ const db = new Db({ env: "ISOLATED_SYNTHETIC_FIXTURE", throwOnCode: false });
   assert.equal(Object.keys(committed.checkins).length, 1, "failed SDK writes roll back the fact");
   assert.throws(() => documentData({ code: "ISOLATED_STORAGE_ERROR" }), /DATABASE_OPERATION_FAILED/);
   assert.throws(() => requireDatabaseSuccess({ code: "ISOLATED_STORAGE_ERROR" }), /DATABASE_OPERATION_FAILED/);
-  console.log("official CloudBase database 1.4.3 contract tests passed: 24 assertions; pinned SDK 3.18.3, real get/set/update serializers, callback return, conflict retry and rollback; network transport isolated");
+  const prefix = "stg_signin_20261009_a1b2c3d4_";
+  const formalSnapshot = structuredClone(committed);
+  committed[prefix + "events"] = { event: { _id: "event", status: "active" } };
+  committed[prefix + "registrations"] = { registration: { _id: "registration", batch_id: "session" } };
+  const scoped = createScopedDatabase(db, prefix), firstRequest = requests.length;
+  for (const ref of [scoped.collection("events"), scoped.collection("events").where({}).limit(1), scoped.collection("events").doc("event")]) {
+    assert.equal(Object.isFrozen(ref), true);
+    for (const key of ["_db", "database", "transaction", "_transaction", "collection"]) assert.equal(ref[key], undefined);
+  }
+  conflictOnce = true;
+  const scopedSaved = await persistCheckin(scoped, row, { actual_attendee_name: "Synthetic scoped" }, { eventDocumentId: "event", validateEvent: event => event.status === "active", claimKey: "shared-test-identity" });
+  assert.equal(scopedSaved.already, false, "the formal checkin with the same ID is invisible to the scoped engine");
+  assert.equal(committed[prefix + "checkins"][scopedSaved.id].sync_state, "PENDING");
+  assert.equal((await persistCheckin(scoped, row)).already, true);
+  assert.equal(committed[prefix + "registrations"].registration.actual_attendee_name, "Synthetic scoped");
+  assert.equal(Object.keys(committed[prefix + "config"]).length, 1);
+  const scopedSnapshot = structuredClone(committed);
+  await assert.rejects(() => scoped.runTransaction(async tx => { await tx.collection("checkins").doc("discard").set({ marker: "discard" }); throw new Error("scoped rollback"); }), /scoped rollback/);
+  assert.deepEqual(committed, scopedSnapshot);
+  for (const name of ["events", "registrations", "checkins", "fixtures"]) assert.deepEqual(committed[name], formalSnapshot[name]);
+  assert(requests.slice(firstRequest).filter(request => request.params.collectionName).every(request => request.params.collectionName.startsWith(prefix)), "all real SDK serializers and transaction retries use the test collection names");
+  assert.throws(() => scoped.collection(prefix + "checkins"), /STAGING_COLLECTION_NOT_ALLOWED/);
+  await assert.rejects(() => scoped.runTransaction(tx => tx.collection("users")), /STAGING_COLLECTION_NOT_ALLOWED/);
+  console.log("official CloudBase database 1.4.3 contract tests passed: pinned SDK 3.18.3; real serializers, retries, rollback and shared-resource test collection isolation; network transport isolated");
 })().catch(error => { console.error(error); process.exitCode = 1; });

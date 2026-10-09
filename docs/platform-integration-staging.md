@@ -1,6 +1,24 @@
 # 平台签到隔离验证
 
-只适用独立开发环境及合成数据。本次未发布、未触碰生产数据库或旧二维码流量。`cloudbaserc.json` 原生产环境/工作日触发器保持；`cloudbaserc.staging.json` 的无效占位符必须在部署至用户指定的独立测试环境时替换。
+只适用隔离测试资源及合成数据。本次未发布、未触碰生产数据库或旧二维码流量。`cloudbaserc.json` 原生产环境/工作日触发器保持；默认 staging 模式仍要求独立环境。用户明确优先复用已购标准版后，增加以下显式同环境测试集合模式，代码与本地验证不代表云资源已经创建或同环境写入范围已经批准。
+
+## 复用现有标准版的测试准备
+
+`-SharedNamespace` 显式选择 `staging-shared`。目前只接受已核验的现有环境 `shengheshu-d2g2zyyl99f6c6fc2`，命名空间格式必须为 `stg_signin_YYYYMMDD_8位小写hex_`，日期须有效。普通 staging 不传此参数时仍拒绝该生产环境 ID；生产/未知模式误带命名空间也在 SDK 初始化前拒绝。
+
+新增 `cloudfunc/staging-database.js` 将 config、events、registrations、checkins、event_audit_logs 的普通查询与事务统一映射到带该前缀的五个测试集合。SDK 仅向处理器暴露这些集合及所需命令/事务入口，未知集合或已加前缀的输入拒绝，失败事务和 SDK 自动重试均保持映射。原业务文档 ID、幂等键与签到算法保持不变。测试模式的名单/同步 URL 必须显式配置合法测试 HTTPS 地址，禁止沿用 OPS 旧配置回退到生产平台。
+
+打包器生成与现有 checkinApi 不同的函数名，如 `checkinStg20261009a1b2c3d4` 和其 `SyncRetry` 副本；清单记录物理集合映射及 `NOT_DEPLOYED`。两函数仍分别使用原工作日兜底与五分钟重试触发器。私有变量引用改用 SIGNIN_STAGING_PLATFORM_API_KEY、SIGNIN_STAGING_SERVICE_API_KEY、SIGNIN_STAGING_ROSTER_API_KEY、SIGNIN_STAGING_ADMIN_PASSWORD_HASH，避免顺手取用现有生产服务密钥。平台测试副本需使用相同测试密钥和独立测试 SQL 库，不能将测试名单/同步指向现有正式平台。
+
+生成副本示例（仅准备，不创建资源或部署）：
+
+```powershell
+pwsh -File ./scripts/release/prepare-staging.ps1 -EnvId $existingStandardEnvId -SharedNamespace $testNamespace -PlatformUrl $testPlatformHttps -EngineUrl $testEngineHttps -LegacyUrl $testLegacyHttps
+```
+
+同环境没有独立 EnvId 所提供的资源和故障隔离；该模式只隔离签到集合访问，并要求独立的测试平台数据库。需要在现有正式环境新增上述测试集合、索引、函数和测试网关路由时，应先核验该新增写入范围与资源操作的具体授权，不将“标准版容量足够”解释为修改现有业务数据/函数的批准。现有原集合、生产函数配置、线上码与生产 CloudRun 流量均不在目标范围。本文没有证明云端集合已存在、云事务/定时器已验收、HTTPS 已通或手机预览已上传。
+
+验证入口新增 `node tests/shared_staging.test.js`；真实处理器在合成 adapter 中验证普通读写、无生产哨兵数据泄漏、事务回滚、PENDING 失败重试与恢复投递。`tests/cloudbase_sdk_contract.test.js` 使用实际固定版本 SDK，覆盖相同文档 ID 的两个集合空间、事务冲突重试、claim 和回滚，所有出站 transport 均为合成替身，未连接云数据库。CI 包含这两个入口与同环境打包测试。
 
 ## 本地实际引擎 HTTP 入口
 

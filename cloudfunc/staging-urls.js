@@ -28,7 +28,7 @@ function validateStagingHttpsUrl(value, { rootOnly = false } = {}) {
 }
 
 function legacyCheckinUrl(env, mode) {
-  if (String(mode || "").toLowerCase() === "staging") {
+  if (["staging", "staging-shared"].includes(String(mode || "").toLowerCase())) {
     try { return validateStagingHttpsUrl(env.SIGNIN_LEGACY_URL); } catch (error) { return null; }
   }
   try {

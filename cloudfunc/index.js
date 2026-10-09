@@ -2,7 +2,8 @@ const cloudbase = require("@cloudbase/node-sdk");
 const crypto = require("crypto");
 const https = require("https");
 const http = require("http");
-const { validateStagingEnvironmentId, legacyCheckinUrl } = require("./staging-urls");
+const { legacyCheckinUrl, validateStagingHttpsUrl } = require("./staging-urls");
+const { resolveDatabaseScope, createScopedDatabase } = require("./staging-database");
 const {
   TRUSTED_CONTEXT, MANAGEMENT_OPERATIONS, verifyServiceKey, normalizeManagementContext,
   eventInScope, redact, ensureCrossRegistration, persistCheckin, verifyCheckinTicket, documentData, requireDatabaseSuccess
@@ -324,7 +325,10 @@ function findClassOption(options, identity) {
   return matches.length === 1 ? matches[0] : null;
 }
 
-function resolveOpsConnection(env) {
+function resolveOpsConnection(env, mode = env.SIGNIN_DEPLOYMENT_MODE) {
+  if (["staging", "staging-shared"].includes(String(mode || "").toLowerCase())) {
+    return { base: validateStagingHttpsUrl(env.CHECKIN_ROSTER_API_BASE), apiKey: String(env.CHECKIN_ROSTER_API_KEY || "") };
+  }
   const configuredBase = String(env.OPS_API_BASE || "").replace(/\/$/, "");
   const legacyBase = /seiwajyuku-ops-/i.test(configuredBase);
   return {
@@ -367,10 +371,10 @@ exports._test = {
 exports.main = async (event, context) => {
   const configuredEnvironment = String(process.env.SIGNIN_CLOUDBASE_ENV_ID || "").trim();
   const deploymentMode = String(process.env.SIGNIN_DEPLOYMENT_MODE || BUILD_INFO.environment || "").toLowerCase();
-  const legacyProductionEnvironment = "shengheshu-d2g2zyyl99f6c6fc2";
-  if (deploymentMode === "staging") validateStagingEnvironmentId(configuredEnvironment);
-  const app = cloudbase.init({ env: configuredEnvironment || legacyProductionEnvironment });
-  const db = app.database();
+  const scope = resolveDatabaseScope({ environmentId: configuredEnvironment, mode: deploymentMode, namespace: process.env.SIGNIN_STAGING_NAMESPACE });
+  const app = cloudbase.init({ env: scope.environmentId });
+  const rawDatabase = app.database();
+  const db = scope.namespace ? createScopedDatabase(rawDatabase, scope.namespace) : rawDatabase;
   let platformContext = context && context[TRUSTED_CONTEXT] || null;
   const method = event.httpMethod || "GET";
   const p = event.path || "/";
@@ -412,7 +416,8 @@ exports.main = async (event, context) => {
         commit: String(BUILD_INFO.commit || "unknown"),
         deployed_at: String(BUILD_INFO.deployed_at || "unknown"),
         environment: String(BUILD_INFO.environment || "unknown"),
-        service: String(BUILD_INFO.service || "signin")
+        service: String(BUILD_INFO.service || "signin"),
+        ...(scope.namespace ? { storage_scope: "SAME_ENVIRONMENT_TEST_COLLECTIONS", staging_namespace: scope.namespace } : {})
       })
     };
   }
@@ -490,7 +495,7 @@ exports.main = async (event, context) => {
     // 旧 OPS_API_BASE 指向历史运营系统，既会超时，也不返回三场签到所需的
     // 组织 ID。迁移期间自动切到统一平台；新部署可用两个 CHECKIN_ROSTER_*
     // 环境变量显式覆盖，完成独立密钥切换后即可移除兼容分支。
-    const connection = resolveOpsConnection(process.env);
+    const connection = resolveOpsConnection(process.env, deploymentMode);
     const base = connection.base;
     const apiKey = connection.apiKey;
     if (!base || !apiKey) throw new Error("签到系统尚未配置运营名册连接");
@@ -504,7 +509,7 @@ exports.main = async (event, context) => {
   }
 
   async function requestScheduledAttendanceSync() {
-    const connection = resolveOpsConnection(process.env);
+    const connection = resolveOpsConnection(process.env, deploymentMode);
     if (!connection.base || !connection.apiKey) {
       throw new Error("统一平台签到同步连接未配置");
     }
@@ -524,7 +529,7 @@ exports.main = async (event, context) => {
   async function deliverCheckin(checkin) {
     if (!checkin || checkin.sync_state !== "PENDING") return true;
     try {
-      const connection = resolveOpsConnection(process.env);
+      const connection = resolveOpsConnection(process.env, deploymentMode);
       const body = { event_id: checkin.batch_id, registration_id: checkin.registration_id };
       let result;
       if (testPlatformRequestHandler) result = await testPlatformRequestHandler("/api/v1/attendance/sync/immediate", body);

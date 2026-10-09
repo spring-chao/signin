@@ -1,9 +1,12 @@
 const fs = require("fs"), path = require("path"), os = require("os");
 const { execFileSync } = require("child_process");
 const { validateStagingEnvironmentId, validateStagingHttpsUrl } = require("../../cloudfunc/staging-urls");
+const { resolveDatabaseScope, collectionMap } = require("../../cloudfunc/staging-database");
 
 function prepareStaging(options, dependencies = {}) {
-  const environmentId = validateStagingEnvironmentId(options.environmentId);
+  const shared = options.sharedNamespace !== undefined;
+  const scope = shared ? resolveDatabaseScope({ environmentId: options.environmentId, mode: "staging-shared", namespace: options.sharedNamespace }) : { environmentId: validateStagingEnvironmentId(options.environmentId), namespace: "" };
+  const environmentId = scope.environmentId;
   const platformUrl = validateStagingHttpsUrl(options.platformUrl);
   const engineUrl = validateStagingHttpsUrl(options.engineUrl);
   const legacyUrl = validateStagingHttpsUrl(options.legacyUrl);
@@ -31,11 +34,16 @@ function prepareStaging(options, dependencies = {}) {
   const json = value => JSON.stringify(value, null, 2) + "\n";
   const template = JSON.parse(fs.readFileSync(path.join(repoRoot, "cloudbaserc.staging.json"), "utf8"));
   const engine = template.functions[0];
+  if (shared) engine.name = "checkinStg" + scope.namespace.slice("stg_signin_".length).replace(/_/g, "");
+  const secretNames = shared ? {
+    SIGNIN_PLATFORM_API_KEY: "SIGNIN_STAGING_PLATFORM_API_KEY", SIGNIN_SERVICE_API_KEY: "SIGNIN_STAGING_SERVICE_API_KEY",
+    CHECKIN_ROSTER_API_KEY: "SIGNIN_STAGING_ROSTER_API_KEY", ADMIN_PASSWORD_HASH: "SIGNIN_STAGING_ADMIN_PASSWORD_HASH"
+  } : Object.fromEntries(["SIGNIN_PLATFORM_API_KEY", "SIGNIN_SERVICE_API_KEY", "CHECKIN_ROSTER_API_KEY", "ADMIN_PASSWORD_HASH"].map(name => [name, name]));
   engine.envVariables = {
-    ...engine.envVariables, SIGNIN_DEPLOYMENT_MODE: "staging", SIGNIN_CLOUDBASE_ENV_ID: environmentId,
+    ...engine.envVariables, SIGNIN_DEPLOYMENT_MODE: shared ? "staging-shared" : "staging", SIGNIN_CLOUDBASE_ENV_ID: environmentId,
+    SIGNIN_STAGING_NAMESPACE: scope.namespace,
     CHECKIN_ROSTER_API_BASE: platformUrl, SIGNIN_LEGACY_URL: legacyUrl,
-    SIGNIN_PLATFORM_API_KEY: "{{env.SIGNIN_PLATFORM_API_KEY}}", SIGNIN_SERVICE_API_KEY: "{{env.SIGNIN_SERVICE_API_KEY}}",
-    CHECKIN_ROSTER_API_KEY: "{{env.CHECKIN_ROSTER_API_KEY}}", ADMIN_PASSWORD_HASH: "{{env.ADMIN_PASSWORD_HASH}}"
+    ...Object.fromEntries(Object.entries(secretNames).map(([target, source]) => [target, "{{env." + source + "}}"])),
   };
   engine.dir = "cloudfunc";
   engine.installDependency = false; // Ship the exact lock-installed dependency graph.
@@ -55,9 +63,13 @@ function prepareStaging(options, dependencies = {}) {
     version: options.version || "staging-" + commit.slice(0, 12), commit,
     deployed_at: "NOT_DEPLOYED", prepared_at: new Date().toISOString(), environment: "staging", service: "signin",
     environment_id: environmentId, platform_api_base_url: platformUrl, engine_api_base_url: engineUrl,
+    storage_scope: shared ? "SAME_ENVIRONMENT_TEST_COLLECTIONS" : "ISOLATED_ENVIRONMENT",
+    staging_namespace: scope.namespace,
+    collection_mapping: shared ? collectionMap(scope.namespace) : null,
+    resource_changes: "NOT_EXECUTED",
     legacy_url: legacyUrl, functions: template.functions.map(item => item.name),
     dependency_install: "npm ci --prefix cloudfunc --ignore-scripts --no-audit --no-fund",
-    required_external_env: ["SIGNIN_PLATFORM_API_KEY", "SIGNIN_SERVICE_API_KEY", "CHECKIN_ROSTER_API_KEY", "ADMIN_PASSWORD_HASH"]
+    required_external_env: Object.values(secretNames)
   };
   for (const file of ["cloudfunc/build-info.json", "public/build-info.json", "release-manifest.json"]) fs.writeFileSync(path.join(output, file), json(manifest));
   return { root: output, manifest };
@@ -66,7 +78,7 @@ function prepareStaging(options, dependencies = {}) {
 if (require.main === module) {
   try {
     const args = process.argv.slice(2), values = {};
-    const fields = { "--environment-id": "environmentId", "--platform-url": "platformUrl", "--engine-url": "engineUrl", "--legacy-url": "legacyUrl", "--output-directory": "outputDirectory", "--version": "version" };
+    const fields = { "--environment-id": "environmentId", "--platform-url": "platformUrl", "--engine-url": "engineUrl", "--legacy-url": "legacyUrl", "--output-directory": "outputDirectory", "--version": "version", "--shared-namespace": "sharedNamespace" };
     for (let index = 0; index < args.length; index += 2) {
       if (!fields[args[index]] || args[index + 1] === undefined) throw new Error("STAGING_ARGUMENT_INVALID");
       values[fields[args[index]]] = args[index + 1];
