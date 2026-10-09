@@ -88,7 +88,7 @@ tcb env login set --anonymous-login true -e {你的环境ID}
 
 独立云 staging 必须使用 `cloudbaserc.staging.json`，设置 `SIGNIN_DEPLOYMENT_MODE=staging` 及独立的 `SIGNIN_CLOUDBASE_ENV_ID`。空值、生产环境 ID、占位符会在 SDK 初始化前失败关闭。保留的生产配置不在本次开发中修改或执行。云函数依赖已锁定 `@cloudbase/node-sdk@3.18.3`，构建使用 `cloudfunc/package-lock.json` 和 `npm ci --ignore-scripts`。
 
-staging打包只使用 `scripts/release/prepare-staging.ps1`，必须显式提供独立环境ID、平台HTTPS API基址、引擎HTTPS基址及兼容页HTTPS地址；缺少值、生产地址、本机/占位地址、URL凭据、query/fragment或未提交源码时停止。脚本只改仓库外全新输出副本，源静态页与生产默认配置保留。外部测试地址尚未提供时不能准备可部署的测试入口；具体命令见[隔离staging文档](docs/platform-integration-staging.md)。
+staging打包只使用 `scripts/release/prepare-staging.ps1`，必须显式提供独立环境ID、平台HTTPS API基址、引擎HTTPS基址及兼容页HTTPS地址；缺少值、生产地址、本机/占位地址、URL凭据、query/fragment或未提交源码时停止。脚本只改仓库外全新输出副本，源静态页与生产默认配置保留。对于尚未提供实际测试地址的新部署，不能准备可部署的测试入口；本任务已授权测试部署状态及具体命令见[隔离staging文档](docs/platform-integration-staging.md)。
 
 生产环境为 `checkinApi` 配置 `attendanceSyncWeekdays0000` 定时触发器，
 Cron 为 `0 0 0 ? * MON-FRI *`。它只调用新运营平台的受保护同步入口，
@@ -213,7 +213,7 @@ node tests/admin_import_parser.test.js
 node tests/shared_staging.test.js
 ```
 
-已购 CloudBase 标准版可作为同环境测试资源准备的基础；显式 `-SharedNamespace` 模式生成专用测试函数和五个带前缀的集合映射，普通 staging 的独立环境保护保留。准备包不会创建资源或上传小程序；真实资源操作的范围、独立平台测试 SQL 库和 HTTPS 连接仍需核验。具体隔离边界与命令见 [平台签到隔离验证](docs/platform-integration-staging.md)。
+已购 CloudBase 标准版可作为同环境测试资源准备的基础；显式 `-SharedNamespace` 模式生成专用测试函数和五个带前缀的集合映射，普通 staging 的独立环境保护保留。准备包本身不会创建资源或上传小程序。本任务已授权专用测试资源并完成部署，平台预览包已上传；手机扫码反馈和体验版选择仍待核验。新部署仍须分别核验授权范围、专用平台测试 SQL 库和 HTTPS 连接。实际状态、隔离边界与命令见 [平台签到隔离验证](docs/platform-integration-staging.md)。
 
 ## 技术说明
 
