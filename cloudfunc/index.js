@@ -1330,6 +1330,30 @@ exports.main = async (event, context) => {
     }
   }
 
+  if (p === "/ops/v1/guest-checkin/confirm") {
+    if (method !== "POST") return { statusCode: 405, headers: h, body: JSON.stringify({ ok: false }) };
+    if (!verifyServiceKey(event.headers, process.env.SIGNIN_PLATFORM_API_KEY)) return { statusCode: 401, headers: h, body: JSON.stringify({ ok: false, code: "SERVICE_AUTH_REQUIRED" }) };
+    const eventId = String(data.event_id || "").trim(), guestId = String(data.guest_id || ""), name = String(data.name || "").trim();
+    if (Object.keys(data).some(key => !["event_id", "guest_id", "name"].includes(key)) || !/^[a-f0-9]{64}$/.test(guestId) || !name || name.length > 120 || /[\x00-\x1f\x7f]/.test(name)) return { statusCode: 400, headers: h, body: JSON.stringify({ ok: false, msg: "来宾信息无效" }) };
+    try {
+      const eventItem = await getEventById(eventId);
+      if (!eventItem || !isPublicCheckinEligible(eventItem)) return { statusCode: 409, headers: h, body: JSON.stringify({ ok: false, msg: "当前活动已关闭或尚未开始" }) };
+      const registrationId = "guest_" + crypto.createHash("sha256").update(eventId + "\x1f" + guestId).digest("hex").slice(0, 48);
+      const now = new Date().toISOString();
+      const registration = { batch_id: eventId, name, registered_name: name, actual_attendee_name: name,
+        attendance_role: ATTENDANCE_ROLES.GUEST, platform_member_id: "", member_code: "", phone: "",
+        registration_source: "WECHAT_GUEST", source: "wechat_guest", created_at: now };
+      const saved = await saveCheckin({ ...registration, registration_id: registrationId,
+        checkin_source: "WECHAT", checked_at: now }, null, { guestRegistration: registration });
+      const committed = documentData(await db.collection("checkins").doc(saved.id).get());
+      return { statusCode: 200, headers: h, body: JSON.stringify({ ok: true, already: saved.already,
+        checked_at: saved.checkin.checked_at, participant_type: "GUEST", sync_status: committed && committed.sync_state === "DELIVERED" ? "SYNCED" : "PENDING",
+        msg: saved.already ? "本场次已签到" : "来宾签到成功" }) };
+    } catch (error) {
+      return { statusCode: 503, headers: h, body: JSON.stringify({ ok: false, msg: "来宾签到暂时不可用，请重试" }) };
+    }
+  }
+
   if (p === "/native/v1/checkin/confirm") {
     if (method !== "POST") return { statusCode: 405, headers: h, body: JSON.stringify({ ok: false, code: "METHOD_NOT_ALLOWED" }) };
     let authorized;

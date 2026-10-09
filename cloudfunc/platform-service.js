@@ -142,7 +142,11 @@ async function persistCheckin(db, row, registrationPatch, options = {}) {
       return { id, already: true, checkin: existing };
     }
     const regDoc = transaction.collection("registrations").doc(row.registration_id);
-    const currentRegistration = documentData(await regDoc.get());
+    let currentRegistration = documentData(await regDoc.get());
+    if (!currentRegistration && options.guestRegistration) {
+      currentRegistration = options.guestRegistration;
+      requireDatabaseSuccess(await regDoc.set(currentRegistration));
+    }
     if (!currentRegistration || String(currentRegistration.batch_id) !== String(row.batch_id)) throw new Error("CHECKIN_REGISTRATION_CHANGED");
     if (options.team && String(currentRegistration.actual_attendee_name || "").trim()) throw new Error("CHECKIN_SLOT_CONSUMED");
     // Fact and durable delivery state are one atomic document. An unavailable

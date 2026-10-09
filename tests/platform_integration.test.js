@@ -319,6 +319,26 @@ function signTicket(payload) {
   assert.equal(teamPull.data.items.find(row => row.attendance_status === "PRESENT").registered_name, "原报名联系人");
   assert.equal(teamPull.data.items.find(row => row.attendance_status === "PRESENT").member_id, null, "unbound team attendees never inherit the contact's identity");
 
+  seedEvent("guest-scene"); seedRegistration("real-same-name", "guest-scene", { name: "同名来宾" });
+  const guestBody = { event_id: "guest-scene", guest_id: "a".repeat(64), name: "同名来宾" };
+  assert.equal((await request("/ops/v1/guest-checkin/confirm", "POST", guestBody, "")).status, 401);
+  assert.equal((await request("/ops/v1/guest-checkin/confirm", "POST", { ...guestBody, platform_member_id: "11" })).status, 400);
+  failSync = true;
+  const guests = await Promise.all(Array.from({ length: 8 }, () => request("/ops/v1/guest-checkin/confirm", "POST", guestBody)));
+  assert(guests.every(row => row.data.ok && row.data.checked_at && row.data.sync_status === "PENDING"));
+  assert.equal(db.collections.checkins.filter(row => row.batch_id === "guest-scene").length, 1);
+  assert.equal(db.collections.registrations.filter(row => row.batch_id === "guest-scene" && row.attendance_role === "GUEST").length, 1);
+  failSync = false;
+  const secondGuest = await request("/ops/v1/guest-checkin/confirm", "POST", { ...guestBody, guest_id: "b".repeat(64) });
+  assert.equal(secondGuest.data.ok, true);
+  assert.equal(db.collections.checkins.filter(row => row.batch_id === "guest-scene").length, 2, "same-name accounts remain separate guests");
+  assert(!db.collections.checkins.some(row => row.registration_id === "real-same-name"), "guest never consumes a same-name member registration");
+  const guestPull = await request("/ops/v1/attendance/records?session_id=guest-scene", "GET", {}, process.env.SIGNIN_SERVICE_API_KEY);
+  assert(guestPull.data.items.filter(row => row.participant_type === "GUEST").every(row => row.member_id === null && !row.member_code));
+  db.collections.events.find(row => row.event_id === "guest-scene").status = "closed";
+  assert.equal((await request("/ops/v1/guest-checkin/confirm", "POST", { ...guestBody, guest_id: "c".repeat(64) })).status, 409);
+  assert.equal(db.collections.registrations.filter(row => row.batch_id === "guest-scene" && row.attendance_role === "GUEST").length, 2);
+
   // Losing transactions neither consume a slot nor partially write a fact.
   await assert.rejects(() => persistCheckin({ collection: db.collection }, { batch_id: "main", registration_id: "r11" }), /ATOMIC_CHECKIN_UNAVAILABLE/);
   assert.equal(checkinDocumentId("morning", "r1"), checkinDocumentId("morning", "r1"));
