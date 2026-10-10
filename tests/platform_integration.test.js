@@ -30,6 +30,7 @@ api._test.setPlatformRequestHandler(async (path, body) => {
 });
 api._test.setRequestOpsHandler(async (path, params) => {
   if (blockedOps) throw new Error("isolated platform is stopped");
+  if (path.endsWith("/registration-identities")) return { success: true, data: { source: "PLATFORM_ACTIVE_NAME_PHONE", matches: params.rows.filter(row => row.name === "已核验报名学员" && row.phone === "19900000001").map(row => ({registration_id: row.registration_id, platform_member_id: "52", member_code: "M52"})) } };
   if (path.endsWith("/options")) return { success: true, data: { source: "PLATFORM_ORG_RELATIONS", query_mode: "ORG_UNIT_ID", fallback_mode: "FAIL_CLOSED", classes: [{ id: "class-1", parent_id: "center-1" }, { id: "class-2", parent_id: "center-1" }], groups: [{ id: "group-1", parent_id: "class-1" }] } };
   if (path.endsWith("/validate")) return { success: true, data: { source: "PLATFORM_ORG_RELATIONS", query_mode: "ORG_UNIT_ID", fallback_mode: "FAIL_CLOSED", passed: true, class_member_count: 1, group_member_count: 1, group_class_mismatch_count: 0, invalid_relation_count: 0 } };
   if (path.endsWith("/cross-class-members")) return { success: true, data: { source: "PLATFORM_ORG_RELATIONS", query_mode: "EXACT_NAME_CURRENT_STUDY_CLASS", fallback_mode: "FAIL_CLOSED", event_class_org_unit_id: params.event_class_org_unit_id, members: [{ member_id: "22", member_code: "M22", name: "同名学员", home_class_org_unit_id: "class-2", home_class_name: "二班", company_name: "示例公司" }] } };
@@ -75,6 +76,21 @@ function signTicket(payload) {
   assert.equal((await request("/ops/v1/member-checkin/events", "POST", {})).data.fallback_url, process.env.SIGNIN_LEGACY_URL);
   delete process.env.SIGNIN_LEGACY_URL;
   delete process.env.SIGNIN_DEPLOYMENT_MODE; delete process.env.SIGNIN_CLOUDBASE_ENV_ID;
+  seedEvent("manual-isolated");
+  seedRegistration("imported-manual", "manual-isolated", { name: "人工验收甲", registered_name: "人工验收甲", platform_member_id: "", member_code: "", class_name: "隔离一班", group_name: "隔离组", phone: "", company: "" });
+  seedRegistration("other-manual", "manual-isolated", { name: "人工验收乙", registered_name: "人工验收乙", platform_member_id: "", member_code: "" });
+  const manualBefore = (await manage("event_detail", { event_id: "manual-isolated" })).data;
+  assert.equal(manualBefore.total, 2);
+  const manualResult = await manage("manual_checkin", {event_id: "manual-isolated", registration_id: "imported-manual"});
+  assert.equal(manualResult.data.ok, true, JSON.stringify(manualResult));
+  const manualAfter = (await manage("event_detail", { event_id: "manual-isolated" })).data;
+  assert.equal(manualAfter.total, 2, "manual checkin must not create registrations");
+  assert.equal(manualAfter.checked, 1);
+  assert.equal(manualAfter.rows.find(row => row.registration_id === "imported-manual").checked, true);
+  assert.equal(manualAfter.rows.find(row => row.registration_id === "imported-manual").class_name, "隔离一班");
+  assert.equal(manualAfter.rows.find(row => row.registration_id === "other-manual").checked, false);
+  assert.equal((await manage("manual_checkin", {event_id: "manual-isolated", registration_id: "imported-manual"})).data.already, true);
+  assert.equal((await manage("event_detail", { event_id: "manual-isolated" })).data.total, 2);
   seedEvent("main");
   seedRegistration("r11", "main");
   seedRegistration("r12", "main", { platform_member_id: "12", member_code: "M12" });
@@ -329,32 +345,54 @@ function signTicket(payload) {
   assert.equal(teamPull.data.items.find(row => row.attendance_status === "PRESENT").registered_name, "原报名联系人");
   assert.equal(teamPull.data.items.find(row => row.attendance_status === "PRESENT").member_id, null, "unbound team attendees never inherit the contact's identity");
 
-  seedEvent("guest-scene"); seedRegistration("real-same-name", "guest-scene", { name: "同名来宾" });
+  {
+  // Name-based scanning consumes existing enrollment; it never creates slots.
+  seedEvent("guest-scene"); seedRegistration("real-same-name", "guest-scene", { name: "同名来宾", registered_name: "同名来宾", platform_member_id: "", member_code: "", company: "示例企业", class_name: "一班" });
   const guestBody = { event_id: "guest-scene", guest_id: "a".repeat(64), name: "同名来宾" };
   assert.equal((await request("/ops/v1/guest-checkin/confirm", "POST", guestBody, "")).status, 401);
   assert.equal((await request("/ops/v1/guest-checkin/confirm", "POST", { ...guestBody, platform_member_id: "11" })).status, 400);
+  assert.equal((await request("/ops/v1/guest-checkin/confirm", "POST", guestBody)).status, 409, "old clients without enrollment selection cannot create guests");
+  const beforeNames = db.collections.registrations.filter(row => row.batch_id === "guest-scene").length;
+  const missing = await request("/ops/v1/guest-checkin/lookup", "POST", { ...guestBody, name: "未报名的人" });
+  assert.equal(missing.data.candidates.length, 0);
+  assert.equal(db.collections.registrations.filter(row => row.batch_id === "guest-scene").length, beforeNames);
+  const lookup = await request("/ops/v1/guest-checkin/lookup", "POST", guestBody);
+  assert.equal(lookup.data.candidates.length, 1);
+  assert.equal(lookup.data.candidates[0].class_name, "一班");
+  assert(!("phone" in lookup.data.candidates[0]));
+  const selected = { ...guestBody, candidate_token: lookup.data.candidates[0].candidate_token };
+  for (const body of [{...selected, name:"未报名的人"}, {...selected, guest_id:"b".repeat(64)}, {...selected, candidate_token:selected.candidate_token+"bad"}]) assert.equal((await request("/ops/v1/guest-checkin/confirm", "POST", body)).status, 409);
   failSync = true;
-  const guests = await Promise.all(Array.from({ length: 8 }, () => request("/ops/v1/guest-checkin/confirm", "POST", guestBody)));
+  const guests = await Promise.all(Array.from({ length: 8 }, () => request("/ops/v1/guest-checkin/confirm", "POST", selected)));
   assert(guests.every(row => row.data.ok && row.data.checked_at && row.data.sync_status === "PENDING"));
-  assert(guests.every(row => row.data.data.name === guestBody.name && row.data.data.event.event_id === "guest-scene"), "guest success retains the original welcome and activity fields");
-  const guestRepeat = await request("/ops/v1/guest-checkin/confirm", "POST", { ...guestBody, name: "再次输入的不同姓名" });
-  assert.equal(guestRepeat.data.data.name, guestBody.name, "repeated guest receipt uses the saved name");
-  assert.equal(guestRepeat.data.msg, "您已签到，无需重复操作");
+  assert(guests.every(row => row.data.data.name === guestBody.name && row.data.data.event.event_id === "guest-scene"));
   assert.equal(db.collections.checkins.filter(row => row.batch_id === "guest-scene").length, 1);
-  assert.equal(db.collections.registrations.filter(row => row.batch_id === "guest-scene" && row.attendance_role === "GUEST").length, 1);
+  assert.equal(db.collections.registrations.filter(row => row.batch_id === "guest-scene").length, beforeNames);
+  const detail = (await manage("event_detail", {event_id:"guest-scene"})).data;
+  assert.equal(detail.total, 1); assert.equal(detail.checked, 1);
+  assert.equal(detail.rows[0].registration_id, "real-same-name");
+  const guestRepeat = await request("/ops/v1/guest-checkin/confirm", "POST", selected);
+  assert.equal(guestRepeat.data.already, true); assert.equal(guestRepeat.data.msg, "您已签到，无需重复操作");
   failSync = false;
-  const secondGuest = await request("/ops/v1/guest-checkin/confirm", "POST", { ...guestBody, guest_id: "b".repeat(64) });
-  assert.equal(secondGuest.data.ok, true);
-  assert.equal(db.collections.checkins.filter(row => row.batch_id === "guest-scene").length, 2, "same-name accounts remain separate guests");
-  assert(!db.collections.checkins.some(row => row.registration_id === "real-same-name"), "guest never consumes a same-name member registration");
-  const guestPull = await request("/ops/v1/attendance/records?session_id=guest-scene", "GET", {}, process.env.SIGNIN_SERVICE_API_KEY);
-  assert(guestPull.data.items.filter(row => row.participant_type === "GUEST").every(row => row.member_id === null && !row.member_code));
-  assert(guestPull.data.items.filter(row => row.attendance_role === "GUEST").every(row => row.score_eligible === false));
-  assert(guestPull.data.items.every(row => ["MEMBER", "GUEST", "OBSERVER"].includes(row.participant_type)), "platform participant types obey its existing MySQL constraint");
+  seedRegistration("old-self-created", "guest-scene", {name:"旧错误来宾", registration_source:"WECHAT_GUEST", platform_member_id:"", member_code:""});
+  assert.equal((await request("/ops/v1/guest-checkin/lookup", "POST", {...guestBody,name:"旧错误来宾"})).data.candidates.length, 0);
+  assert.equal((await request("/checkin/confirm", "POST", {event_id:"guest-scene",registration_id:"old-self-created"}, "")).data.ok, false);
   db.collections.events.find(row => row.event_id === "guest-scene").status = "closed";
-  assert.equal((await request("/ops/v1/guest-checkin/confirm", "POST", { ...guestBody, guest_id: "c".repeat(64) })).status, 409);
-  assert.equal(db.collections.registrations.filter(row => row.batch_id === "guest-scene" && row.attendance_role === "GUEST").length, 2);
+  assert.equal((await request("/ops/v1/guest-checkin/confirm", "POST", selected)).status, 409);
 
+  seedEvent("legacy-member");
+  seedRegistration("legacy-import", "legacy-member", {name:"已核验报名学员", registered_name:"已核验报名学员",phone:"19900000001",platform_member_id:"",member_code:"",registration_source:"EXCEL_UPLOAD"});
+  const legacyMember = { event_id:"legacy-member",member:{member_id:"52",member_code:"M52",name:"已核验报名学员"} };
+  const legacyLookup = await request("/ops/v1/member-checkin/lookup", "POST", legacyMember);
+  assert.equal(legacyLookup.data.can_checkin, true); assert.equal(legacyLookup.data.registration.registration_id,"legacy-import");
+  const legacyConfirm = await request("/ops/v1/member-checkin/confirm", "POST", legacyMember);
+  assert.equal(legacyConfirm.data.ok, true);
+  assert.equal(db.collections.registrations.filter(row => row.batch_id === "legacy-member").length, 1);
+  assert.equal(db.collections.registrations.find(row => row._id === "legacy-import").platform_member_id,"52");
+  const wrongMember = {event_id:"legacy-member",member:{member_id:"53",member_code:"M53",name:"已核验报名学员"}};
+  assert.equal((await request("/ops/v1/member-checkin/lookup","POST",wrongMember)).data.can_checkin,false);
+
+  }
   // Losing transactions neither consume a slot nor partially write a fact.
   await assert.rejects(() => persistCheckin({ collection: db.collection }, { batch_id: "main", registration_id: "r11" }), /ATOMIC_CHECKIN_UNAVAILABLE/);
   assert.equal(checkinDocumentId("morning", "r1"), checkinDocumentId("morning", "r1"));
