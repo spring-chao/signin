@@ -1,6 +1,7 @@
 const assert = require("assert");
 const crypto = require("crypto");
 const Module = require("module");
+const { enableAtomicTransactions } = require("./support/atomic_database");
 
 const ADMIN_PASSWORD = "course-test-password!";
 process.env.ADMIN_PASSWORD_HASH = crypto.createHash("sha256").update(ADMIN_PASSWORD).digest("hex");
@@ -42,6 +43,7 @@ const db = createDatabase({
   config: [{ _id: "config-1", key: "event_name", value: "盛和塾签到" }],
   events: [], registrations: [], checkins: [], event_audit_logs: []
 });
+enableAtomicTransactions(db);
 const originalLoad = Module._load;
 Module._load = function(request, parent, isMain) {
   if (request === "@cloudbase/node-sdk") return { init: () => ({ database: () => db }) };

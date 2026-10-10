@@ -1,6 +1,7 @@
 const assert = require("assert");
 const crypto = require("crypto");
 const Module = require("module");
+const { enableAtomicTransactions } = require("./support/atomic_database");
 
 const TEST_ADMIN_PASSWORD = "test-admin-password!";
 process.env.ADMIN_PASSWORD_HASH = crypto.createHash("sha256").update(TEST_ADMIN_PASSWORD).digest("hex");
@@ -109,6 +110,7 @@ const db = createDatabase({
   }]
 });
 
+enableAtomicTransactions(db);
 const originalLoad = Module._load;
 Module._load = function(request, parent, isMain) {
   if (request === "@cloudbase/node-sdk") return { init: () => ({ database: () => db }) };
