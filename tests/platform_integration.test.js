@@ -34,7 +34,7 @@ api._test.setRequestOpsHandler(async (path, params) => {
     const matches = params.rows.flatMap(row => {
       if (row.name === "已核验报名学员" && row.phone === "19900000001") return [{ registration_id: row.registration_id, platform_member_id: "52", member_code: "M52" }];
       const bound = params.bound_member;
-      if (row.name === '独立报名乙' && !row.phone && bound && bound.member_id === '61' && bound.member_code === 'M61' && bound.name === row.name) return [{ registration_id: row.registration_id, platform_member_id: '61', member_code: 'M61' }];
+      if (row.name === '独立报名乙' && !row.phone && bound && bound.member_id === '61' && bound.member_code === 'M61' && bound.name === row.name) return [{ registration_id: row.registration_id, platform_member_id: '61', member_code: 'M61', identity_match:'BOUND_NAME_SELF_CONFIRMATION' }];
       return [];
     });
     return { success: true, data: { source: params.bound_member ? "PLATFORM_BOUND_REGISTRATION_IDENTITY" : "PLATFORM_ACTIVE_NAME_PHONE", matches } };
@@ -321,9 +321,11 @@ function signTicket(payload) {
   seedEvent("non-team-conflict");
   for (let i = 0; i < 2; i++) seedRegistration("non-team-conflict-" + i, "non-team-conflict");
   const identityConflict = await request("/ops/v1/member-checkin/lookup", "POST", { event_id: "non-team-conflict", member });
-  assert.equal(identityConflict.data.ok, false);
-  assert.equal(identityConflict.data.status, "IDENTITY_CONFLICT");
-  assert(!identityConflict.data.requires_fallback, "non-team stable identity conflicts remain fail-closed");
+  assert.equal(identityConflict.data.ok, true);
+  assert.equal(identityConflict.data.can_checkin, true);
+  const duplicatedConfirm = await request("/ops/v1/member-checkin/confirm", "POST", {event_id:"non-team-conflict", member});
+  assert.equal(duplicatedConfirm.data.ok,true);
+  assert.equal(db.collections.checkins.filter(row=>row.batch_id==="non-team-conflict").length,1,"a bound person confirms one enrollment, never all duplicate rows");
   for (const change of ["deleted", "changed-to-team"]) {
     const eventId = "preloaded-ticket-" + change;
     seedEvent(eventId); seedRegistration(eventId + "-registration", eventId);
@@ -358,11 +360,14 @@ function signTicket(payload) {
   const scanned = await request('/ops/v1/guest-checkin/confirm', 'POST', { ...scanBody, candidate_token: scanLookup.data.candidates[0].candidate_token });
   assert.equal(scanned.data.ok, true);
   const nativeTicket = signTicket({ ...ticketPayload, event_id: 'independent-company', member: boundPerson });
+  blockedOps = true;
   const nativeResults = await Promise.all(Array.from({ length: 12 }, () => request('/native/v1/checkin/confirm', 'POST', { ticket: nativeTicket }, '')));
+  blockedOps = false;
   assert(nativeResults.every(result => result.data.ok));
   assert.equal(db.collections.checkins.filter(row => row.batch_id === 'independent-company').length, 2);
   assert.equal(db.collections.registrations.filter(row => row.batch_id === 'independent-company').length, 3);
   assert.equal(db.collections.registrations.find(row => row._id === 'company-b').platform_member_id, '61');
+  assert.equal(db.collections.checkins.find(row=>row.registration_id==='company-b').identity_match,'BOUND_NAME_SELF_CONFIRMATION');
   const repeatBound = await request('/ops/v1/member-checkin/lookup', 'POST', { event_id: 'independent-company', member: boundPerson });
   assert.equal(repeatBound.data.already_checked_in, true);
   const repeatScanBody = { ...scanBody, name: '独立报名乙' };
@@ -372,6 +377,25 @@ function signTicket(payload) {
   assert.equal(db.collections.checkins.filter(row => row.batch_id === 'independent-company').length, 2, 'switching channels never duplicates attendance');
   assert.equal((await manage('manual_checkin', { event_id: 'independent-company', registration_id: 'company-c' })).data.ok, true);
   assert(db.collections.checkins.filter(row => row.batch_id === 'independent-company').every(row => row.registered_name === row.actual_attendee_name));
+
+  seedEvent('self-name-mismatch');
+  seedRegistration('self-name-mismatch-row','self-name-mismatch',{name:'另一个姓名',platform_member_id:'61',member_code:'M61'});
+  const wrongName = await request('/ops/v1/member-checkin/lookup','POST',{event_id:'self-name-mismatch',member:boundPerson});
+  assert.equal(wrongName.data.can_checkin,false);
+  assert(wrongName.data.msg.includes('姓名一致'));
+
+  // A guest/name scan and a subsequent bound confirmation keep the original
+  // attendance time while attaching the explicitly confirmed bound identity.
+  seedEvent('scan-then-bound');
+  seedRegistration('scan-then-bound-row','scan-then-bound',{name:boundPerson.name,registered_name:boundPerson.name,phone:'',platform_member_id:'',member_code:''});
+  const firstScan=await request('/checkin/confirm','POST',{event_id:'scan-then-bound',registration_id:'scan-then-bound-row',name:boundPerson.name},'');
+  const thenBound=await request('/ops/v1/member-checkin/confirm','POST',{event_id:'scan-then-bound',member:boundPerson});
+  assert.equal(thenBound.data.ok,true);
+  assert.equal(thenBound.data.already,true);
+  const originalFact=db.collections.checkins.find(row=>row.registration_id==='scan-then-bound-row');
+  assert.equal(originalFact.checked_at,firstScan.data.data.checked_at);
+  assert.equal(originalFact.platform_member_id,'61');
+  assert.equal(db.collections.checkins.filter(row=>row.batch_id==='scan-then-bound').length,1);
 
   seedEvent('unverified-blank-phone');
   seedRegistration('unverified-name', 'unverified-blank-phone', { name: '待核对同名', registered_name: '待核对同名', platform_member_id: '', member_code: '', phone: '' });

@@ -137,10 +137,7 @@ async function persistCheckin(db, row, registrationPatch, options = {}) {
     }
     const doc = transaction.collection("checkins").doc(id);
     const existing = documentData(await doc.get());
-    if (existing) {
-      if (options.team && existing.actual_attendee_name !== row.actual_attendee_name) throw new Error("CHECKIN_SLOT_CONSUMED");
-      return { id, already: true, checkin: existing };
-    }
+
     const regDoc = transaction.collection("registrations").doc(row.registration_id);
     let currentRegistration = documentData(await regDoc.get());
     if (!currentRegistration && options.guestRegistration) {
@@ -149,6 +146,18 @@ async function persistCheckin(db, row, registrationPatch, options = {}) {
     }
     if (!currentRegistration || String(currentRegistration.batch_id) !== String(row.batch_id)) throw new Error("CHECKIN_REGISTRATION_CHANGED");
     if (options.validateRegistration && !options.validateRegistration(currentRegistration)) throw new Error("CHECKIN_REGISTRATION_CHANGED");
+    if (existing) {
+      if ((options.team && existing.actual_attendee_name !== row.actual_attendee_name) ||
+          (options.validateExisting && !options.validateExisting(existing))) throw new Error("CHECKIN_SLOT_CONSUMED");
+      let checkin = existing;
+      if (options.existingIdentityPatch && !existing.platform_member_id && !existing.member_code) {
+        const patch = { ...options.existingIdentityPatch, sync_state: "PENDING", sync_next_retry_at: new Date().toISOString() };
+        requireDatabaseSuccess(await doc.update(patch));
+        if (registrationPatch) requireDatabaseSuccess(await regDoc.update(registrationPatch));
+        checkin = { ...existing, ...patch };
+      }
+      return { id, already: true, checkin };
+    }
     if (options.team && String(currentRegistration.actual_attendee_name || "").trim()) throw new Error("CHECKIN_SLOT_CONSUMED");
     // Fact and durable delivery state are one atomic document. An unavailable
     // platform cannot erase a successfully persisted attendance fact.
