@@ -526,13 +526,15 @@ exports.main = async (event, context) => {
     return { validation, syncResult };
   }
 
-  async function resolveRegistrationMembers(eventId, rows) {
+  async function resolveRegistrationMembers(eventId, rows, member) {
     const payload = { event_id: eventId, rows: rows.map(row => ({ registration_id: String(row._id), name: String(row.name || "").trim(), phone: normalizePhone(row.phone) })) };
+    if (member) payload.bound_member = { member_id: String(member.member_id), member_code: String(member.member_code), name: String(member.name || "").trim() };
     const connection = resolveOpsConnection(process.env, deploymentMode);
     const response = testOpsRequestHandler
       ? await testOpsRequestHandler("/api/v1/checkin-rosters/registration-identities", payload)
       : await requestJson(connection.base + "/api/v1/checkin-rosters/registration-identities", { "X-API-Key": connection.apiKey }, "POST", payload);
-    if (!response || response.success !== true || !response.data || response.data.source !== "PLATFORM_ACTIVE_NAME_PHONE" || !Array.isArray(response.data.matches)) throw new Error("REGISTRATION_IDENTITY_UNAVAILABLE");
+    const source = member ? "PLATFORM_BOUND_REGISTRATION_IDENTITY" : "PLATFORM_ACTIVE_NAME_PHONE";
+    if (!response || response.success !== true || !response.data || response.data.source !== source || !Array.isArray(response.data.matches)) throw new Error("REGISTRATION_IDENTITY_UNAVAILABLE");
     return response.data.matches;
   }
 
@@ -595,6 +597,12 @@ exports.main = async (event, context) => {
       options.validateEvent = isPublicCheckinEligible;
     }
     if (platformContext && platformContext.member) {
+      const member = platformContext.member;
+      options.validateRegistration = registration =>
+        (!registration.platform_member_id || String(registration.platform_member_id) === String(member.member_id)) &&
+        (!registration.member_code || String(registration.member_code) === String(member.member_code)) &&
+        normalizePersonName(registration.name) === normalizePersonName(row.name) &&
+        ![ATTENDANCE_ROLES.EVENT_TEAM_MEMBER, ATTENDANCE_ROLES.COURSE_TEAM_MEMBER].includes(registration.attendance_role);
       row = { ...row, platform_member_id: platformContext.member.member_id, member_code: platformContext.member.member_code, checkin_source: "WECHAT" };
       registrationPatch = { ...(registrationPatch || {}), platform_member_id: platformContext.member.member_id, member_code: platformContext.member.member_code };
     } else if (platformContext && platformContext.operation === "manual_checkin") row = { ...row, checkin_source: "MANUAL" };
@@ -1455,9 +1463,9 @@ exports.main = async (event, context) => {
       // a platform ID; it cannot override a conflicting recorded identity.
       let matches = rows.filter(row => String(row.platform_member_id || "") === memberId || (!row.platform_member_id && String(row.member_code || "") === memberCode));
       if (!matches.length) {
-        const legacy = rows.filter(row => !row.platform_member_id && !row.member_code && row.registration_source !== "WECHAT_GUEST" && row.source !== "wechat_guest" && normalizePersonName(row.name) === normalizePersonName(member.name) && /^1\d{10}$/.test(normalizePhone(row.phone)));
+        const legacy = rows.filter(row => !row.platform_member_id && !row.member_code && row.registration_source !== "WECHAT_GUEST" && row.source !== "wechat_guest" && normalizePersonName(row.name) === normalizePersonName(member.name) && !isTeamRegistrationSlot(row, rows) && (!normalizePhone(row.phone) || /^1\d{10}$/.test(normalizePhone(row.phone))));
         if (legacy.length) {
-          const resolved = await resolveRegistrationMembers(eventId, legacy);
+          const resolved = await resolveRegistrationMembers(eventId, legacy, member);
           const ids = new Set(resolved.filter(item => String(item.platform_member_id) === memberId && String(item.member_code) === memberCode).map(item => String(item.registration_id)));
           matches = legacy.filter(row => ids.has(String(row._id)));
           if (matches.length === 1) matches = matches.map(row => ({ ...row, platform_member_id: memberId, member_code: memberCode }));
@@ -2144,7 +2152,15 @@ exports.main = async (event, context) => {
     if ([ATTENDANCE_ROLES.EVENT_TEAM_MEMBER, ATTENDANCE_ROLES.COURSE_TEAM_MEMBER].includes(String(registration.attendance_role || ""))) return true;
     if (registration.platform_member_id || registration.member_code) return false;
     const company = normalizeCompany(registration.company);
-    return Boolean(company && (registrations || []).filter(row => normalizeCompany(row.company) === company).length > 1);
+    const contact = normalizePersonName(registration.registered_name || registration.name);
+    const phone = normalizePhone(registration.phone);
+    // Distinct named employees of one company are individual registrations.
+    // Keep only the legacy repeated-contact placeholder heuristic, alongside
+    // explicit team roles. Company alone is never evidence of team enrollment.
+    return Boolean(company && contact && (registrations || []).filter(row =>
+      !row.platform_member_id && !row.member_code && normalizeCompany(row.company) === company &&
+      normalizePersonName(row.registered_name || row.name) === contact &&
+      normalizePhone(row.phone) === phone).length > 1);
   }
 
   function courseTeamContactName(registrations) {

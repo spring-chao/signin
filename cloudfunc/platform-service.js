@@ -148,6 +148,7 @@ async function persistCheckin(db, row, registrationPatch, options = {}) {
       requireDatabaseSuccess(await regDoc.set(currentRegistration));
     }
     if (!currentRegistration || String(currentRegistration.batch_id) !== String(row.batch_id)) throw new Error("CHECKIN_REGISTRATION_CHANGED");
+    if (options.validateRegistration && !options.validateRegistration(currentRegistration)) throw new Error("CHECKIN_REGISTRATION_CHANGED");
     if (options.team && String(currentRegistration.actual_attendee_name || "").trim()) throw new Error("CHECKIN_SLOT_CONSUMED");
     // Fact and durable delivery state are one atomic document. An unavailable
     // platform cannot erase a successfully persisted attendance fact.
