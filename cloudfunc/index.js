@@ -527,6 +527,18 @@ exports.main = async (event, context) => {
   }
 
   async function resolveRegistrationMembers(eventId, rows, member) {
+    const ticketMember = platformContext && platformContext.ticket_member;
+    if (member && ticketMember && String(ticketMember.member_id)===String(member.member_id) &&
+        String(ticketMember.member_code)===String(member.member_code) &&
+        normalizePersonName(ticketMember.name)===normalizePersonName(member.name) &&
+        rows.every(row=>!normalizePhone(row.phone))) {
+      // The short-lived native ticket was issued for this already validated
+      // binding. A blank enrollment phone must not add a platform dependency
+      // to the durable attendance commit path.
+      return rows.filter(row=>normalizePersonName(row.name)===normalizePersonName(member.name)).map(row=>({
+        registration_id:String(row._id),platform_member_id:String(member.member_id),member_code:String(member.member_code),identity_match:"BOUND_NAME_SELF_CONFIRMATION"
+      }));
+    }
     const payload = { event_id: eventId, rows: rows.map(row => ({ registration_id: String(row._id), name: String(row.name || "").trim(), phone: normalizePhone(row.phone) })) };
     if (member) payload.bound_member = { member_id: String(member.member_id), member_code: String(member.member_code), name: String(member.name || "").trim() };
     const connection = resolveOpsConnection(process.env, deploymentMode);
@@ -601,10 +613,18 @@ exports.main = async (event, context) => {
       options.validateRegistration = registration =>
         (!registration.platform_member_id || String(registration.platform_member_id) === String(member.member_id)) &&
         (!registration.member_code || String(registration.member_code) === String(member.member_code)) &&
-        normalizePersonName(registration.name) === normalizePersonName(row.name) &&
+        normalizePersonName(registration.name) === normalizePersonName(member.name || row.name) &&
         ![ATTENDANCE_ROLES.EVENT_TEAM_MEMBER, ATTENDANCE_ROLES.COURSE_TEAM_MEMBER].includes(registration.attendance_role);
-      row = { ...row, platform_member_id: platformContext.member.member_id, member_code: platformContext.member.member_code, checkin_source: "WECHAT" };
-      registrationPatch = { ...(registrationPatch || {}), platform_member_id: platformContext.member.member_id, member_code: platformContext.member.member_code };
+      const confirmation = platformContext.bound_name_confirmation ? {
+        identity_match: "BOUND_NAME_SELF_CONFIRMATION", identity_confirmed_at: new Date().toISOString()
+      } : {};
+      options.validateExisting = existing =>
+        (!existing.platform_member_id || String(existing.platform_member_id) === String(member.member_id)) &&
+        (!existing.member_code || String(existing.member_code) === String(member.member_code)) &&
+        normalizePersonName(existing.actual_attendee_name || existing.name) === normalizePersonName(member.name || row.name);
+      options.existingIdentityPatch = { platform_member_id: member.member_id, member_code: member.member_code, ...confirmation };
+      row = { ...row, platform_member_id: platformContext.member.member_id, member_code: platformContext.member.member_code, checkin_source: "WECHAT", ...confirmation };
+      registrationPatch = { ...(registrationPatch || {}), platform_member_id: platformContext.member.member_id, member_code: platformContext.member.member_code, ...confirmation };
     } else if (platformContext && platformContext.operation === "manual_checkin") row = { ...row, checkin_source: "MANUAL" };
     const saved = await persistCheckin(db, row, registrationPatch, options);
     if (!(options && options.deferDelivery)) await deliverCheckin({ ...saved.checkin, _id: saved.id });
@@ -1461,18 +1481,32 @@ exports.main = async (event, context) => {
       const rows = await rowsForBatch("registrations", eventId, 5000);
       // ID is authoritative. Member code only locates a historical row without
       // a platform ID; it cannot override a conflicting recorded identity.
-      let matches = rows.filter(row => String(row.platform_member_id || "") === memberId || (!row.platform_member_id && String(row.member_code || "") === memberCode));
+      let matches = rows.filter(row => normalizePersonName(row.name) === normalizePersonName(member.name) &&
+        (String(row.platform_member_id || "") === memberId || (!row.platform_member_id && String(row.member_code || "") === memberCode)));
+      let selfNameConfirmation = false;
       if (!matches.length) {
-        const legacy = rows.filter(row => !row.platform_member_id && !row.member_code && row.registration_source !== "WECHAT_GUEST" && row.source !== "wechat_guest" && normalizePersonName(row.name) === normalizePersonName(member.name) && !isTeamRegistrationSlot(row, rows) && (!normalizePhone(row.phone) || /^1\d{10}$/.test(normalizePhone(row.phone))));
+        const legacy = rows.filter(row => !row.platform_member_id && !row.member_code && row.registration_source !== "WECHAT_GUEST" && row.source !== "wechat_guest" && normalizePersonName(row.name) === normalizePersonName(member.name) && !isTeamRegistrationSlot(row, rows));
         if (legacy.length) {
           const resolved = await resolveRegistrationMembers(eventId, legacy, member);
           const ids = new Set(resolved.filter(item => String(item.platform_member_id) === memberId && String(item.member_code) === memberCode).map(item => String(item.registration_id)));
           matches = legacy.filter(row => ids.has(String(row._id)));
-          if (matches.length === 1) matches = matches.map(row => ({ ...row, platform_member_id: memberId, member_code: memberCode }));
+          selfNameConfirmation = resolved.some(item => ids.has(String(item.registration_id)) && item.identity_match === "BOUND_NAME_SELF_CONFIRMATION");
+          matches = matches.map(row => ({ ...row, platform_member_id: memberId, member_code: memberCode }));
         }
       }
       if (matches.some(row => isTeamRegistrationSlot(row, rows))) return { statusCode: p.endsWith("/lookup") ? 200 : 409, headers: h, body: JSON.stringify({ ok: p.endsWith("/lookup"), status: "TEAM_FALLBACK", event: publicEvent(eventItem), can_checkin: false, requires_fallback: true, fallback_available: true, msg: "团队报名需确认实际参加人，请使用团队备用签到" }) };
-      if (matches.length > 1) return { statusCode: 200, headers: h, body: JSON.stringify({ ok: false, status: "IDENTITY_CONFLICT", msg: "本人报名记录不唯一，请联系现场工作人员" }) };
+      if (matches.length > 1) {
+        // The authenticated person confirms ONE same-name enrollment. Prefer
+        // their existing attendance, then matching class metadata; never post
+        // all namesakes or consume a registration tied to another member ID.
+        const present = await rowsForBatch("checkins", eventId, 5000);
+        const mine = new Set(present.filter(row => String(row.platform_member_id || "") === memberId || String(row.member_code || "") === memberCode).map(row => String(row.registration_id)));
+        const occupied = new Set(present.filter(row => (row.platform_member_id && String(row.platform_member_id)!==memberId) || (row.member_code && String(row.member_code)!==memberCode)).map(row => String(row.registration_id)));
+        matches = matches.filter(row => !occupied.has(String(row._id))).sort((a,b) =>
+          Number(mine.has(String(b._id))) - Number(mine.has(String(a._id))) ||
+          Number(normalizeGroupValue(b.class_name) === normalizeGroupValue(member.class_name)) - Number(normalizeGroupValue(a.class_name) === normalizeGroupValue(member.class_name)) ||
+          String(a._id).localeCompare(String(b._id))).slice(0,1);
+      }
       let registration = matches[0];
       let crossCandidate = null;
       if (!registration && isClassMeetingEvent(eventItem) && eventItem.class_org_unit_id) {
@@ -1480,17 +1514,17 @@ exports.main = async (event, context) => {
         const verified = candidates.filter(item => String(item.member_id || "") === memberId && String(item.member_code || "") === memberCode);
         if (verified.length === 1) crossCandidate = await publicCrossClassCandidate(eventItem, verified[0]);
       }
-      if (!registration && !crossCandidate) return { statusCode: p.endsWith("/lookup") ? 200 : 409, headers: h, body: JSON.stringify({ ok: p.endsWith("/lookup"), status: "NOT_REGISTERED", event: publicEvent(eventItem), can_checkin: false, requires_fallback: true, fallback_available: true, msg: "当前活动没有本人报名记录，请使用来宾或团队备用签到" }) };
+      if (!registration && !crossCandidate) return { statusCode: p.endsWith("/lookup") ? 200 : 409, headers: h, body: JSON.stringify({ ok: p.endsWith("/lookup"), status: "NOT_REGISTERED", event: publicEvent(eventItem), can_checkin: false, requires_fallback: true, fallback_available: true, msg: "本次报名名单中未找到与您绑定姓名一致的记录，请确认是否报名，或联系工作人员" }) };
       if (p.endsWith("/lookup")) {
         const checkins = registration ? await rowsForBatch("checkins", eventId, 5000) : [];
         const existing = registration && checkins.find(row => String(row.registration_id) === String(registration._id));
-        return { statusCode: 200, headers: h, body: JSON.stringify({ ok: true, status: crossCandidate ? "CROSS_CLASS" : "READY", event: publicEvent(eventItem), registration_id: registration && registration._id || "", registration: registration ? { ...redact(registration), id: registration._id, registration_id: registration._id } : null, receipt: existing ? await nameCheckinReceipt(registration, eventItem, existing.checked_at) : null, cross_class_member: Boolean(crossCandidate), member: { member_id: memberId, member_code: memberCode, name: member.name || "" }, checked_in: Boolean(existing), already_checked_in: Boolean(existing), can_checkin: !existing, checked_at: existing && existing.checked_at || "", candidate: crossCandidate }) };
+        return { statusCode: 200, headers: h, body: JSON.stringify({ ok: true, status: crossCandidate ? "CROSS_CLASS" : "READY", notice: selfNameConfirmation ? "报名姓名与您的绑定姓名一致，请确认本人签到" : "", event: publicEvent(eventItem), registration_id: registration && registration._id || "", registration: registration ? { ...redact(registration), id: registration._id, registration_id: registration._id } : null, receipt: existing ? await nameCheckinReceipt(registration, eventItem, existing.checked_at) : null, cross_class_member: Boolean(crossCandidate), member: { member_id: memberId, member_code: memberCode, name: member.name || "" }, checked_in: Boolean(existing), already_checked_in: Boolean(existing), can_checkin: !existing, checked_at: existing && existing.checked_at || "", candidate: crossCandidate }) };
       }
       if (registration && data.registration_id && String(data.registration_id) !== String(registration._id)) return { statusCode: 403, headers: h, body: JSON.stringify({ ok: false, status: "REGISTRATION_MISMATCH" }) };
       const response = await exports.main({
         path: crossCandidate ? "/checkin/cross-confirm" : "/checkin/confirm", httpMethod: "POST", headers: {},
         body: JSON.stringify(crossCandidate ? { event_id: eventId, name: member.name, candidate_token: crossCandidate.candidate_token } : { event_id: eventId, registration_id: registration._id, name: registration.name })
-      }, { [TRUSTED_CONTEXT]: { member: { member_id: memberId, member_code: memberCode }, ticket_member: platformContext && platformContext.ticket_member, service_request: true, management: false } });
+      }, { [TRUSTED_CONTEXT]: { member: { member_id: memberId, member_code: memberCode, name: member.name }, bound_name_confirmation: selfNameConfirmation, ticket_member: platformContext && platformContext.ticket_member, service_request: true, management: false } });
       const result = JSON.parse(response.body);
       if (result.ok) {
         const committed = (await rowsForBatch("checkins", eventId, 5000)).find(row => String(row.platform_member_id || "") === memberId || String(row.member_code || "") === memberCode);
@@ -2258,7 +2292,7 @@ exports.main = async (event, context) => {
       const existing = currentCheckins.find(row => String(row.registration_id || "") === registrationId);
       const role = registrationAttendanceRole(reg, eventItem);
       const displayData = await nameCheckinReceipt(reg, eventItem, existing && existing.checked_at);
-      if (existing) return { statusCode: 200, headers: h, body: JSON.stringify({ ok: true, already: true, msg: "您已签到，无需重复操作", data: displayData }) };
+      if (existing && !(platformContext && platformContext.member)) return { statusCode: 200, headers: h, body: JSON.stringify({ ok: true, already: true, msg: "您已签到，无需重复操作", data: displayData }) };
       const now = new Date().toISOString();
       const saved = await saveCheckin({
         registration_id: registrationId,
