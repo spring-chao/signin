@@ -30,7 +30,15 @@ api._test.setPlatformRequestHandler(async (path, body) => {
 });
 api._test.setRequestOpsHandler(async (path, params) => {
   if (blockedOps) throw new Error("isolated platform is stopped");
-  if (path.endsWith("/registration-identities")) return { success: true, data: { source: "PLATFORM_ACTIVE_NAME_PHONE", matches: params.rows.filter(row => row.name === "已核验报名学员" && row.phone === "19900000001").map(row => ({registration_id: row.registration_id, platform_member_id: "52", member_code: "M52"})) } };
+  if (path.endsWith("/registration-identities")) {
+    const matches = params.rows.flatMap(row => {
+      if (row.name === "已核验报名学员" && row.phone === "19900000001") return [{ registration_id: row.registration_id, platform_member_id: "52", member_code: "M52" }];
+      const bound = params.bound_member;
+      if (row.name === '独立报名乙' && !row.phone && bound && bound.member_id === '61' && bound.member_code === 'M61' && bound.name === row.name) return [{ registration_id: row.registration_id, platform_member_id: '61', member_code: 'M61' }];
+      return [];
+    });
+    return { success: true, data: { source: params.bound_member ? "PLATFORM_BOUND_REGISTRATION_IDENTITY" : "PLATFORM_ACTIVE_NAME_PHONE", matches } };
+  }
   if (path.endsWith("/options")) return { success: true, data: { source: "PLATFORM_ORG_RELATIONS", query_mode: "ORG_UNIT_ID", fallback_mode: "FAIL_CLOSED", classes: [{ id: "class-1", parent_id: "center-1" }, { id: "class-2", parent_id: "center-1" }], groups: [{ id: "group-1", parent_id: "class-1" }] } };
   if (path.endsWith("/validate")) return { success: true, data: { source: "PLATFORM_ORG_RELATIONS", query_mode: "ORG_UNIT_ID", fallback_mode: "FAIL_CLOSED", passed: true, class_member_count: 1, group_member_count: 1, group_class_mismatch_count: 0, invalid_relation_count: 0 } };
   if (path.endsWith("/cross-class-members")) return { success: true, data: { source: "PLATFORM_ORG_RELATIONS", query_mode: "EXACT_NAME_CURRENT_STUDY_CLASS", fallback_mode: "FAIL_CLOSED", event_class_org_unit_id: params.event_class_org_unit_id, members: [{ member_id: "22", member_code: "M22", name: "同名学员", home_class_org_unit_id: "class-2", home_class_name: "二班", company_name: "示例公司" }] } };
@@ -329,6 +337,48 @@ function signTicket(payload) {
     assert(!db.collections.checkins.some(row => row.batch_id === eventId));
   }
 
+  // Separate named employees of one company, imported without phones/IDs,
+  // must work through both scanning and bound/native check-in.
+  seedEvent('independent-company');
+  for (const [id, name] of [['company-a', '独立报名甲'], ['company-b', '独立报名乙'], ['company-c', '独立报名丙']]) {
+    seedRegistration(id, 'independent-company', { name, registered_name: name, company: '合成同一企业',
+      phone: '', platform_member_id: '', member_code: '', registration_source: 'EXCEL_UPLOAD' });
+  }
+  const independentDetail = await manage('event_detail', { event_id: 'independent-company' });
+  assert(independentDetail.data.rows.every(row => !row.is_team), 'same company is not team evidence');
+  const scanBody = { event_id: 'independent-company', guest_id: 'c'.repeat(64), name: '独立报名甲' };
+  const scanLookup = await request('/ops/v1/guest-checkin/lookup', 'POST', scanBody);
+  assert.equal(scanLookup.data.candidates.length, 1);
+  const boundPerson = { member_id: '61', member_code: 'M61', name: '独立报名乙' };
+  const boundContext = await request('/ops/v1/member-checkin/lookup', 'POST', { event_id: 'independent-company', member: boundPerson });
+  assert.equal(boundContext.data.can_checkin, true);
+  assert.equal(boundContext.data.registration_id, 'company-b');
+  assert(!db.collections.registrations.find(row => row._id === 'company-b').platform_member_id, 'lookup never binds or confirms enrollment');
+  assert(!db.collections.checkins.some(row => row.batch_id === 'independent-company'));
+  const scanned = await request('/ops/v1/guest-checkin/confirm', 'POST', { ...scanBody, candidate_token: scanLookup.data.candidates[0].candidate_token });
+  assert.equal(scanned.data.ok, true);
+  const nativeTicket = signTicket({ ...ticketPayload, event_id: 'independent-company', member: boundPerson });
+  const nativeResults = await Promise.all(Array.from({ length: 12 }, () => request('/native/v1/checkin/confirm', 'POST', { ticket: nativeTicket }, '')));
+  assert(nativeResults.every(result => result.data.ok));
+  assert.equal(db.collections.checkins.filter(row => row.batch_id === 'independent-company').length, 2);
+  assert.equal(db.collections.registrations.filter(row => row.batch_id === 'independent-company').length, 3);
+  assert.equal(db.collections.registrations.find(row => row._id === 'company-b').platform_member_id, '61');
+  const repeatBound = await request('/ops/v1/member-checkin/lookup', 'POST', { event_id: 'independent-company', member: boundPerson });
+  assert.equal(repeatBound.data.already_checked_in, true);
+  const repeatScanBody = { ...scanBody, name: '独立报名乙' };
+  const repeatScanLookup = await request('/ops/v1/guest-checkin/lookup', 'POST', repeatScanBody);
+  const repeatScan = await request('/ops/v1/guest-checkin/confirm', 'POST', { ...repeatScanBody, candidate_token: repeatScanLookup.data.candidates[0].candidate_token });
+  assert.equal(repeatScan.data.already, true);
+  assert.equal(db.collections.checkins.filter(row => row.batch_id === 'independent-company').length, 2, 'switching channels never duplicates attendance');
+  assert.equal((await manage('manual_checkin', { event_id: 'independent-company', registration_id: 'company-c' })).data.ok, true);
+  assert(db.collections.checkins.filter(row => row.batch_id === 'independent-company').every(row => row.registered_name === row.actual_attendee_name));
+
+  seedEvent('unverified-blank-phone');
+  seedRegistration('unverified-name', 'unverified-blank-phone', { name: '待核对同名', registered_name: '待核对同名', platform_member_id: '', member_code: '', phone: '' });
+  const ambiguousLookup = await request('/ops/v1/member-checkin/lookup', 'POST', { event_id: 'unverified-blank-phone', member: { member_id: 'unknown', member_code: 'unknown', name: '待核对同名' } });
+  assert.equal(ambiguousLookup.data.can_checkin, false, 'an unverified name match cannot claim a member identity');
+  assert(!db.collections.checkins.some(row => row.batch_id === 'unverified-blank-phone'));
+
   seedEvent("team-race");
   for (let i = 1; i <= 2; i++) seedRegistration("team-r" + i, "team-race", { name: "原报名联系人", registered_name: "原报名联系人", platform_member_id: "", member_code: "", company: "并发团队" });
   const teamLookup = await request("/checkin/team-lookup", "POST", { event_id: "team-race", name: "实际参加人", company: "并发团队" }, "");
@@ -395,6 +445,10 @@ function signTicket(payload) {
   }
   // Losing transactions neither consume a slot nor partially write a fact.
   await assert.rejects(() => persistCheckin({ collection: db.collection }, { batch_id: "main", registration_id: "r11" }), /ATOMIC_CHECKIN_UNAVAILABLE/);
+  seedEvent('identity-race'); seedRegistration('identity-race-row', 'identity-race');
+  await assert.rejects(() => persistCheckin(db, { batch_id: 'identity-race', registration_id: 'identity-race-row' }, null,
+    { validateRegistration: () => false }), /CHECKIN_REGISTRATION_CHANGED/);
+  assert(!db.collections.checkins.some(row => row.batch_id === 'identity-race'), 'changed identity rolls back before writing attendance');
   assert.equal(checkinDocumentId("morning", "r1"), checkinDocumentId("morning", "r1"));
   assert.notEqual(checkinDocumentId("morning", "r1"), checkinDocumentId("afternoon", "r1"));
   console.log(`platform integration tests passed: ${assertionCount} assertions; service auth, RBAC, scope, hierarchy, identity, races, activities, append import, incremental sync, retries and outage-safe native tickets`);
