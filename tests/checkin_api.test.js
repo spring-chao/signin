@@ -639,7 +639,7 @@ async function request(path, method, body, token, extraHeaders) {
   assert.equal(confirmedAgain.data.ok, true, "满足日期、时间和组织校验的草稿活动可以确认举办");
   db.collections.events.find(row => row.event_id === "batch-2").status = "closed";
   const closedEventDisplay = await request("/event", "GET");
-  assert(!closedEventDisplay.data.display_events.some(row => row.event_id === "batch-2"), "签到页不得显示今天已手动关闭的活动");
+  assert(closedEventDisplay.data.display_events.some(row => row.event_id === "batch-2" && row.checkin_status==='closed'), "今天已关闭活动显示结束状态且不进入可签到列表");
   assert(!closedEventDisplay.data.active_events.some(row => row.event_id === "batch-2"));
   const addToClosedEvent = await request("/registration", "POST", {
     event_id: "batch-2", name: "关闭活动测试", phone: "13800000009"

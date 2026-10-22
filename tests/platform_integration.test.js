@@ -306,17 +306,15 @@ function signTicket(payload) {
     for (let i = 0; i < slots; i++) seedRegistration(eventId + "-" + i, eventId, { attendance_role: role, company: "绑定团队联系人" });
     for (const operation of ["lookup", "confirm"]) {
       const teamBridge = await request("/ops/v1/member-checkin/" + operation, "POST", { event_id: eventId, member });
-      assert.equal(teamBridge.status, operation === "lookup" ? 200 : 409);
-      assert.equal(teamBridge.data.ok, operation === "lookup");
-      assert.equal(teamBridge.data.status, "TEAM_FALLBACK");
-      assert.equal(teamBridge.data.can_checkin, false);
-      assert.equal(teamBridge.data.requires_fallback, true);
+      assert.equal(teamBridge.status, 200);
+      assert.equal(teamBridge.data.ok, true);
+      if (operation === 'lookup') assert.equal(teamBridge.data.can_checkin, true);
     }
     const teamNative = await request("/native/v1/checkin/confirm", "POST", { ticket: signTicket({ ...ticketPayload, event_id: eventId }) }, "");
-    assert.equal(teamNative.status, 409);
-    assert.equal(teamNative.data.ok, false);
-    assert.equal(teamNative.data.status, "TEAM_FALLBACK");
-    assert(!db.collections.checkins.some(row => row.batch_id === eventId), "bound team contacts cannot write ordinary attendance");
+    assert.equal(teamNative.status, 200);
+    assert.equal(teamNative.data.ok, true);
+    assert.equal(teamNative.data.already, true);
+    assert.equal(db.collections.checkins.filter(row => row.batch_id === eventId).length,1,"same-name team confirmation consumes one slot across native retries");
   }
   seedEvent("non-team-conflict");
   for (let i = 0; i < 2; i++) seedRegistration("non-team-conflict-" + i, "non-team-conflict");
@@ -326,18 +324,47 @@ function signTicket(payload) {
   const duplicatedConfirm = await request("/ops/v1/member-checkin/confirm", "POST", {event_id:"non-team-conflict", member});
   assert.equal(duplicatedConfirm.data.ok,true);
   assert.equal(db.collections.checkins.filter(row=>row.batch_id==="non-team-conflict").length,1,"a bound person confirms one enrollment, never all duplicate rows");
-  for (const change of ["deleted", "changed-to-team"]) {
+  for (const change of ["deleted", "different-actual-attendee"]) {
     const eventId = "preloaded-ticket-" + change;
     seedEvent(eventId); seedRegistration(eventId + "-registration", eventId);
     const preloadedTicket = signTicket({ ...ticketPayload, event_id: eventId });
     if (change === "deleted") db.collections.registrations.splice(db.collections.registrations.findIndex(row => row._id === eventId + "-registration"), 1);
-    else db.collections.registrations.find(row => row._id === eventId + "-registration").attendance_role = "EVENT_TEAM_MEMBER";
+    else Object.assign(db.collections.registrations.find(row => row._id === eventId + "-registration"),{attendance_role:'EVENT_TEAM_MEMBER',actual_attendee_name:'另一位实际参加人'});
     const changed = await request("/native/v1/checkin/confirm", "POST", { ticket: preloadedTicket }, "");
     assert.equal(changed.status, 409);
     assert.equal(changed.data.ok, false, "preloaded authorization is not a committed attendance fact");
-    assert.equal(changed.data.status, change === "deleted" ? "NOT_REGISTERED" : "TEAM_FALLBACK");
+    assert.equal(changed.data.status, "NOT_REGISTERED");
     assert(!db.collections.checkins.some(row => row.batch_id === eventId));
   }
+
+  seedEvent('named-legacy-team');
+  for(let i=0;i<2;i++)seedRegistration('named-legacy-team-'+i,'named-legacy-team',{platform_member_id:'',member_code:'',phone:'',company:'重复姓名团队',attendance_role:'EVENT_TEAM_MEMBER'});
+  blockedOps=true;
+  const namedTeamTicket=signTicket({...ticketPayload,event_id:'named-legacy-team'});
+  const namedTeamResults=await Promise.all(Array.from({length:8},()=>request('/native/v1/checkin/confirm','POST',{ticket:namedTeamTicket},'')));
+  blockedOps=false;
+  assert(namedTeamResults.every(r=>r.data.ok));
+  assert.equal(db.collections.checkins.filter(r=>r.batch_id==='named-legacy-team').length,1);
+  const namedTeamFact=db.collections.checkins.find(r=>r.batch_id==='named-legacy-team');
+  assert.equal(namedTeamFact.actual_attendee_name,member.name);
+  assert.equal(namedTeamFact.platform_member_id,member.member_id);
+
+  seedEvent('named-team-guest');seedRegistration('named-team-guest-r','named-team-guest',{name:'陈丽',registered_name:'陈丽',platform_member_id:'',member_code:'',phone:'',company:'合成团队',attendance_role:'EVENT_TEAM_MEMBER'});
+  const namedGuest={event_id:'named-team-guest',guest_id:'d'.repeat(64),name:'陈丽'};
+  const namedGuestLookup=await request('/ops/v1/guest-checkin/lookup','POST',namedGuest);
+  assert.equal(namedGuestLookup.data.candidates.length,1,'a named team seat is also available to a scanner without a binding');
+  const namedGuestConfirm=await request('/ops/v1/guest-checkin/confirm','POST',{...namedGuest,candidate_token:namedGuestLookup.data.candidates[0].candidate_token});
+  assert.equal(namedGuestConfirm.data.ok,true);
+  assert.equal(db.collections.checkins.filter(r=>r.batch_id==='named-team-guest').length,1);
+
+  seedEvent('sort-upcoming',{checkin_start_at:new Date(Date.now()+3600000).toISOString(),checkin_end_at:new Date(Date.now()+7200000).toISOString()});
+  seedEvent('sort-ended',{checkin_start_at:new Date(Date.now()-7200000).toISOString(),checkin_end_at:new Date(Date.now()-3600000).toISOString()});
+  seedEvent('sort-open');
+  const sortedIds=['sort-open','sort-upcoming','sort-ended'];
+  const sortedMemberEvents=await request('/ops/v1/member-checkin/events','POST',{});
+  assert.deepEqual(sortedMemberEvents.data.events.filter(e=>sortedIds.includes(e.event_id)).map(e=>e.event_id),sortedIds);
+  const sortedPublicEvents=await request('/event','GET',{},'');
+  assert.deepEqual(sortedPublicEvents.data.display_events.filter(e=>sortedIds.includes(e.event_id)).map(e=>e.event_id),sortedIds);
 
   // Separate named employees of one company, imported without phones/IDs,
   // must work through both scanning and bound/native check-in.
