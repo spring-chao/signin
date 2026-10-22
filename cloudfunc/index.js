@@ -613,8 +613,7 @@ exports.main = async (event, context) => {
       options.validateRegistration = registration =>
         (!registration.platform_member_id || String(registration.platform_member_id) === String(member.member_id)) &&
         (!registration.member_code || String(registration.member_code) === String(member.member_code)) &&
-        normalizePersonName(registration.name) === normalizePersonName(member.name || row.name) &&
-        ![ATTENDANCE_ROLES.EVENT_TEAM_MEMBER, ATTENDANCE_ROLES.COURSE_TEAM_MEMBER].includes(registration.attendance_role);
+        namedRegistrationMatches(registration, member.name || row.name);
       const confirmation = platformContext.bound_name_confirmation ? {
         identity_match: "BOUND_NAME_SELF_CONFIRMATION", identity_confirmed_at: new Date().toISOString()
       } : {};
@@ -1079,6 +1078,12 @@ exports.main = async (event, context) => {
     return 2;
   }
 
+  function publicCheckinOrder(a, b) {
+    const rank = item => ({ open: 0, upcoming: 1, ended: 2, closed: 2 })[item.checkin_status || eventTimeState(item)] ?? 3;
+    const start = item => { const value = Date.parse(item.checkin_start_at || ""); return Number.isFinite(value) ? value : Number.MAX_SAFE_INTEGER; };
+    return rank(a) - rank(b) || start(a) - start(b) || Number(a.session_order || 0) - Number(b.session_order || 0) || String(a.event_id || a._id || "").localeCompare(String(b.event_id || b._id || ""));
+  }
+
   async function getRequestedEvent(eventId) {
     const selectedId = String(eventId || await getConfig("active_batch_id", "")).trim();
     return selectedId ? await getEventById(selectedId) : null;
@@ -1415,21 +1420,21 @@ exports.main = async (event, context) => {
       if (!eventItem || !isPublicCheckinEligible(eventItem)) return { statusCode: 409, headers: h, body: JSON.stringify({ ok: false, msg: "当前活动已关闭或尚未开始" }) };
       const rows = await rowsForBatch("registrations", eventId, 5000);
       // Previously self-created WeChat guest rows are not enrollment evidence.
-      const eligible = rows.filter(row => row.registration_source !== "WECHAT_GUEST" && row.source !== "wechat_guest" && normalizePersonName(row.name) === normalizePersonName(name));
+      const eligible = rows.filter(row => row.registration_source !== "WECHAT_GUEST" && row.source !== "wechat_guest" && namedRegistrationMatches(row, name));
       if (p.endsWith("/lookup")) {
         const checkins = await rowsForBatch("checkins", eventId, 5000);
-        const candidates = eligible.filter(row => !isTeamRegistrationSlot(row, rows)).map(row => {
+        const candidates = eligible.map(row => {
           const checked = checkins.find(item => String(item.registration_id) === String(row._id));
           const candidate = nameCheckinCandidate(row, eventItem, checked && checked.checked_at, false);
           delete candidate.phone_last4;
           candidate.candidate_token = guestSelectionToken({ purpose: "REGISTRATION_NAME_CHECKIN", event_id: eventId, guest_id: guestId, name: normalizePersonName(name), registration_id: String(row._id), exp: Math.floor(Date.now() / 1000) + 300 });
           return candidate;
         });
-        return { statusCode: 200, headers: h, body: JSON.stringify({ ok: true, candidates, status: candidates.length ? "REGISTERED" : "NOT_REGISTERED", msg: candidates.length ? "请核对报名信息并确认本人签到" : "没有找到本场活动的个人报名，请联系工作人员；团队报名请使用团队签到入口" }) };
+        return { statusCode: 200, headers: h, body: JSON.stringify({ ok: true, candidates, status: candidates.length ? "REGISTERED" : "NOT_REGISTERED", msg: candidates.length ? "请核对报名信息并确认本人签到" : "本次报名名单中未找到该姓名，请确认是否报名，或联系工作人员" }) };
       }
       const registrationId = verifyGuestSelection(data.candidate_token, eventId, guestId, name);
       const registration = eligible.find(row => String(row._id) === registrationId);
-      if (!registration || isTeamRegistrationSlot(registration, rows)) return { statusCode: 409, headers: h, body: JSON.stringify({ ok: false, code: "REGISTRATION_CHANGED", msg: "报名信息已变化，请重新核对" }) };
+      if (!registration) return { statusCode: 409, headers: h, body: JSON.stringify({ ok: false, code: "REGISTRATION_CHANGED", msg: "报名信息已变化，请重新核对" }) };
       const response = await exports.main({ path: "/checkin/confirm", httpMethod: "POST", headers: {}, body: JSON.stringify({ event_id: eventId, registration_id: registrationId, name }) }, { [TRUSTED_CONTEXT]: { service_request: true, management: false } });
       const result = JSON.parse(response.body);
       if (result.ok) {
@@ -1465,7 +1470,7 @@ exports.main = async (event, context) => {
     if (method !== "POST") return { statusCode: 405, headers: h, body: JSON.stringify({ ok: false, code: "METHOD_NOT_ALLOWED" }) };
     if (!verifyServiceKey(event.headers, process.env.SIGNIN_PLATFORM_API_KEY)) return { statusCode: 401, headers: h, body: JSON.stringify({ ok: false, code: "SERVICE_AUTH_REQUIRED" }) };
     platformContext = { ...(platformContext || {}), service_request: true };
-    if (p.endsWith("/events")) return { statusCode: 200, headers: h, body: JSON.stringify({ ok: true, events: (await getTodayEvents()).filter(item => isPublicCheckinEligible(item) || isPublicUpcoming(item)).map(publicEvent), fallback_url: legacyCheckinUrl(process.env, deploymentMode) }) };
+    if (p.endsWith("/events")) return { statusCode: 200, headers: h, body: JSON.stringify({ ok: true, events: (await getTodayEvents()).filter(item => isEventConfirmed(item) && isEventToday(item)).sort(publicCheckinOrder).map(publicEvent), fallback_url: legacyCheckinUrl(process.env, deploymentMode) }) };
     const member = data.member || {};
     const memberId = String(member.member_id || "").trim(), memberCode = String(member.member_code || "").trim();
     if ((!memberId || !memberCode) && p.endsWith("/lookup")) {
@@ -1481,11 +1486,11 @@ exports.main = async (event, context) => {
       const rows = await rowsForBatch("registrations", eventId, 5000);
       // ID is authoritative. Member code only locates a historical row without
       // a platform ID; it cannot override a conflicting recorded identity.
-      let matches = rows.filter(row => normalizePersonName(row.name) === normalizePersonName(member.name) &&
+      let matches = rows.filter(row => namedRegistrationMatches(row, member.name) &&
         (String(row.platform_member_id || "") === memberId || (!row.platform_member_id && String(row.member_code || "") === memberCode)));
-      let selfNameConfirmation = false;
+      let selfNameConfirmation = matches.some(row => isTeamRegistrationSlot(row, rows));
       if (!matches.length) {
-        const legacy = rows.filter(row => !row.platform_member_id && !row.member_code && row.registration_source !== "WECHAT_GUEST" && row.source !== "wechat_guest" && normalizePersonName(row.name) === normalizePersonName(member.name) && !isTeamRegistrationSlot(row, rows));
+        const legacy = rows.filter(row => !row.platform_member_id && !row.member_code && row.registration_source !== "WECHAT_GUEST" && row.source !== "wechat_guest" && namedRegistrationMatches(row, member.name));
         if (legacy.length) {
           const resolved = await resolveRegistrationMembers(eventId, legacy, member);
           const ids = new Set(resolved.filter(item => String(item.platform_member_id) === memberId && String(item.member_code) === memberCode).map(item => String(item.registration_id)));
@@ -1494,7 +1499,6 @@ exports.main = async (event, context) => {
           matches = matches.map(row => ({ ...row, platform_member_id: memberId, member_code: memberCode }));
         }
       }
-      if (matches.some(row => isTeamRegistrationSlot(row, rows))) return { statusCode: p.endsWith("/lookup") ? 200 : 409, headers: h, body: JSON.stringify({ ok: p.endsWith("/lookup"), status: "TEAM_FALLBACK", event: publicEvent(eventItem), can_checkin: false, requires_fallback: true, fallback_available: true, msg: "团队报名需确认实际参加人，请使用团队备用签到" }) };
       if (matches.length > 1) {
         // The authenticated person confirms ONE same-name enrollment. Prefer
         // their existing attendance, then matching class metadata; never post
@@ -1916,6 +1920,14 @@ exports.main = async (event, context) => {
     return String(value || "").trim().replace(/\s+/g, "").toLowerCase();
   }
 
+  function namedRegistrationMatches(registration, name) {
+    const expected = normalizePersonName(name);
+    // A named team enrollment can confirm that same person. A seat already
+    // assigned to a different actual attendee is never silently reclaimed.
+    return Boolean(expected && normalizePersonName(registration.name) === expected &&
+      (!registration.actual_attendee_name || normalizePersonName(registration.actual_attendee_name) === expected));
+  }
+
   function normalizePhone(value) {
     return String(value || "").trim().replace(/\s/g, "").replace(/-/g, "");
   }
@@ -2227,7 +2239,7 @@ exports.main = async (event, context) => {
       const eventById = new Map(events.map(item => [String(item.event_id || item._id || ""), item]));
       const eventIds = new Set(eventById.keys());
       const registrations = await getAll("registrations", 5000);
-      const matches = registrations.filter(reg => reg.registration_source !== "WECHAT_GUEST" && reg.source !== "wechat_guest" && eventIds.has(String(reg.batch_id || "")) && normalizePersonName(reg.name) === normalizePersonName(name));
+      const matches = registrations.filter(reg => reg.registration_source !== "WECHAT_GUEST" && reg.source !== "wechat_guest" && eventIds.has(String(reg.batch_id || "")) && namedRegistrationMatches(reg, name));
       const checkinsByEvent = new Map();
       await Promise.all(events.map(async item => {
         const eventId = String(item.event_id || item._id || "");
@@ -2285,7 +2297,7 @@ exports.main = async (event, context) => {
       const reg = registrations.find(item => String(item._id || "") === registrationId && String(item.batch_id || "") === eventId);
       if (!reg) return { statusCode: 200, headers: h, body: JSON.stringify({ ok: false, msg: "报名信息已变化，请重新查询" }) };
       if (reg.registration_source === "WECHAT_GUEST" || reg.source === "wechat_guest") return { statusCode: 200, headers: h, body: JSON.stringify({ ok: false, msg: "此记录不是活动报名，请联系现场工作人员核对报名" }) };
-      if (isRosterRegistrationEvent(eventItem) && data.name && normalizePersonName(data.name) !== normalizePersonName(reg.name)) {
+      if (data.name && !namedRegistrationMatches(reg, data.name)) {
         return { statusCode: 200, headers: h, body: JSON.stringify({ ok: false, msg: "姓名与活动报名记录不一致，请重新查询" }) };
       }
       const currentCheckins = await rowsForBatch("checkins", eventId, 5000);
@@ -2319,7 +2331,7 @@ exports.main = async (event, context) => {
           actual_attendee_name: String(reg.name || "").trim(),
           actual_attendee_at: now,
           actual_attendee_source: "DIRECT_NAME_CHECKIN"
-      } : null);
+      } : null, platformContext && platformContext.member ? undefined : { validateRegistration: current => namedRegistrationMatches(current, data.name || reg.name) });
       displayData.checked_in = true;
       displayData.checked_at = saved.checkin.checked_at;
       if (isRosterRegistrationEvent(eventItem)) displayData.actual_attendee_name = String(reg.name || "").trim();
@@ -2725,7 +2737,7 @@ exports.main = async (event, context) => {
         const bStart = Date.parse(b.checkin_start_at || "");
         const aTime = Number.isFinite(aStart) ? aStart : Number.MAX_SAFE_INTEGER;
         const bTime = Number.isFinite(bStart) ? bStart : Number.MAX_SAFE_INTEGER;
-        return aTime - bTime ||
+        return publicCheckinOrder(a, b) || aTime - bTime ||
           Number(a.session_order || 0) - Number(b.session_order || 0) ||
           String(a.name || "").localeCompare(String(b.name || ""));
       };
@@ -2736,7 +2748,7 @@ exports.main = async (event, context) => {
       // Return every confirmed activity that is open or upcoming today. The
       // old implementation exposed only one next session and hid other classes.
       const displayEvents = todayEvents
-        .filter(item => isPublicCheckinEligible(item) || isPublicUpcoming(item))
+        .filter(item => isEventConfirmed(item))
         .sort(publicEventOrder);
       const ds = await getDisplaySettings();
       const activeIds = activeEvents.map(item => String(item.event_id || item._id || ""));

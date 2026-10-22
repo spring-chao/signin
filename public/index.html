@@ -181,6 +181,7 @@ function activityTime(item){
 function activityState(item){
   if(item&&item.checkin_status==="open")return "当前可签到";
   if(item&&item.checkin_status==="upcoming")return (item.checkin_start_at?formatChinaTime(item.checkin_start_at)+" 开放":"尚未开放");
+  if(item&&["ended","closed"].indexOf(item.checkin_status)>=0)return "签到已结束";
   return "暂不可签到";
 }
 function renderActivityCards(events,activeEvents,nextEvent,response){
@@ -202,7 +203,7 @@ function renderActivityCards(events,activeEvents,nextEvent,response){
     var item=group.selected,isSelected=String(item.event_id)===String(selectedActivityEventId),button=document.createElement("button");
     button.type="button";button.className="activity-card"+(item.checkin_status==="open"?" open":"")+(isSelected?" selected":"");
     var sessionExtra=group.rows.length>1?" · 今日"+group.rows.length+"个场次":"";
-    var actionText=isSelected?(item.checkin_status==="open"?"已选择":"已选择 · 尚未开放"):"选择此活动 ›";
+    var actionText=isSelected?(item.checkin_status==="open"?"已选择":item.checkin_status==="upcoming"?"已选择 · 尚未开放":"已结束"):"选择此活动 ›";
     button.innerHTML='<div class="activity-top"><span class="activity-dot"></span><span class="activity-name">'+esc(activityName(item))+'</span><span class="activity-state">'+esc(activityState(item))+'</span></div><div class="activity-meta">'+esc(activityTime(item)+sessionExtra)+'</div><div class="activity-action">'+actionText+'</div>';
     button.addEventListener("click",function(){selectActivityGroup(group.key);});
     list.appendChild(button);
@@ -227,7 +228,8 @@ async function init(){
   try{
     var r=await fetch(API+"/event");var d=await r.json();
     document.getElementById("eventName").textContent="活动签到";
-    var activeEvents=(d.active_events||[]).slice(),displayEvents=(d.display_events||activeEvents).slice().sort(function(a,b){return String(a.checkin_start_at||"").localeCompare(String(b.checkin_start_at||""))||Number(a.session_order||0)-Number(b.session_order||0)||String(a.name||"").localeCompare(String(b.name||""));}),nextEvent=d.next_event||null;
+    var rank=function(item){return item.checkin_status==="open"?0:item.checkin_status==="upcoming"?1:2;};
+    var activeEvents=(d.active_events||[]).slice(),displayEvents=(d.display_events||activeEvents).slice().sort(function(a,b){return rank(a)-rank(b)||String(a.checkin_start_at||"").localeCompare(String(b.checkin_start_at||""))||Number(a.session_order||0)-Number(b.session_order||0)||String(a.name||"").localeCompare(String(b.name||""));}),nextEvent=d.next_event||null;
     if(requestedActivityEventId){
       activeEvents=activeEvents.filter(function(item){return String(item.event_id)===requestedActivityEventId;});
       displayEvents=displayEvents.filter(function(item){return String(item.event_id)===requestedActivityEventId;});
