@@ -3203,9 +3203,15 @@ exports.main = async (event, context) => {
         var ck = attendance.checkinByIndex.get(index);
         var attendanceRole = registrationAttendanceRole(r, selectedEvent);
         return {
-          name: r.name || "",
+          registration_id: String(r._id || ""),
+          platform_member_id: String(r.platform_member_id || ""),
+          member_code: String(r.member_code || ""),
+          checked: Boolean(ck),
+          checked_at: ck && ck.checked_at || "",
+          is_team: isTeamRegistrationSlot(r, regs),
+          name: ck && (ck.actual_attendee_name || ck.name) || r.name || "",
           registered_name: r.registered_name || r.name || "",
-          actual_attendee_name: r.actual_attendee_name || "",
+          actual_attendee_name: ck && (ck.actual_attendee_name || ck.name) || r.actual_attendee_name || "",
           phone: r.phone || "",
           company: r.company || "",
           center: normalizeCenterValue(r.center),
