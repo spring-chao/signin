@@ -44,6 +44,9 @@ jobs:
       - name: Run platform integration and concurrency tests
         run: node tests/platform_integration.test.js
 
+      - name: Verify pre-start trusted class roster synchronization
+        run: node tests/roster_auto_sync.test.js
+
       - name: Verify isolated staging package preparation
         run: node tests/staging_package.test.js
 

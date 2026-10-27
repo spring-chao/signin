@@ -4,6 +4,7 @@ const https = require("https");
 const http = require("http");
 const { legacyCheckinUrl, validateStagingHttpsUrl } = require("./staging-urls");
 const { resolveDatabaseScope, createScopedDatabase } = require("./staging-database");
+const { isRosterTimer, syncUpcomingRosters } = require("./roster-auto-sync");
 const {
   TRUSTED_CONTEXT, MANAGEMENT_OPERATIONS, verifyServiceKey, normalizeManagementContext,
   eventInScope, redact, ensureCrossRegistration, persistCheckin, verifyCheckinTicket, documentData, requireDatabaseSuccess
@@ -369,6 +370,7 @@ exports._test = {
 };
 
 exports.main = async (event, context) => {
+  const invocationDeadline = Date.now() + 105000;
   const configuredEnvironment = String(process.env.SIGNIN_CLOUDBASE_ENV_ID || "").trim();
   const deploymentMode = String(process.env.SIGNIN_DEPLOYMENT_MODE || BUILD_INFO.environment || "").toLowerCase();
   const scope = resolveDatabaseScope({ environmentId: configuredEnvironment, mode: deploymentMode, namespace: process.env.SIGNIN_STAGING_NAMESPACE });
@@ -638,8 +640,11 @@ exports.main = async (event, context) => {
     return { pending_count: pending.length, attempted_count: due.length, delivered_count: delivered };
   }
 
-  if (String(event.Type || event.type || "").toLowerCase() === "timer" && String(event.TriggerName || event.triggerName || "") === "attendanceSyncRetryEvery5Minutes") {
-    return { ok: true, action: "platform_attendance_retry", ...await retryPendingCheckins() };
+  if (isRosterTimer(event)) {
+    const retry = await retryPendingCheckins();
+    const roster = await syncUpcomingRosters({ db, fetchRoster: fetchCurrentClassRoster,
+      registrationData: rosterRegistrationData, deadline: invocationDeadline });
+    return { ok: roster.ok, action: "platform_attendance_retry", ...retry, roster };
   }
 
   if (isScheduledAttendanceSyncEvent(event)) {
