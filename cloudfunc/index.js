@@ -640,11 +640,13 @@ exports.main = async (event, context) => {
     return { pending_count: pending.length, attempted_count: due.length, delivered_count: delivered };
   }
 
+  if (String(event.Type || event.type || "").toLowerCase() === "timer" && String(event.TriggerName || event.triggerName || "") === "attendanceSyncRetryEvery5Minutes") {
+    return { ok: true, action: "platform_attendance_retry", ...await retryPendingCheckins() };
+  }
+
   if (isRosterTimer(event)) {
-    const retry = await retryPendingCheckins();
-    const roster = await syncUpcomingRosters({ db, fetchRoster: fetchCurrentClassRoster,
+    return await syncUpcomingRosters({ db, fetchRoster: fetchCurrentClassRoster,
       registrationData: rosterRegistrationData, deadline: invocationDeadline });
-    return { ok: roster.ok, action: "platform_attendance_retry", ...retry, roster };
   }
 
   if (isScheduledAttendanceSyncEvent(event)) {

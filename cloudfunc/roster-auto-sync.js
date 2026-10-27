@@ -1,7 +1,7 @@
 const crypto = require("crypto");
 const { documentData, requireDatabaseSuccess, checkinDocumentId } = require("./platform-service");
 
-const TRIGGER = "attendanceSyncRetryEvery5Minutes";
+const TRIGGER = "classRosterBeforeStartEvery5Minutes";
 function isRosterTimer(event) {
   return Boolean(event && !event.httpMethod && !event.path &&
     String(event.Type || event.type || "").toLowerCase() === "timer" &&
