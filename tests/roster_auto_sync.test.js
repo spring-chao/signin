@@ -5,7 +5,7 @@ const { checkinDocumentId } = require("../cloudfunc/platform-service");
 const NOW = Date.parse("2026-10-27T00:00:00Z");
 const event = (id, patch = {}) => ({ _id: id, event_id: id, activity_type: "class_meeting",
   class_org_unit_id: "class-a", status: "active", lifecycle_status: "CONFIRMED",
-  checkin_start_at: new Date(NOW + 3600000).toISOString(), ...patch });
+  checkin_start_at: new Date(NOW + 120000).toISOString(), ...patch });
 const member = (id, patch = {}) => ({ member_id: id, member_code: "M" + id,
   name: "验收学长" + id, group_name: "新小组", ...patch });
 function registrationData(m, e) {
@@ -39,8 +39,10 @@ async function main() {
     assert.equal(db.collections.registrations.length, 4);
     const reg = db.collections.registrations[0];
     reg.name = "旧姓名"; reg.group_name = "旧小组"; reg.attendance_status = "leave"; reg.attendance_note = "已有跟进";
+    assert.equal((await syncUpcomingRosters(options)).scanned, 0, "completed scenes never refresh again");
+    db.collections.events.find(e => e.event_id === reg.batch_id).checkin_start_at = new Date(NOW + 119000).toISOString();
     const refreshed = await syncUpcomingRosters(options);
-    assert.equal(refreshed.updated, 1);
+    assert.equal(refreshed.updated, 1, "explicitly rescheduled scenes get one new synchronization");
     assert.equal(reg.name, "验收学长1");
     assert.equal(reg.group_name, "新小组");
     assert.equal(reg.attendance_status, "leave");
@@ -58,7 +60,7 @@ async function main() {
       event("closed", { status: "closed" }), event("cancelled", { lifecycle_status: "CANCELLED" }),
       event("draft", { lifecycle_status: "DRAFT" }), event("course", { activity_type: "course" }),
       event("no-org", { class_org_unit_id: "" }), event("group", { group_org_unit_id: "g1" }),
-      event("future", { checkin_start_at: new Date(NOW + 86400001).toISOString() })];
+      event("future", { checkin_start_at: new Date(NOW + 120001).toISOString() })];
     const { db, options } = setup(excluded);
     options.fetchRoster = async () => { throw new Error("must not request"); };
     assert.equal((await syncUpcomingRosters(options)).scanned, 0);
@@ -96,17 +98,19 @@ async function main() {
   {
     const { db, options } = setup([event("one")]);
     const run = db.runTransaction;
-    db.runTransaction = callback => { db.collections.events[0].checkin_start_at = new Date(NOW).toISOString(); return run(callback); };
+    let calls = 0;
+    db.runTransaction = callback => { if (++calls === 2) db.collections.events[0].checkin_start_at = new Date(NOW).toISOString(); return run(callback); };
     assert.equal((await syncUpcomingRosters(options)).failed, 1, "start-time race blocks every write");
     assert.equal(db.collections.registrations.length, 0);
   }
   {
     const { db, options } = setup([event("one")]);
     const run = db.runTransaction;
-    db.runTransaction = callback => run(async tx => {
+    let calls = 0;
+    db.runTransaction = callback => ++calls === 2 ? run(async tx => {
       const result = await callback(tx);
       throw new Error("audit storage failed");
-    });
+    }) : run(callback);
     assert.equal((await syncUpcomingRosters(options)).failed, 1);
     assert.equal(db.collections.registrations.length, 0, "audit failure rolls back the same member transaction");
     assert.equal(db.collections.event_audit_logs.length, 0);
@@ -115,6 +119,7 @@ async function main() {
     const { db, options } = setup([event("one")]);
     await syncUpcomingRosters(options);
     const reg = db.collections.registrations[0]; reg.name = "已签到姓名";
+    db.collections.events[0].checkin_start_at = new Date(NOW + 119000).toISOString();
     const run = db.runTransaction;
     db.runTransaction = callback => { db.collections.checkins.push({ _id: checkinDocumentId("one", reg._id), batch_id: "one", registration_id: reg._id }); return run(callback); };
     await syncUpcomingRosters(options);

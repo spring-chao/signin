@@ -1,18 +1,19 @@
 const crypto = require("crypto");
 const { documentData, requireDatabaseSuccess, checkinDocumentId } = require("./platform-service");
 
-const TRIGGER = "classRosterBeforeStartEvery5Minutes";
+const TRIGGER = "classRosterBeforeStartOnce";
 function isRosterTimer(event) {
   return Boolean(event && !event.httpMethod && !event.path &&
     String(event.Type || event.type || "").toLowerCase() === "timer" &&
-    String(event.TriggerName || event.triggerName || "") === TRIGGER);
+    [TRIGGER, "classRosterBeforeStartEvery5Minutes"].includes(String(event.TriggerName || event.triggerName || "")));
 }
 function eligible(event, now = Date.now()) {
   const starts = Date.parse(event && event.checkin_start_at);
   return Boolean(event && event.activity_type === "class_meeting" && event.class_org_unit_id &&
     !event.group_org_unit_id && event.status !== "closed" &&
     event.lifecycle_status === "CONFIRMED" && Number.isFinite(starts) &&
-    starts > now && starts <= now + 86400000);
+    event.roster_auto_completed_for_start !== event.checkin_start_at &&
+    starts > now && starts <= now + 120000);
 }
 const clean = value => String(value || "").trim();
 function keys(row) {
@@ -46,8 +47,21 @@ async function syncUpcomingRosters({ db, fetchRoster, registrationData, now = Da
   for (const event of events) {
     if (Date.now() >= deadline) { result.deferred++; continue; }
     result.scanned++;
+    const claimId = crypto.randomBytes(16).toString("hex");
+    let claimed = false;
     try {
       const classId = clean(event.class_org_unit_id);
+      claimed = await db.runTransaction(async tx => {
+        const doc = tx.collection("events").doc(event._id);
+        const latest = documentData(await doc.get());
+        if (!eligible(latest, now()) || latest.checkin_start_at !== event.checkin_start_at ||
+            clean(latest.class_org_unit_id) !== classId ||
+            (latest.roster_auto_claim_id && Number(latest.roster_auto_claim_until) > now())) return false;
+        requireDatabaseSuccess(await doc.update({ roster_auto_claim_id: claimId,
+          roster_auto_claim_until: now() + 110000 }));
+        return true;
+      });
+      if (!claimed) continue;
       if (!rosters.has(classId)) rosters.set(classId, fetchRoster(event));
       const roster = await rosters.get(classId);
       if (!roster.quality.passed || roster.members.some(member => !keys(member).length)) throw new Error("ROSTER_QUALITY_FAILED");
@@ -84,6 +98,7 @@ async function syncUpcomingRosters({ db, fetchRoster, registrationData, now = Da
           const eventDoc = tx.collection("events").doc(event._id);
           const current = documentData(await eventDoc.get());
           if (!eligible(current, now()) || clean(current.class_org_unit_id) !== classId ||
+              current.checkin_start_at !== event.checkin_start_at || current.roster_auto_claim_id !== claimId ||
               clean(current.event_id || current._id) !== eventId) throw new Error("EVENT_CHANGED_OR_STARTED");
           const doc = tx.collection("registrations").doc(id);
           const latest = documentData(await doc.get());
@@ -104,10 +119,29 @@ async function syncUpcomingRosters({ db, fetchRoster, registrationData, now = Da
         });
         if (changed) result[changed]++;
       }
+      await db.runTransaction(async tx => {
+        const doc = tx.collection("events").doc(event._id);
+        const current = documentData(await doc.get());
+        if (!current || current.roster_auto_claim_id !== claimId ||
+            current.checkin_start_at !== event.checkin_start_at ||
+            clean(current.class_org_unit_id) !== classId) throw new Error("EVENT_CHANGED");
+        requireDatabaseSuccess(await doc.update({ roster_auto_completed_for_start: event.checkin_start_at,
+          roster_auto_completed_at: new Date(now()).toISOString(), roster_auto_claim_id: "", roster_auto_claim_until: 0 }));
+      });
       result.synced++;
     } catch (error) {
       // No member data, upstream response or credentials in timer results.
       result.failed++;
+    } finally {
+      if (claimed) {
+        try { await db.runTransaction(async tx => {
+          const doc = tx.collection("events").doc(event._id);
+          const current = documentData(await doc.get());
+          if (current && current.roster_auto_claim_id === claimId) {
+            requireDatabaseSuccess(await doc.update({ roster_auto_claim_id: "", roster_auto_claim_until: 0 }));
+          }
+        }); } catch (error) { result.failed++; }
+      }
     }
   }
   return { ok: result.failed === 0 && result.deferred === 0, action: "class_roster_before_start", ...result };
