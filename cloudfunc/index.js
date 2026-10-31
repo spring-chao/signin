@@ -1,5 +1,6 @@
 const cloudbase = require("@cloudbase/node-sdk");
 const crypto = require("crypto");
+const konpaPolicy = require("./konpa-policy");
 const https = require("https");
 const http = require("http");
 const { legacyCheckinUrl, validateStagingHttpsUrl } = require("./staging-urls");
@@ -604,6 +605,14 @@ exports.main = async (event, context) => {
 
   async function saveCheckin(row, registrationPatch, options) {
     options = { ...(options || {}) };
+    if (platformContext && (platformContext.member || platformContext.konpa_native) && process.env.KONPA_INTENT_ENABLED === "true") {
+      const selected = await getEventById(row.batch_id);
+      if (konpaPolicy.requiresChoice(selected, true)) {
+        const evening = (await getEventGroupById(selected.event_group_id)).find(item => item.session_code === "KONPA");
+        const patch = konpaPolicy.choicePatch(selected, platformContext.konpa_choice, evening, Date.now());
+        row = { ...row, ...patch };
+      }
+    }
     if (!options.deferDelivery) {
       const eventItem = await getEventById(row.batch_id);
       if (!eventItem) throw new Error("CHECKIN_EVENT_CLOSED");
@@ -642,6 +651,30 @@ exports.main = async (event, context) => {
 
   if (String(event.Type || event.type || "").toLowerCase() === "timer" && String(event.TriggerName || event.triggerName || "") === "attendanceSyncRetryEvery5Minutes") {
     return { ok: true, action: "platform_attendance_retry", ...await retryPendingCheckins() };
+  }
+
+  if (String(event.Type || event.type || '').toLowerCase()==='timer' && String(event.TriggerName||event.triggerName||'')==='konpaAutoConfirmEvery5Minutes') {
+    const pending=await getAll('checkins',5000,{konpa_review:'PENDING'});
+    const reviewed=await getAll('config',5000,{kind:'KONPA_REVIEW',status:'REVIEWED'});
+    const jobs=[...pending.filter(r=>konpaPolicy.automaticDue(r,Date.now())),
+      ...reviewed.filter(r=>Date.parse(r.auto_confirm_at)<=Date.now()).map(r=>({konpa_event_id:r.event_id,konpa_registration_id:r.registration_id}))];
+    let confirmed=0,failed=0;
+    for(const source of jobs.slice(0,30)) {
+      if(Date.now()>invocationDeadline-5000)break;
+      try {
+        const evening=await getEventById(source.konpa_event_id);
+        if(!evening)throw Error('KONPA_EVENT_MISSING');
+        const family=await getEventGroupById(evening.event_group_id);
+        const registrations=await rowsForBatch('registrations',source.konpa_event_id,5000);
+        const identity=String(source.platform_member_id||'');
+        const matches=registrations.filter(r=>source.konpa_registration_id?String(r._id)===source.konpa_registration_id:identity&&String(r.platform_member_id||'')===identity||!identity&&source.member_code&&r.member_code===source.member_code);
+        if(matches.length!==1)throw Error('KONPA_IDENTITY_AMBIGUOUS');
+        const result=await require('./konpa-review').reviewRequest({db,event:evening,events:family,registrations,
+          checkins:source._id?[source]:[],payload:{action:'auto',registration_id:matches[0]._id},actor:{id:'SYSTEM',classes:[evening.class_org_unit_id],members:null,manage:true},deliver:deliverCheckin});
+        confirmed+=result.skipped?0:1;
+      } catch (_) {failed++;}
+    }
+    return {ok:failed===0,confirmed,failed};
   }
 
   if (isRosterTimer(event)) {
@@ -828,7 +861,8 @@ exports.main = async (event, context) => {
   async function rowsForBatch(collectionName, batchId, maxTotal) {
     // batch_id is written with every registration and check-in. Query it in the
     // database instead of reading the entire historical collection first.
-    return getAll(collectionName, maxTotal || 5000, { batch_id: String(batchId || "") });
+    const rows=await getAll(collectionName, maxTotal || 5000, { batch_id: String(batchId || "") });
+    return collectionName==='checkins'?rows.filter(row=>!row.konpa_voided):rows;
   }
 
   async function ensureLegacyEvent() {
@@ -1099,6 +1133,7 @@ exports.main = async (event, context) => {
   function publicEvent(item) {
     const timeState = eventTimeState(item);
     return {
+      konpa_choice_required: konpaPolicy.requiresChoice(item, process.env.KONPA_INTENT_ENABLED === "true"),
       event_id: item.event_id || item._id || "",
       event_group_id: item.event_group_id || "",
       session_code: item.session_code || "",
@@ -1421,7 +1456,7 @@ exports.main = async (event, context) => {
     if (method !== "POST") return { statusCode: 405, headers: h, body: JSON.stringify({ ok: false }) };
     if (!verifyServiceKey(event.headers, process.env.SIGNIN_PLATFORM_API_KEY)) return { statusCode: 401, headers: h, body: JSON.stringify({ ok: false, code: "SERVICE_AUTH_REQUIRED" }) };
     const eventId = String(data.event_id || "").trim(), guestId = String(data.guest_id || ""), name = String(data.name || "").trim();
-    if (Object.keys(data).some(key => !["event_id", "guest_id", "name", "candidate_token"].includes(key)) || !/^[a-f0-9]{64}$/.test(guestId) || !name || name.length > 120 || /[\x00-\x1f\x7f]/.test(name)) return { statusCode: 400, headers: h, body: JSON.stringify({ ok: false, msg: "报名信息无效" }) };
+    if (Object.keys(data).some(key => !["event_id", "guest_id", "name", "candidate_token", "konpa_choice"].includes(key)) || !/^[a-f0-9]{64}$/.test(guestId) || !name || name.length > 120 || /[\x00-\x1f\x7f]/.test(name)) return { statusCode: 400, headers: h, body: JSON.stringify({ ok: false, msg: "报名信息无效" }) };
     try {
       const eventItem = await getEventById(eventId);
       if (!eventItem || !isPublicCheckinEligible(eventItem)) return { statusCode: 409, headers: h, body: JSON.stringify({ ok: false, msg: "当前活动已关闭或尚未开始" }) };
@@ -1442,7 +1477,7 @@ exports.main = async (event, context) => {
       const registrationId = verifyGuestSelection(data.candidate_token, eventId, guestId, name);
       const registration = eligible.find(row => String(row._id) === registrationId);
       if (!registration) return { statusCode: 409, headers: h, body: JSON.stringify({ ok: false, code: "REGISTRATION_CHANGED", msg: "报名信息已变化，请重新核对" }) };
-      const response = await exports.main({ path: "/checkin/confirm", httpMethod: "POST", headers: {}, body: JSON.stringify({ event_id: eventId, registration_id: registrationId, name }) }, { [TRUSTED_CONTEXT]: { service_request: true, management: false } });
+      const response = await exports.main({ path: "/checkin/confirm", httpMethod: "POST", headers: {}, body: JSON.stringify({ event_id: eventId, registration_id: registrationId, name }) }, { [TRUSTED_CONTEXT]: { konpa_native: true, konpa_choice: data.konpa_choice, service_request: true, management: false } });
       const result = JSON.parse(response.body);
       if (result.ok) {
         const committed = (await rowsForBatch("checkins", eventId, 5000)).find(row => String(row.registration_id) === registrationId);
@@ -1457,17 +1492,38 @@ exports.main = async (event, context) => {
     }
   }
 
+  if (p === '/ops/v1/konpa') {
+    if(method!=='POST'||!verifyServiceKey(event.headers,process.env.SIGNIN_PLATFORM_API_KEY))return {statusCode:401,headers:h,body:JSON.stringify({ok:false,msg:'需要服务授权'})};
+    try {
+      const actor=data.actor;
+      if(!actor||!Array.isArray(actor.classes)||!(actor.members===null||Array.isArray(actor.members))||typeof actor.manage!=='boolean')throw Error('授权范围无效');
+      if(data.action==='events'){
+        const items=(await getAll('events',5000)).filter(e=>e.session_code==='KONPA'&&e.activity_type==='class_meeting'&&actor.classes.includes(e.class_org_unit_id)&&lifecycleStatus(e)==='CONFIRMED');
+        return {statusCode:200,headers:h,body:JSON.stringify({ok:true,events:items.map(publicEvent).sort((a,b)=>b.event_date.localeCompare(a.event_date)).slice(0,100)})};
+      }
+      const selected=await getEventById(String(data.event_id||''));
+      if(!selected||!actor.classes.includes(selected.class_org_unit_id))throw Error('活动不在授权范围');
+      const family=await getEventGroupById(selected.event_group_id);
+      const checkins=[];
+      for(const item of family)checkins.push(...await rowsForBatch('checkins',item.event_id||item._id,5000));
+      const result=await require('./konpa-review').reviewRequest({db,event:selected,events:family,
+        registrations:await rowsForBatch('registrations',selected.event_id||selected._id,5000),checkins,
+        payload:data,actor,deliver:deliverCheckin});
+      return {statusCode:200,headers:h,body:JSON.stringify({ok:true,...result})};
+    }catch(error){return {statusCode:409,headers:h,body:JSON.stringify({ok:false,msg:String(error.message||'空巴处理未完成').slice(0,160)})};}
+  }
+
   if (p === "/native/v1/checkin/confirm") {
     if (method !== "POST") return { statusCode: 405, headers: h, body: JSON.stringify({ ok: false, code: "METHOD_NOT_ALLOWED" }) };
     let authorized;
     try {
-      if (Object.keys(data).some(key => key !== "ticket")) throw new Error("CHECKIN_TICKET_INVALID");
+      if (Object.keys(data).some(key => !["ticket", "konpa_choice"].includes(key))) throw new Error("CHECKIN_TICKET_INVALID");
       authorized = verifyCheckinTicket(data.ticket, String(process.env.SIGNIN_PLATFORM_API_KEY || ""));
     } catch (error) {
       return { statusCode: 401, headers: h, body: JSON.stringify({ ok: false, code: "CHECKIN_TICKET_INVALID", msg: "签到授权已失效，请重新打开活动签到页" }) };
     }
     try {
-      return await exports.main({ path: "/ops/v1/member-checkin/confirm", httpMethod: "POST", headers: { "X-API-Key": process.env.SIGNIN_PLATFORM_API_KEY }, body: JSON.stringify({ event_id: authorized.event_id, member: authorized.member }) }, { [TRUSTED_CONTEXT]: { ticket_member: authorized.member, management: false } });
+      return await exports.main({ path: "/ops/v1/member-checkin/confirm", httpMethod: "POST", headers: { "X-API-Key": process.env.SIGNIN_PLATFORM_API_KEY }, body: JSON.stringify({ event_id: authorized.event_id, member: authorized.member, konpa_choice: data.konpa_choice }) }, { [TRUSTED_CONTEXT]: { ticket_member: authorized.member, management: false } });
     } catch (error) {
       return { statusCode: 503, headers: h, body: JSON.stringify({ ok: false, code: "CHECKIN_ENGINE_UNAVAILABLE", msg: "签到服务暂时不可用，请稍后重试" }) };
     }
@@ -1535,7 +1591,7 @@ exports.main = async (event, context) => {
       const response = await exports.main({
         path: crossCandidate ? "/checkin/cross-confirm" : "/checkin/confirm", httpMethod: "POST", headers: {},
         body: JSON.stringify(crossCandidate ? { event_id: eventId, name: member.name, candidate_token: crossCandidate.candidate_token } : { event_id: eventId, registration_id: registration._id, name: registration.name })
-      }, { [TRUSTED_CONTEXT]: { member: { member_id: memberId, member_code: memberCode, name: member.name }, bound_name_confirmation: selfNameConfirmation, ticket_member: platformContext && platformContext.ticket_member, service_request: true, management: false } });
+      }, { [TRUSTED_CONTEXT]: { member: { member_id: memberId, member_code: memberCode, name: member.name }, konpa_choice: data.konpa_choice, bound_name_confirmation: selfNameConfirmation, ticket_member: platformContext && platformContext.ticket_member, service_request: true, management: false } });
       const result = JSON.parse(response.body);
       if (result.ok) {
         const committed = (await rowsForBatch("checkins", eventId, 5000)).find(row => String(row.platform_member_id || "") === memberId || String(row.member_code || "") === memberCode);
@@ -1736,6 +1792,7 @@ exports.main = async (event, context) => {
   }
 
   function buildAttendanceState(regs, checkins) {
+    checkins=(checkins||[]).filter(row=>!row.konpa_voided);
     const checkedIndexes = new Set();
     const checkinByIndex = new Map();
     const registrationIndex = new Map();
@@ -3795,6 +3852,7 @@ exports.main = async (event, context) => {
       if (registrations.length > 0) {
         const checkins = await getAll("checkins", registration_id ? 1 : 5000, { batch_id: session_id, ...(registration_id ? { registration_id } : {}) });
         for (const ck of checkins) {
+          if(ck.konpa_voided)continue;
           const regId = String(ck.registration_id || "");
           if (regId) checkinMap[regId] = ck;
         }
@@ -3836,8 +3894,8 @@ exports.main = async (event, context) => {
           attendance_status: checkedIn ? "PRESENT" : (reg.attendance_status === "leave" ? "LEAVE" : "ABSENT"),
           checked_at: ck ? (ck.checked_at || "") : null,
           checkin_source: ck ? (ck.checkin_source || "QR") : null,
-          revision: ck ? 2 : 1,
-          updated_at: ck && ck.checked_at || reg.attendance_status_updated_at || reg.created_at || ""
+          revision: reg.konpa_source_revision || (ck ? 2 : 1),
+          updated_at: reg.konpa_updated_at || ck && ck.checked_at || reg.attendance_status_updated_at || reg.created_at || ""
         };
       });
 
