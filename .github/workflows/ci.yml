@@ -44,6 +44,9 @@ jobs:
       - name: Run platform integration and concurrency tests
         run: node tests/platform_integration.test.js
 
+      - name: Verify konpa intent, scopes and one-week confirmation
+        run: node --test tests/konpa_policy.test.js tests/konpa_review.test.js
+
       - name: Verify pre-start trusted class roster synchronization
         run: node tests/roster_auto_sync.test.js
 
