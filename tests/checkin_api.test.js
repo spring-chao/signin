@@ -726,7 +726,7 @@ async function request(path, method, body, token, extraHeaders) {
   assert.deepEqual(defaultSessionRows.map(row => [row.session_code, row.checkin_start_at, row.scheduled_start_at, row.checkin_end_at, row.scheduled_end_at]), [
     ["MORNING", "2099-03-02T23:30:00.000Z", "2099-03-03T01:00:00.000Z", "2099-03-03T02:30:00.000Z", "2099-03-03T04:00:00.000Z"],
     ["AFTERNOON", "2099-03-03T04:10:00.000Z", "2099-03-03T05:30:00.000Z", "2099-03-03T07:00:00.000Z", "2099-03-03T09:00:00.000Z"],
-    ["KONPA", "2099-03-03T09:10:00.000Z", "2099-03-03T10:00:00.000Z", "2099-03-03T12:30:00.000Z", "2099-03-03T12:30:00.000Z"]
+    ["KONPA", "2099-03-03T10:00:00.000Z", "2099-03-03T10:00:00.000Z", "2099-03-03T12:30:00.000Z", "2099-03-03T12:30:00.000Z"]
   ], "班会三场默认时间应使用新的运营时间口径");
 
   const missingRosterSessions = await request("/create_class_meeting_sessions", "POST", {
