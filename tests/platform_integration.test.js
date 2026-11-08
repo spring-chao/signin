@@ -523,6 +523,10 @@ function signTicket(payload) {
   seedRegistration('konpa-pm-r','konpa-pm');
   seedRegistration('konpa-evening-r','konpa-evening');
   const konpaIssued=Math.floor(Date.now()/1000);
+  const oldEveningTicket=signTicket({purpose:'MEMBER_CHECKIN',event_id:'konpa-evening',member,iat:konpaIssued,exp:konpaIssued+300,binding_id:'binding-11',token_version:1});
+  assert.equal((await request('/native/v1/checkin/confirm','POST',{ticket:oldEveningTicket,konpa_choice:true})).data.ok,false);
+  assert.equal((await request('/checkin/confirm','POST',{event_id:'konpa-evening',registration_id:'konpa-evening-r'})).data.ok,false);
+  assert(!(await request('/ops/v1/member-checkin/events','POST')).data.events.some(item=>item.event_id==='konpa-evening'));
   const konpaTicket=signTicket({purpose:'MEMBER_CHECKIN',event_id:'konpa-pm',member,iat:konpaIssued,exp:konpaIssued+300,binding_id:'binding-11',token_version:1});
   assert.equal((await request('/ops/v1/member-checkin/lookup','POST',{event_id:'konpa-pm',member})).data.event.konpa_choice_required,true);
   assert.equal((await request('/native/v1/checkin/confirm','POST',{ticket:konpaTicket})).data.ok,false);

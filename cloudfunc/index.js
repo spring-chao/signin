@@ -789,7 +789,11 @@ exports.main = async (event, context) => {
   }
 
   function isEventOpen(item) {
-    return eventTimeState(item) === "open";
+    return !isKonpaSession(item) && eventTimeState(item) === "open";
+  }
+
+  function isKonpaSession(item) {
+    return item?.activity_type === "class_meeting" && item.session_code === "KONPA";
   }
 
   function lifecycleStatus(item) {
@@ -822,7 +826,7 @@ exports.main = async (event, context) => {
   }
 
   function isPublicUpcoming(item, now) {
-    return isEventConfirmed(item) && isEventToday(item, now) && eventTimeState(item, now) === "upcoming";
+    return !isKonpaSession(item) && isEventConfirmed(item) && isEventToday(item, now) && eventTimeState(item, now) === "upcoming";
   }
 
   function canManageEventRegistrations(item) {
@@ -1131,7 +1135,7 @@ exports.main = async (event, context) => {
   }
 
   function publicEvent(item) {
-    const timeState = eventTimeState(item);
+    const timeState = isKonpaSession(item) ? "closed" : eventTimeState(item);
     return {
       konpa_choice_required: konpaPolicy.requiresChoice(item, process.env.KONPA_INTENT_ENABLED === "true"),
       event_id: item.event_id || item._id || "",
@@ -1393,6 +1397,7 @@ exports.main = async (event, context) => {
         await validateManagementOrganization(merged);
       }
       if (operation === "manual_checkin") {
+        if (isKonpaSession(targetEvent)) throw new Error("KONPA_REVIEW_REQUIRED");
         const registrations = await rowsForBatch("registrations", String(targetEvent.event_id || targetEvent._id), 5000);
         if (isTeamRegistrationSlot(targetRegistration, registrations)) throw new Error("TEAM_ACTUAL_ATTENDEE_REQUIRED");
       }
@@ -1533,7 +1538,7 @@ exports.main = async (event, context) => {
     if (method !== "POST") return { statusCode: 405, headers: h, body: JSON.stringify({ ok: false, code: "METHOD_NOT_ALLOWED" }) };
     if (!verifyServiceKey(event.headers, process.env.SIGNIN_PLATFORM_API_KEY)) return { statusCode: 401, headers: h, body: JSON.stringify({ ok: false, code: "SERVICE_AUTH_REQUIRED" }) };
     platformContext = { ...(platformContext || {}), service_request: true };
-    if (p.endsWith("/events")) return { statusCode: 200, headers: h, body: JSON.stringify({ ok: true, events: (await getTodayEvents()).filter(item => isEventConfirmed(item) && isEventToday(item)).sort(publicCheckinOrder).map(publicEvent), fallback_url: legacyCheckinUrl(process.env, deploymentMode) }) };
+    if (p.endsWith("/events")) return { statusCode: 200, headers: h, body: JSON.stringify({ ok: true, events: (await getTodayEvents()).filter(item => !isKonpaSession(item) && isEventConfirmed(item) && isEventToday(item)).sort(publicCheckinOrder).map(publicEvent), fallback_url: legacyCheckinUrl(process.env, deploymentMode) }) };
     const member = data.member || {};
     const memberId = String(member.member_id || "").trim(), memberCode = String(member.member_code || "").trim();
     if ((!memberId || !memberCode) && p.endsWith("/lookup")) {
@@ -2901,6 +2906,9 @@ exports.main = async (event, context) => {
       const eventItem = await getEventById(data.event_id);
       if (!eventItem) return { statusCode: 200, headers: h, body: JSON.stringify({ ok: false, msg: "未找到活动" }) };
       const changes = {};
+      if (isKonpaSession(eventItem) && ["status", "checkin_start_at", "checkin_end_at"].some(field => data[field] !== undefined && data[field] !== eventItem[field])) {
+        return { statusCode: 200, headers: h, body: JSON.stringify({ ok: false, code: "KONPA_REVIEW_REQUIRED", msg: "空巴不设签到，请通过空巴出席确认处理" }) };
+      }
       const guardedFields = ["org_unit_id", "class_org_unit_id", "group_org_unit_id", "checkin_start_at", "checkin_end_at", "scheduled_start_at", "scheduled_end_at"];
       if (guardedFields.some(field => data[field] !== undefined && String(data[field]) !== String(eventItem[field] || ""))) {
         const hasCheckins = (await rowsForBatch("checkins", String(eventItem.event_id || eventItem._id), 1)).length > 0;
@@ -2921,7 +2929,9 @@ exports.main = async (event, context) => {
         const open = Date.parse(merged.checkin_start_at), close = Date.parse(merged.checkin_end_at);
         const start = merged.scheduled_start_at ? Date.parse(merged.scheduled_start_at) : open;
         const end = merged.scheduled_end_at ? Date.parse(merged.scheduled_end_at) : close;
-        if (![open, close, start, end].every(Number.isFinite) || !(open <= start && start <= close && close <= end)) return { statusCode: 200, headers: h, body: JSON.stringify({ ok: false, msg: "时间顺序必须是：签到开放 ≤ 正式开始 ≤ 签到截止 ≤ 正式结束" }) };
+        if (isKonpaSession(eventItem)) {
+          if (![start, end].every(Number.isFinite) || start >= end) return { statusCode: 200, headers: h, body: JSON.stringify({ ok: false, msg: "空巴正式结束必须晚于正式开始" }) };
+        } else if (![open, close, start, end].every(Number.isFinite) || !(open <= start && start <= close && close <= end)) return { statusCode: 200, headers: h, body: JSON.stringify({ ok: false, msg: "时间顺序必须是：签到开放 ≤ 正式开始 ≤ 签到截止 ≤ 正式结束" }) };
       }
       if (data.name !== undefined) changes.name = String(data.name || "").trim() || eventItem.name;
       if (data.event_date !== undefined) {
@@ -3643,10 +3653,10 @@ exports.main = async (event, context) => {
           scheduled_end: data.afternoon_scheduled_end || (eventDate + "T17:00"),
           checkin_end: data.afternoon_checkin_end || (eventDate + "T15:00") },
         { code: "KONPA", name: "晚上空巴", order: 3,
-          checkin_start: data.konpa_checkin_start || (eventDate + "T17:10"),
+          checkin_start: data.konpa_scheduled_start || (eventDate + "T18:00"),
           scheduled_start: data.konpa_scheduled_start || (eventDate + "T18:00"),
           scheduled_end: data.konpa_scheduled_end || (eventDate + "T20:30"),
-          checkin_end: data.konpa_checkin_end || (eventDate + "T20:30") }
+          checkin_end: data.konpa_scheduled_end || (eventDate + "T20:30") }
       ];
 
       let previousScheduledEnd = null;
@@ -3664,7 +3674,7 @@ exports.main = async (event, context) => {
         if (timestamps.some(value => !Number.isFinite(value))) {
           return { statusCode: 200, headers: h, body: JSON.stringify({ ok: false, msg: session.name + "时间填写不完整" }) };
         }
-        if (!(timestamps[0] <= timestamps[1] && timestamps[1] <= timestamps[2] && timestamps[2] <= timestamps[3])) {
+        if (session.code === "KONPA" ? timestamps[1] >= timestamps[3] : !(timestamps[0] <= timestamps[1] && timestamps[1] <= timestamps[2] && timestamps[2] <= timestamps[3])) {
           return { statusCode: 200, headers: h, body: JSON.stringify({ ok: false, msg: session.name + "时间顺序必须是：签到开放 ≤ 正式开始 ≤ 签到截止 ≤ 正式结束" }) };
         }
         if (previousScheduledEnd !== null && previousScheduledEnd > timestamps[0]) {
