@@ -99,6 +99,20 @@ function signTicket(payload) {
   assert.equal(manualAfter.rows.find(row => row.registration_id === "other-manual").checked, false);
   assert.equal((await manage("manual_checkin", {event_id: "manual-isolated", registration_id: "imported-manual"})).data.already, true);
   assert.equal((await manage("event_detail", { event_id: "manual-isolated" })).data.total, 2);
+  for (const [days, status, expected] of [[29, "CONFIRMED", true], [31, "CONFIRMED", false], [1, "CANCELLED", false], [1, "DRAFT", false]]) {
+    const id = `manual-window-${days}-${status}`;
+    seedEvent(id, {
+      lifecycle_status: status,
+      checkin_start_at: new Date(Date.now() - days * 86400000 - 3600000).toISOString(),
+      checkin_end_at: new Date(Date.now() - days * 86400000).toISOString()
+    });
+    seedRegistration(id + "-r", id);
+    const payload = { event_id: id, registration_id: id + "-r" };
+    assert.equal((await request("/checkin/confirm", "POST", { ...payload, operation: "manual_checkin" }, "")).data.ok, false);
+    const result = await manage("manual_checkin", payload);
+    assert.equal(result.data.ok, expected, JSON.stringify(result));
+    assert.equal(db.collections.checkins.filter(row => row.batch_id === id).length, Number(expected));
+  }
   seedEvent("main");
   seedRegistration("r11", "main");
   seedRegistration("r12", "main", { platform_member_id: "12", member_code: "M12" });
