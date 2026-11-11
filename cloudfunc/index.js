@@ -617,7 +617,9 @@ exports.main = async (event, context) => {
       const eventItem = await getEventById(row.batch_id);
       if (!eventItem) throw new Error("CHECKIN_EVENT_CLOSED");
       options.eventDocumentId = eventItem._id;
-      options.validateEvent = isPublicCheckinEligible;
+      options.validateEvent = platformContext?.management && platformContext.operation === "manual_checkin"
+        ? canManuallyCheckIn
+        : isPublicCheckinEligible;
     }
     if (platformContext && platformContext.member) {
       const member = platformContext.member;
@@ -827,6 +829,15 @@ exports.main = async (event, context) => {
 
   function isPublicUpcoming(item, now) {
     return !isKonpaSession(item) && isEventConfirmed(item) && isEventToday(item, now) && eventTimeState(item, now) === "upcoming";
+  }
+
+  function canManuallyCheckIn(item, now = new Date()) {
+    if (!item || !isEventConfirmed(item) || isKonpaSession(item)) return false;
+    if (isPublicCheckinEligible(item, now)) return true;
+    const cutoff = Date.parse(item.checkin_end_at || "");
+    const scheduledEnd = Date.parse(item.scheduled_end_at || "");
+    const end = Number.isFinite(scheduledEnd) ? Math.max(cutoff, scheduledEnd) : cutoff;
+    return now.getTime() > cutoff && now.getTime() <= end + 30 * 86400000;
   }
 
   function canManageEventRegistrations(item) {
@@ -2360,8 +2371,12 @@ exports.main = async (event, context) => {
     const registrationId = String(data.registration_id || "").trim();
     if (!eventId || !registrationId) return { statusCode: 200, headers: h, body: JSON.stringify({ ok: false, msg: "报名信息不完整，请重新查询" }) };
     try {
-      const eventItem = (await activeNameCheckinEvents()).find(item => String(item.event_id || item._id || "") === eventId);
-      if (!eventItem) return { statusCode: 200, headers: h, body: JSON.stringify({ ok: false, msg: "当前活动已关闭或尚未开始，请重新查询" }) };
+      const manual = platformContext?.management && platformContext.operation === "manual_checkin";
+      const candidate = manual ? await getEventById(eventId) : null;
+      const eventItem = manual
+        ? (canManuallyCheckIn(candidate) ? candidate : null)
+        : (await activeNameCheckinEvents()).find(item => String(item.event_id || item._id || "") === eventId);
+      if (!eventItem) return { statusCode: 200, headers: h, body: JSON.stringify({ ok: false, msg: manual ? "当前场次不在人工签到窗口内（场次结束后30天内可补签）" : "当前活动已关闭或尚未开始，请重新查询" }) };
       const registrations = await getAll("registrations", 5000, { _id: registrationId });
       const reg = registrations.find(item => String(item._id || "") === registrationId && String(item.batch_id || "") === eventId);
       if (!reg) return { statusCode: 200, headers: h, body: JSON.stringify({ ok: false, msg: "报名信息已变化，请重新查询" }) };
