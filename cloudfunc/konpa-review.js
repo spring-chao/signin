@@ -56,7 +56,7 @@ async function reviewRequest({db,event,events,registrations,checkins,payload,act
  if(!actor.manage||actor.members!==null)throw Error('无修改或确认权限');
  const reg=permitted.find(r=>String(r._id)===String(payload.registration_id));
  if(!reg)throw Error('报名不在授权场次范围');
- if(!['set','confirm','auto'].includes(payload.action))throw Error('操作无效');
+ if(!['set','confirm','auto','staff_attendance'].includes(payload.action))throw Error('操作无效');
  const source=sourceFor(reg,afternoon);
  let saved=null;
  const result=await db.runTransaction(async tx=>{
@@ -73,7 +73,7 @@ async function reviewRequest({db,event,events,registrations,checkins,payload,act
    if(checked&&!existing&&liveSource)requireDatabaseSuccess(await tx.collection('checkins').doc(source._id).update({konpa_review:'CONFIRMED'}));
    if(checked&&!existing||existing&&!['PENDING','REVIEWED'].includes(existing.status)||now<Date.parse(policy.deadline(event))||!liveSource&&!existing)return {skipped:true};
   }else if(payload.expected_revision!==state.revision)throw Error('记录已变化，请刷新后重试');
-  const choice=payload.action==='set'?payload.choice:state.choice;
+  const choice=['set','staff_attendance'].includes(payload.action)?payload.choice:state.choice;
   if(typeof choice!=='boolean')throw Error('请明确是否参加');
   const finalize=payload.action!=='set';
   if(finalize&&(!Number.isFinite(policy.timestamp(event.scheduled_start_at))||now<policy.timestamp(event.scheduled_start_at)))throw Error('空巴尚未开始或时间未确认');

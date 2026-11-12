@@ -24,6 +24,20 @@ test('manual absence is preserved by the one-week automatic job',async()=>{
  assert.equal(f.db.collections.checkins.filter(r=>r.batch_id==='ev').length,0);
  assert.equal(f.db.collections.config[0].status,'ABSENT');
 });
+test('staff can override the afternoon default in one audited operation',async()=>{
+ const f=fixture();
+ const payload={action:'staff_attendance',registration_id:'registration',choice:false,expected_revision:'initial'};
+ const before=await reviewRequest({...f,payload:{action:'list'}});
+ assert.equal(before.rows[0].choice,true);
+ assert.equal(before.rows[0].status,'PENDING');
+ await assert.rejects(()=>reviewRequest({...f,actor:{...f.actor,manage:false},payload}));
+ const absent=await reviewRequest({...f,payload});
+ assert.equal(absent.status,'ABSENT');
+ await assert.rejects(()=>reviewRequest({...f,payload}));
+ const present=await reviewRequest({...f,payload:{...payload,choice:true,expected_revision:absent.revision}});
+ assert.equal(present.status,'CONFIRMED');
+ assert.equal(f.db.collections.checkins.filter(row=>row.batch_id==='ev').length,1);
+});
 test('group viewers cannot write, other-class readers cannot read, private fields never leave list',async()=>{
  const f=fixture();
  await assert.rejects(()=>reviewRequest({...f,actor:{...f.actor,manage:false,members:['123']},payload:{action:'set',registration_id:'registration',choice:true}}));

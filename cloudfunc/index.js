@@ -1402,6 +1402,26 @@ exports.main = async (event, context) => {
       if (operation === "display_settings") {
         for (const key of Object.keys(payload)) if (!["show_group", "show_dinner_table"].includes(key)) throw new Error("SETTING_NOT_ALLOWED");
       }
+      if (operation === "konpa_list" || operation === "konpa_attendance") {
+        const family = await getEventGroupById(targetEvent.event_group_id);
+        const checkins = (await Promise.all(family.filter(item => item.session_code === "AFTERNOON" ||
+          item.session_code === "MORNING" || item.session_code === "KONPA")
+          .map(item => rowsForBatch("checkins", item.event_id || item._id, 5000)))).flat();
+        const result = await require("./konpa-review").reviewRequest({
+          db, event: targetEvent, events: family, checkins,
+          registrations: await rowsForBatch("registrations", payload.event_id, 5000),
+          payload: {
+            action: operation === "konpa_list" ? "list" : "staff_attendance",
+            registration_id: payload.registration_id,
+            choice: payload.choice,
+            expected_revision: payload.expected_revision
+          },
+          actor: { id: trusted.actor.id, classes: [targetEvent.class_org_unit_id],
+            members: null, manage: operation === "konpa_attendance" },
+          deliver: deliverCheckin
+        });
+        return { statusCode: 200, headers: h, body: JSON.stringify({ ok: true, ...result }) };
+      }
       if (operation === "event_update") {
         const merged = { ...targetEvent, ...payload };
         if (!eventInScope(merged, trusted)) throw new Error("EVENT_SCOPE_DENIED");
