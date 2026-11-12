@@ -5,6 +5,8 @@ const TRUSTED_CONTEXT = Symbol("platform-signin-context");
 const MANAGEMENT_OPERATIONS = Object.freeze({
   admin_events: { method: "GET", permission: "attendance:view", list: true },
   event_detail: { method: "GET", permission: "attendance:view" },
+  konpa_list: { method: "POST", permission: "attendance:view" },
+  konpa_attendance: { method: "POST", permission: "attendance:manage", registration: true, mutation: true },
   create_event: { method: "POST", permission: "attendance:create", create: true, mutation: true },
   import_preview: { method: "POST", permission: "attendance:import" },
   import_apply: { method: "POST", permission: "attendance:import", mutation: true },
