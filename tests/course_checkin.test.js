@@ -101,6 +101,21 @@ async function request(path, method, body, token) {
   assert(rows.some(row => row.phone === "badphone"));
   assert(rows.every(row => row.registered_name === row.name));
 
+  // Model historical rows occupying the unscoped query's full read limit.
+  const historical = Array.from({ length: 5000 }, (_, i) => ({
+    _id: "history-" + i,
+    batch_id: "historical-event",
+    name: "张三"
+  }));
+  db.collections.registrations.unshift(...historical);
+  for (let i = 0; i < 20; i++) {
+    const lookup = await request("/checkin/lookup", "POST", {
+      name: "张三",
+      ...(i % 2 === 0 ? { event_id: eventId } : {})
+    });
+    assert.equal(lookup.data.status, "UNIQUE", "historical registrations must not hide the active roster");
+    assert.equal(lookup.data.candidates[0].registration_id, rows[0]._id);
+  }
   const unique = await request("/checkin/lookup", "POST", { event_id: eventId, name: "张三" });
   assert.equal(unique.data.status, "UNIQUE");
   assert.equal(unique.data.candidates[0].phone, undefined, "课程姓名候选不得暴露手机号");
@@ -108,6 +123,14 @@ async function request(path, method, body, token) {
   const direct = await request("/checkin/confirm", "POST", { event_id: eventId, registration_id: unique.data.candidates[0].registration_id, name: "张三" });
   assert.equal(direct.data.ok, true);
   assert.equal(direct.data.data.attendance_role, "COURSE_REGISTRANT");
+  for (let i = 0; i < 10; i++) {
+    const again = await request("/checkin/confirm", "POST", {
+      event_id: eventId, registration_id: unique.data.candidates[0].registration_id, name: "张三"
+    });
+    assert.equal(again.data.ok, true);
+    assert.equal(again.data.already, true);
+  }
+  assert.equal(db.collections.checkins.filter(row => row.registration_id === rows[0]._id).length, 1);
   const legacyNameOnly = await request("/checkin", "POST", { event_id: eventId, name: "同名学员" });
   assert.equal(legacyNameOnly.data.status, "MULTIPLE", "旧签到入口省略手机号时也应转入统一姓名查询");
 

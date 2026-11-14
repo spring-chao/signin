@@ -2343,9 +2343,12 @@ exports.main = async (event, context) => {
       }
 
       const eventById = new Map(events.map(item => [String(item.event_id || item._id || ""), item]));
-      const eventIds = new Set(eventById.keys());
-      const registrations = await getAll("registrations", 5000);
-      const matches = registrations.filter(reg => reg.registration_source !== "WECHAT_GUEST" && reg.source !== "wechat_guest" && eventIds.has(String(reg.batch_id || "")) && namedRegistrationMatches(reg, name));
+      const rosters = await Promise.all(
+        Array.from(eventById.keys(), eventId => rowsForBatch("registrations", eventId, 5000))
+      );
+      const matches = rosters.flat().filter(reg =>
+        reg.registration_source !== "WECHAT_GUEST" && reg.source !== "wechat_guest" && namedRegistrationMatches(reg, name)
+      );
       const checkinsByEvent = new Map();
       await Promise.all(events.map(async item => {
         const eventId = String(item.event_id || item._id || "");
