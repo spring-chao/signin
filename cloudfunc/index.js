@@ -1471,7 +1471,7 @@ exports.main = async (event, context) => {
       }
       if (auditId) {
         const afterEventId = result.event_id || payload.event_id || result.events && result.events[0] && result.events[0].event_id;
-        const after = result.ok === false ? before : redact(payload.registration_id ? (await getAll("registrations", 1, { _id: String(payload.registration_id) }))[0] || null : result.event || (afterEventId ? await getEventById(afterEventId) : result));
+        const after = result.ok === false ? before : redact(payload.meeting_times && result.events ? result.events : payload.registration_id ? (await getAll("registrations", 1, { _id: String(payload.registration_id) }))[0] || null : result.event || (afterEventId ? await getEventById(afterEventId) : result));
         const audit = { actor: trusted.actor.id, action: "platform." + operation, target: payload.registration_id || afterEventId || "display_settings", before, after, timestamp: new Date().toISOString() };
         // SDK update flattens nested snapshots into dotted fields. Replacing
         // an initial after:null that way fails after the business write.
@@ -2949,6 +2949,60 @@ exports.main = async (event, context) => {
     try {
       const eventItem = await getEventById(data.event_id);
       if (!eventItem) return { statusCode: 200, headers: h, body: JSON.stringify({ ok: false, msg: "未找到活动" }) };
+      if (data.meeting_times !== undefined) {
+        if (!platformContext?.management || !isClassMeetingEvent(eventItem) || !eventItem.event_group_id) {
+          throw new Error("仅可在签到管理中修改整场班会时间");
+        }
+        const sessions = await getEventGroupById(eventItem.event_group_id);
+        const date = validEventDate(data.event_date);
+        if (!date || !sessions.length) throw new Error("请选择有效的班会日期");
+        const updates = [];
+        let previousEnd = null;
+        for (const session of sessions) {
+          const eventId = String(session.event_id || session._id);
+          if (!eventInScope(session, platformContext)) throw new Error("EVENT_GROUP_SCOPE_DENIED");
+          const times = data.meeting_times?.[eventId];
+          const start = parseChinaDateTime(times?.scheduled_start_at);
+          const end = parseChinaDateTime(times?.scheduled_end_at);
+          const open = isKonpaSession(session) ? start : parseChinaDateTime(times?.checkin_start_at);
+          const close = isKonpaSession(session) ? end : parseChinaDateTime(times?.checkin_end_at);
+          if (!start || !end || !open || !close || start >= end || open > start || start > close || close > end) {
+            throw new Error(session.session_name + "的签到和正式时间顺序不正确");
+          }
+          if (chinaDateFromTimestamp(start) !== date) throw new Error("各场次的正式开始必须在班会日期内");
+          if (previousEnd && previousEnd > start) throw new Error("各场次的正式时段不能重叠");
+          previousEnd = end;
+          if ((await rowsForBatch("checkins", eventId, 1)).length) {
+            throw new Error("班会已有到场记录，不能修改时间");
+          }
+          updates.push({ session, changes: {
+            event_date: date, checkin_start_at: open, checkin_end_at: close,
+            scheduled_start_at: start, scheduled_end_at: end, updated_at: new Date().toISOString()
+          } });
+        }
+        await db.runTransaction(async transaction => {
+          for (const { session } of updates) {
+            const current = documentData(await transaction.collection("events").doc(session._id).get());
+            if (!current || current.event_group_id !== session.event_group_id ||
+                current.updated_at !== session.updated_at || lifecycleStatus(current) === "CANCELLED" ||
+                current.status === "closed" || eventTimeState(current) !== "upcoming") {
+              throw new Error("班会已开始、关闭或场次已变化，请刷新后核对");
+            }
+          }
+          for (const { session, changes } of updates) {
+            requireDatabaseSuccess(await transaction.collection("events").doc(session._id).update(changes));
+          }
+        });
+        return { statusCode: 200, headers: h, body: JSON.stringify({
+          ok: true, events: updates.map(({ session, changes }) => publicEvent({ ...session, ...changes })),
+          msg: "整场班会时间已更新"
+        }) };
+      }
+      if (platformContext?.management && isClassMeetingEvent(eventItem) && eventItem.event_group_id &&
+          ["event_date", "checkin_start_at", "checkin_end_at", "scheduled_start_at", "scheduled_end_at"]
+            .some(field => data[field] !== undefined && String(data[field]) !== String(eventItem[field] || ""))) {
+        throw new Error("请通过整场班会时间编辑修改日期和场次时间");
+      }
       const changes = {};
       if (isKonpaSession(eventItem) && ["status", "checkin_start_at", "checkin_end_at"].some(field => data[field] !== undefined && data[field] !== eventItem[field])) {
         return { statusCode: 200, headers: h, body: JSON.stringify({ ok: false, code: "KONPA_REVIEW_REQUIRED", msg: "空巴不设签到，请通过空巴出席确认处理" }) };

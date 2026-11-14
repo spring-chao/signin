@@ -298,11 +298,30 @@ function signTicket(payload) {
   const morningId = classCreated.data.events[0].event_id, afternoonId = classCreated.data.events[1].event_id;
   assert.equal(db.collections.registrations.filter(row => row.event_group_id === classCreated.data.event_group_id).length, 3);
   assert(!db.collections.registrations.some(row => row.name === "伪造名单"));
+  const movedDate = "2099-05-15";
+  const meetingTimes = Object.fromEntries(classCreated.data.events.map(event => [
+    event.event_id,
+    Object.fromEntries(["checkin_start_at", "checkin_end_at", "scheduled_start_at", "scheduled_end_at"].map(field => [
+      field, movedDate + "T" + new Date(Date.parse(db.collections.events.find(row => row.event_id === event.event_id)[field]) + 8 * 3600000).toISOString().slice(11, 16)
+    ]))
+  ]));
+  const movePayload = { event_id: morningId, event_date: movedDate, meeting_times: meetingTimes };
+  const missingKonpa = { ...meetingTimes };
+  delete missingKonpa[classCreated.data.events[2].event_id];
+  assert.equal((await manage("event_update", { ...movePayload, meeting_times: missingKonpa })).data.ok, false);
+  assert.equal(db.collections.events.find(row => row.event_id === morningId).event_date, tomorrow);
+  const moved = await manage("event_update", movePayload, { scope: ["class-1"] });
+  assert.equal(moved.data.ok, true, JSON.stringify(moved));
+  assert.equal(moved.data.events.length, 3);
+  assert(moved.data.events.every(event => event.event_date === movedDate));
+  assert.equal(moved.data.events[2].scheduled_start_at, movedDate + "T10:00:00.000Z");
   for (const id of [morningId, afternoonId]) {
     Object.assign(db.collections.events.find(row => row.event_id === id), { event_date: today, checkin_start_at: new Date(Date.now() - 1000).toISOString(), checkin_end_at: new Date(Date.now() + 60000).toISOString() });
     assert.equal((await request("/ops/v1/member-checkin/confirm", "POST", { event_id: id, member: { member_id: "10", member_code: "M10", name: "正式学员" } })).data.ok, true);
   }
   assert.equal(db.collections.checkins.filter(row => [morningId, afternoonId].includes(row.batch_id)).length, 2, "morning attendance never substitutes for afternoon");
+  assert.equal((await manage("event_update", movePayload)).data.ok, false);
+  assert.equal(db.collections.events.find(row => row.event_id === classCreated.data.events[2].event_id).event_date, movedDate);
   const groupCreated = await manage("create_event", { ...metadata, event_name: "小组学习", activity_type: "group_meeting", class_org_unit_id: "class-1", group_org_unit_id: "group-1" });
   assert.equal(groupCreated.data.ok, true);
   const groupRows = db.collections.registrations.filter(row => row.batch_id === groupCreated.data.event_id);
