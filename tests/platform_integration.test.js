@@ -85,10 +85,18 @@ function signTicket(payload) {
   delete process.env.SIGNIN_LEGACY_URL;
   delete process.env.SIGNIN_DEPLOYMENT_MODE; delete process.env.SIGNIN_CLOUDBASE_ENV_ID;
   seedEvent("manual-isolated");
-  seedRegistration("imported-manual", "manual-isolated", { name: "人工验收甲", registered_name: "人工验收甲", platform_member_id: "", member_code: "", class_name: "隔离一班", group_name: "隔离组", phone: "", company: "" });
+  for (let i = 0; i < 5000; i++) seedRegistration("historical-" + i, "historical");
+  seedRegistration("imported-manual", "manual-isolated", { name: "人工验收甲", registered_name: "人工验收甲", platform_member_id: "", member_code: "", class_name: "隔离一班", group_name: "隔离组", group_num: 4, dinner_table_num: 7, phone: "", company: "" });
   seedRegistration("other-manual", "manual-isolated", { name: "人工验收乙", registered_name: "人工验收乙", platform_member_id: "", member_code: "" });
   const manualBefore = (await manage("event_detail", { event_id: "manual-isolated" })).data;
   assert.equal(manualBefore.total, 2);
+  const importedManual = manualBefore.rows.find(row => row.registration_id === "imported-manual");
+  assert.equal(importedManual.group_num, 4);
+  assert.equal(importedManual.dinner_table_num, 7);
+  const late = await manage("attendance_status", { event_id: "manual-isolated", registration_id: "imported-manual", status: "late", note: "测试备注" });
+  assert.equal(late.data.ok, true, JSON.stringify(late));
+  const afterLate = (await manage("event_detail", { event_id: "manual-isolated" })).data;
+  assert.equal(afterLate.rows.find(row => row.registration_id === "imported-manual").attendance_status, "late");
   const manualResult = await manage("manual_checkin", {event_id: "manual-isolated", registration_id: "imported-manual"});
   assert.equal(manualResult.data.ok, true, JSON.stringify(manualResult));
   const manualAfter = (await manage("event_detail", { event_id: "manual-isolated" })).data;
@@ -113,6 +121,9 @@ function signTicket(payload) {
     assert.equal(result.data.ok, expected, JSON.stringify(result));
     assert.equal(db.collections.checkins.filter(row => row.batch_id === id).length, Number(expected));
   }
+  const deleted = await manage("registration_delete", { event_id: "manual-isolated", registration_id: "other-manual" });
+  assert.equal(deleted.data.ok, true, JSON.stringify(deleted));
+  for (let i = 0; i < 5000; i++) db.collections.registrations.shift();
   seedEvent("main");
   seedRegistration("r11", "main");
   seedRegistration("r12", "main", { platform_member_id: "12", member_code: "M12" });

@@ -1655,7 +1655,13 @@ exports.main = async (event, context) => {
         registered_name: reg.registered_name || reg.name, actual_attendee_name: checkin && (checkin.actual_attendee_name || checkin.name) || reg.actual_attendee_name || "",
         checked: Boolean(checkin), checked_at: checkin && checkin.checked_at || "", attendance_status: checkin ? "present" : normalizeAttendanceStatus(reg.attendance_status),
         attendance_role: role, attendance_role_label: role === ATTENDANCE_ROLES.CROSS_CLASS_MEMBER ? "外班学长" : role === ATTENDANCE_ROLES.HOME_CLASS_MEMBER ? "本班学长" : role === ATTENDANCE_ROLES.EVENT_TEAM_MEMBER || role === ATTENDANCE_ROLES.COURSE_TEAM_MEMBER ? "团队报名名额" : "活动报名",
-        home_class_name: reg.home_class_name || reg.class_name || "", class_name: reg.class_name || "", center: reg.center || "", company: reg.company || "", group_name: reg.group_name || "",
+        home_class_name: reg.home_class_name || checkin?.home_class_name || reg.class_name || "",
+        class_name: eventItem.class_name || reg.class_name || checkin?.class_name || "",
+        center: reg.center || checkin?.center || "",
+        company: reg.company || checkin?.company || "",
+        group_name: reg.group_name || checkin?.group_name || "",
+        group_num: reg.group_num ?? checkin?.group_num ?? null,
+        dinner_table_num: reg.dinner_table_num ?? checkin?.dinner_table_num ?? null,
         is_team: isTeamRegistrationSlot(reg, registrations),
         platform_member_id: reg.platform_member_id || "", member_code: reg.member_code || ""
       };
@@ -3241,14 +3247,16 @@ exports.main = async (event, context) => {
       const registrationId = String(data.registration_id || "").trim();
       if (!registrationId) return { statusCode: 200, headers: h, body: JSON.stringify({ ok: false, msg: "缺少报名记录标识" }) };
 
-      const allRegs = await getAll("registrations", 5000);
-      const registration = allRegs.find(row => String(row._id || "") === registrationId);
+      const [registration] = await getAll("registrations", 1, { _id: registrationId });
+      if (registration && data.event_id && String(registration.batch_id) !== String(data.event_id)) {
+        return { statusCode: 200, headers: h, body: JSON.stringify({ ok: false, msg: "报名记录不属于所选活动" }) };
+      }
       if (!registration) return { statusCode: 200, headers: h, body: JSON.stringify({ ok: false, msg: "未找到报名记录" }) };
       const registrationEvent = await getEventById(registration.batch_id);
       if (registrationEvent && lifecycleStatus(registrationEvent) === "CANCELLED") {
         return { statusCode: 200, headers: h, body: JSON.stringify({ ok: false, msg: "活动已取消，不能删除或修改报名记录" }) };
       }
-      const regs = allRegs.filter(row => String(row.batch_id || "") === String(registration.batch_id || ""));
+      const regs = await rowsForBatch("registrations", registration.batch_id, 5000);
       const index = regs.findIndex(row => String(row._id || "") === registrationId);
       const cks = await rowsForBatch("checkins", registration.batch_id, 5000);
       if (buildAttendanceState(regs, cks).checkedIndexes.has(index)) {
@@ -3270,8 +3278,10 @@ exports.main = async (event, context) => {
       const note = String(data.note || "").trim().slice(0, 200);
       if (!registrationId) return { statusCode: 200, headers: h, body: JSON.stringify({ ok: false, msg: "缺少报名记录标识" }) };
 
-      const allRegs = await getAll("registrations", 5000);
-      const registration = allRegs.find(row => String(row._id || "") === registrationId);
+      const [registration] = await getAll("registrations", 1, { _id: registrationId });
+      if (registration && data.event_id && String(registration.batch_id) !== String(data.event_id)) {
+        return { statusCode: 200, headers: h, body: JSON.stringify({ ok: false, msg: "报名记录不属于所选活动" }) };
+      }
       if (!registration) return { statusCode: 200, headers: h, body: JSON.stringify({ ok: false, msg: "未找到报名记录" }) };
       const registrationEvent = await getEventById(registration.batch_id);
       if (registrationEvent && lifecycleStatus(registrationEvent) === "CANCELLED") {
@@ -3280,7 +3290,7 @@ exports.main = async (event, context) => {
       if (registrationEvent && String(registrationEvent.session_code || "").toUpperCase() === "KONPA" && status === "late") {
         return { statusCode: 200, headers: h, body: JSON.stringify({ ok: false, msg: "晚上空巴不设置迟到状态，请以实际签到记录为准" }) };
       }
-      const regs = allRegs.filter(row => String(row.batch_id || "") === String(registration.batch_id || ""));
+      const regs = await rowsForBatch("registrations", registration.batch_id, 5000);
       const index = regs.findIndex(row => String(row._id || "") === registrationId);
       const cks = await rowsForBatch("checkins", registration.batch_id, 5000);
       if (buildAttendanceState(regs, cks).checkedIndexes.has(index)) {
