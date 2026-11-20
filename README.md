@@ -125,7 +125,7 @@ tcb hosting delete /v2/admin.html -e {你的环境ID}
 tcb hosting delete /v3/admin.html -e {你的环境ID}
 ```
 
-部署后必须核对 `GET /api/version` 和 `/build-info.json` 的完整 `commit` 相同；任一接口返回 `unknown` 或 commit 不一致时停止，不切换现场二维码流量。
+部署后分别核对正式扫码入口的 `/build-info.json` 和签到 API 的 `GET /api/version`，记录两端的完整提交、验证时间及 `GET /api/health` 结果。如果本次发布同时更新两端，两端提交都应匹配本次发布提交。GitHub Pages 只在页面变化或手动部署时更新，独立发布 API 时允许继续使用已核验兼容的页面提交。先对照两个提交间的页面文件变化，再用合成活动在隔离环境回归扫码入口、报名、签到和重复签到。版本为 `unknown`、任一端与预期版本不符或兼容性验证失败时，停止切换现场二维码流量。
 
 ### 7. 配置 HTTP 访问服务
 
