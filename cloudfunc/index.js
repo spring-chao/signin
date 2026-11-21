@@ -1193,6 +1193,25 @@ exports.main = async (event, context) => {
     };
   }
 
+  async function checkinEntryEvent(item) {
+    const event = publicEvent(item);
+    event.checkin_available = isPublicCheckinEligible(item);
+    if (event.checkin_available || !event.event_group_id || !isEventConfirmed(item) || !isEventToday(item)) return event;
+
+    // A QR code remains tied to its original session. Expose only same-day,
+    // open siblings so the attendee can explicitly choose a new session.
+    const siblings = await getEventGroupById(event.event_group_id).catch(() => []);
+    event.available_checkin_sessions = siblings
+      .filter(session => String(session.event_id || session._id) !== String(event.event_id) && isPublicCheckinEligible(session))
+      .sort(publicCheckinOrder)
+      .map(session => ({
+        event_id: session.event_id || session._id,
+        session_code: session.session_code || "",
+        session_name: session.session_name || ""
+      }));
+    return event;
+  }
+
   async function getActiveRows(collectionName, maxTotal) {
     const batchId = await getConfig("active_batch_id", "");
     const allRows = await getAll(collectionName, maxTotal);
@@ -1595,15 +1614,23 @@ exports.main = async (event, context) => {
     if (p.endsWith("/events")) return { statusCode: 200, headers: h, body: JSON.stringify({ ok: true, events: (await getTodayEvents()).filter(item => !isKonpaSession(item) && isEventConfirmed(item) && isEventToday(item)).sort(publicCheckinOrder).map(publicEvent), fallback_url: legacyCheckinUrl(process.env, deploymentMode) }) };
     const member = data.member || {};
     const memberId = String(member.member_id || "").trim(), memberCode = String(member.member_code || "").trim();
-    if ((!memberId || !memberCode) && p.endsWith("/lookup")) {
-      const eventItem = await getEventById(String(data.event_id || ""));
-      return { statusCode: 200, headers: h, body: JSON.stringify({ ok: Boolean(eventItem), event: eventItem ? publicEvent(eventItem) : null, registration: null, can_checkin: false, status: "UNBOUND", requires_binding: true, msg: "请先完成学员身份绑定" }) };
-    }
-    if (!memberId || !memberCode) return { statusCode: 400, headers: h, body: JSON.stringify({ ok: false, status: "UNBOUND", msg: "请先完成学员身份绑定" }) };
+    const lookup = p.endsWith("/lookup");
+    const unbound = !memberId || !memberCode;
+    if (unbound && !lookup) return { statusCode: 400, headers: h, body: JSON.stringify({ ok: false, status: "UNBOUND", msg: "请先完成学员身份绑定" }) };
     try {
       const eventId = String(data.event_id || "").trim();
       const eventItem = await getEventById(eventId);
-      if (p.endsWith("/lookup") && eventItem && isPublicUpcoming(eventItem)) return { statusCode: 200, headers: h, body: JSON.stringify({ ok: true, status: "UPCOMING", event: publicEvent(eventItem), registration: null, can_checkin: false, already_checked_in: false, notice: "签到尚未开放" }) };
+      if (unbound) {
+        return { statusCode: 200, headers: h, body: JSON.stringify({ ok: Boolean(eventItem), event: eventItem ? await checkinEntryEvent(eventItem) : null, registration: null, can_checkin: false, status: "UNBOUND", requires_binding: true, msg: "请先完成学员身份绑定" }) };
+      }
+      if (lookup && eventItem && isEventConfirmed(eventItem) && !isPublicCheckinEligible(eventItem)) {
+        const upcoming = isPublicUpcoming(eventItem);
+        return { statusCode: 200, headers: h, body: JSON.stringify({
+          ok: true, status: upcoming ? "UPCOMING" : "SESSION_UNAVAILABLE", event: await checkinEntryEvent(eventItem),
+          registration: null, can_checkin: false, already_checked_in: false,
+          notice: upcoming ? "本场次签到尚未开放" : "本场次当前不可签到，请从「今日签到」选择开放场次"
+        }) };
+      }
       if (!eventItem || !isPublicCheckinEligible(eventItem)) return { statusCode: 200, headers: h, body: JSON.stringify({ ok: false, status: "NO_EVENT", event: eventItem ? publicEvent(eventItem) : null, msg: "当前活动已关闭或尚未开始" }) };
       const rows = await rowsForBatch("registrations", eventId, 5000);
       // ID is authoritative. Member code only locates a historical row without

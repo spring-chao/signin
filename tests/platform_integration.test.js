@@ -265,6 +265,31 @@ async function withUnavailablePostCommitList(eventId, action) {
   assert.equal(upcomingLookup.data.can_checkin, false);
   assert.equal(upcomingLookup.data.status, "UPCOMING");
   assert.equal((await request("/ops/v1/member-checkin/confirm", "POST", { event_id: "upcoming", member })).data.ok, false);
+
+  const sameMeeting = { activity_type: "class_meeting", event_group_id: "dedicated-test-group" };
+  seedEvent("dedicated-morning", { ...sameMeeting, session_code: "MORNING", status: "closed" });
+  seedEvent("dedicated-afternoon", { ...sameMeeting, session_code: "AFTERNOON", session_name: "下午" });
+  seedEvent("dedicated-konpa", { ...sameMeeting, session_code: "KONPA" });
+  seedEvent("dedicated-draft", { ...sameMeeting, lifecycle_status: "DRAFT" });
+  seedEvent("dedicated-other-group", { ...sameMeeting, event_group_id: "other-meeting" });
+  seedRegistration("dedicated-row", "dedicated-afternoon");
+  for (const identity of [null, member]) {
+    const result = await request("/ops/v1/member-checkin/lookup", "POST", { event_id: "dedicated-morning", member: identity });
+    assert.equal(result.data.ok, true);
+    assert.equal(result.data.event.event_id, "dedicated-morning");
+    assert.equal(result.data.event.checkin_available, false);
+    assert.deepEqual(result.data.event.available_checkin_sessions, [
+      { event_id: "dedicated-afternoon", session_code: "AFTERNOON", session_name: "下午" }
+    ]);
+    assert.equal(result.data.can_checkin, false);
+    assert.equal(result.data.registration, null);
+  }
+  assert.equal((await request("/ops/v1/member-checkin/confirm", "POST", { event_id: "dedicated-morning", member })).data.ok, false);
+  assert(!db.collections.checkins.some(row => row.batch_id === "dedicated-afternoon"));
+  const openSibling = await request("/ops/v1/member-checkin/lookup", "POST", { event_id: "dedicated-afternoon", member });
+  assert.equal(openSibling.data.can_checkin, true);
+  assert.equal(openSibling.data.event.event_id, "dedicated-afternoon");
+  assert.equal(openSibling.data.event.available_checkin_sessions, undefined);
   const singleRecord = await request("/ops/v1/attendance/records?event_id=main&registration_id=r11", "GET", {}, process.env.SIGNIN_SERVICE_API_KEY);
   assert.equal(singleRecord.data.items.length, 1);
   assert.equal(singleRecord.data.items[0].external_registration_id, "r11");
