@@ -11,6 +11,7 @@ function createDatabase(seed) {
   const collections = {};
   Object.keys(seed || {}).forEach(name => { collections[name] = seed[name].map(row => ({ ...row })); });
   let nextId = 1;
+  const insertChunks = [];
   const rowsFor = name => (collections[name] || (collections[name] = []));
   function collection(name) {
     let filter = null, offset = 0, limit = Infinity, sortField = null, sortDirection = "asc";
@@ -25,7 +26,14 @@ function createDatabase(seed) {
         if (sortField) rows = [...rows].sort((a, b) => { const v = String(a[sortField] || "").localeCompare(String(b[sortField] || "")); return sortDirection === "desc" ? -v : v; });
         return { data: rows.slice(offset, offset + limit) };
       },
-      async add(value) { const id = `${name}-${nextId++}`; rowsFor(name).push({ ...value, _id: id }); return { id }; },
+      async add(value) {
+        if (Array.isArray(value)) {
+          if (name === 'registrations') insertChunks.push(value.length);
+          const ids = [];
+          for (const row of value) ids.push((await this.add(row)).id);
+          return { ids };
+        }
+        const id = `${name}-${nextId++}`; rowsFor(name).push({ ...value, _id: id }); return { id }; },
       async update(value) { rowsFor(name).forEach(row => { if (!filter || Object.keys(filter).every(key => row[key] === filter[key])) Object.assign(row, value); }); return { updated: 1 }; },
       doc(id) {
         return {
@@ -36,7 +44,7 @@ function createDatabase(seed) {
     };
     return query;
   }
-  return { collection, collections };
+  return { collection, collections, insertChunks };
 }
 
 const db = createDatabase({
@@ -100,6 +108,31 @@ async function request(path, method, body, token) {
   assert(rows.some(row => row.phone === ""));
   assert(rows.some(row => row.phone === "badphone"));
   assert(rows.every(row => row.registered_name === row.name));
+
+  db.insertChunks.length = 0;
+  const large = {
+    ...payload, event_name: "合成大名单座位回归",
+    attendees: Array.from({ length: 224 }, (_, i) => ({
+      name: "合成学员 " + i, group_num: Math.floor(i / 8) + 1,
+      onsite_seat: String(Math.floor(i / 8) + 1).padStart(2, "0") + "桌" + String(i % 8 + 1).padStart(2, "0"),
+      dinner_table_num: i === 0 ? 8 : null
+    }))
+  };
+  const largePreview = await request("/upload_preview", "POST", large, token);
+  const largeUpload = await request("/upload", "POST", {
+    ...large, preview_issued_at: largePreview.data.preview_issued_at, preview_token: largePreview.data.preview_token
+  }, token);
+  assert.equal(largeUpload.data.ok, true);
+  assert.deepEqual(db.insertChunks, [50, 50, 50, 50, 24]);
+  const largeRows = db.collections.registrations.filter(row => row.batch_id === largeUpload.data.event_id);
+  assert.equal(largeRows.length, 224);
+  assert.equal(largeRows[0].onsite_seat, "01桌01");
+  assert.equal(largeRows[0].dinner_table_num, 8);
+  assert.equal(largeRows[223].onsite_seat, "28桌08");
+  assert.equal(largeRows[223].group_num, 28);
+  // Resume the original event for tests of the default public lookup.
+  db.collections.config.find(row => row.key === "active_batch_id").value = eventId;
+
 
   // Model historical rows occupying the unscoped query's full read limit.
   const historical = Array.from({ length: 5000 }, (_, i) => ({

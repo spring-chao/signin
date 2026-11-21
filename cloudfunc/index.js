@@ -1661,6 +1661,7 @@ exports.main = async (event, context) => {
         company: reg.company || checkin?.company || "",
         group_name: reg.group_name || checkin?.group_name || "",
         group_num: reg.group_num ?? checkin?.group_num ?? null,
+        onsite_seat: reg.onsite_seat || "",
         dinner_table_num: reg.dinner_table_num ?? checkin?.dinner_table_num ?? null,
         is_team: isTeamRegistrationSlot(reg, registrations),
         platform_member_id: reg.platform_member_id || "", member_code: reg.member_code || ""
@@ -1894,6 +1895,7 @@ exports.main = async (event, context) => {
     const restoreCheckins = payload.restore_checkins === true;
     for (let i = 0; i < rows.length; i++) {
       const row = rows[i] || {};
+      const onsiteSeat = String(row.onsite_seat || "").trim().slice(0, 48);
       const cleanRow = {
         name: String(row.name || "").trim(),
         phone: String(row.phone || "").trim().replace(/\s/g, "").replace(/-/g, ""),
@@ -1902,6 +1904,7 @@ exports.main = async (event, context) => {
         group_name: String(row.group_name || "").trim(),
         company: String(row.company || "").trim(),
         group_num: row.group_num || null,
+        ...(onsiteSeat ? { onsite_seat: onsiteSeat } : {}),
         dinner_table_num: row.dinner_table_num || null,
         ...(platformContext && platformContext.roster_verified ? { member_code: String(row.member_code || ""), platform_member_id: String(row.platform_member_id || row.member_id || "") } : {}),
         restore_checked_at: restoreCheckins && row.checked_at && !isNaN(Date.parse(row.checked_at)) ? new Date(row.checked_at).toISOString() : ""
@@ -3580,29 +3583,38 @@ exports.main = async (event, context) => {
     const stagedDocs = [];
     const stagedCheckinDocs = [];
     let stagedEventDoc = null;
+    const isClassMeeting = activityType === "class_meeting";
+    const registrationRole = isClassMeeting
+      ? ATTENDANCE_ROLES.HOME_CLASS_MEMBER
+      : activityType === "course" ? ATTENDANCE_ROLES.COURSE_REGISTRANT : ATTENDANCE_ROLES.EVENT_REGISTRANT;
+    const registrationRows = normalizedRows.map(({ restore_checked_at, ...row }) => ({
+      ...row,
+      registered_name: row.name,
+      actual_attendee_name: "",
+      registration_source: "EXCEL_UPLOAD",
+      source: "excel_upload",
+      attendance_role: registrationRole,
+      batch_id: batchId
+    }));
     try {
-      for (const row of normalizedRows) {
-        const { restore_checked_at: restoreCheckedAt, ...registrationData } = row;
-        const isClassMeeting = activityType === "class_meeting";
-        const registrationRole = isClassMeeting
-          ? ATTENDANCE_ROLES.HOME_CLASS_MEMBER
-          : activityType === "course" ? ATTENDANCE_ROLES.COURSE_REGISTRANT : ATTENDANCE_ROLES.EVENT_REGISTRANT;
-        const registrationToWrite = {
-          ...registrationData,
-          registered_name: String(row.name || "").trim(),
-          actual_attendee_name: "",
-          registration_source: "EXCEL_UPLOAD",
-          source: "excel_upload",
-          attendance_role: registrationRole,
-          batch_id: batchId
-        };
-        const result = await db.collection("registrations").add(registrationToWrite);
-        stagedDocs.push({ _id: result.id || result._id });
+      const registrations = db.collection("registrations");
+      const chunkSize = 50;
+      for (let offset = 0; offset < registrationRows.length; offset += chunkSize) {
+        const chunk = registrationRows.slice(offset, offset + chunkSize);
+        const result = await registrations.add(chunk);
+        if (!Array.isArray(result.ids) || result.ids.length !== chunk.length || result.ids.some(id => !id)) {
+          throw new Error("报名名单批量写入未完整返回");
+        }
+        stagedDocs.push(...result.ids.map(_id => ({ _id })));
+      }
+      for (const [index, row] of normalizedRows.entries()) {
+        const restoreCheckedAt = row.restore_checked_at;
+        const registrationId = stagedDocs[index]._id;
         if (restoreCheckedAt) {
-          const checkinResult = await saveCheckin({ registration_id: result.id || result._id || "", name: row.name, registered_name: row.name, actual_attendee_name: row.name, phone: row.phone, center: normalizeCenterValue(row.center), class_name: normalizeGroupValue(row.class_name), group_name: normalizeGroupValue(row.group_name), company: row.company, attendance_role: registrationRole, registration_source: "EXCEL_UPLOAD", group_num: row.group_num, dinner_table_num: row.dinner_table_num, batch_id: batchId, checked_at: restoreCheckedAt }, null, { deferDelivery: true });
+          const checkinResult = await saveCheckin({ registration_id: registrationId, name: row.name, registered_name: row.name, actual_attendee_name: row.name, phone: row.phone, center: normalizeCenterValue(row.center), class_name: normalizeGroupValue(row.class_name), group_name: normalizeGroupValue(row.group_name), company: row.company, attendance_role: registrationRole, registration_source: "EXCEL_UPLOAD", group_num: row.group_num, dinner_table_num: row.dinner_table_num, batch_id: batchId, checked_at: restoreCheckedAt }, null, { deferDelivery: true });
           stagedCheckinDocs.push({ _id: checkinResult.id || checkinResult._id });
           if (!isClassMeeting) {
-            await db.collection("registrations").doc(result.id || result._id).update({ actual_attendee_name: String(row.name || "").trim(), actual_attendee_at: restoreCheckedAt, actual_attendee_source: "RESTORED_CHECKIN" });
+            await registrations.doc(registrationId).update({ actual_attendee_name: row.name, actual_attendee_at: restoreCheckedAt, actual_attendee_source: "RESTORED_CHECKIN" });
           }
         }
       }

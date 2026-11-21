@@ -59,7 +59,16 @@ function createAtomicDatabase(seed = {}) {
         });
         return { data: rows.slice(skip, skip + limit).map(row => ({ ...row })) };
       },
-      async add(value) { const id = name + "-" + nextId++; rowsFor(name).push({ ...value, _id: id }); return { id }; },
+      async add(value) {
+        if (Array.isArray(value)) {
+          const ids = [];
+          for (const row of value) ids.push((await this.add(row)).id);
+          return { ids };
+        }
+        const id = name + "-" + nextId++;
+        rowsFor(name).push({ ...value, _id: id });
+        return { id };
+      },
       async update(value) { const rows = rowsFor(name).filter(row => Object.entries(filter).every(([key, expected]) => row[key] === expected)); rows.forEach(row => Object.assign(row, value)); return { updated: rows.length }; },
       doc(id) { return {
         async update(value) { const row = rowsFor(name).find(row => row._id === id); if (!row) throw new Error("document not found"); Object.assign(row, value); return { updated: 1 }; },
