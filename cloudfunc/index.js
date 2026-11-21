@@ -1238,6 +1238,7 @@ exports.main = async (event, context) => {
       ...(isRosterRegistrationEvent(eventItem)
         ? courseRegistrationCandidate(reg, eventItem, checkedAt)
         : nameCheckinCandidate(reg, eventItem, checkedAt, false)),
+      checkin_badge: normalizeCheckinBadge(reg?.checkin_badge),
       attendance_role_label: role === ATTENDANCE_ROLES.HOME_CLASS_MEMBER ? "本班学长" : role === ATTENDANCE_ROLES.CROSS_CLASS_MEMBER ? "外班学长" : role === ATTENDANCE_ROLES.EVENT_TEAM_MEMBER || role === ATTENDANCE_ROLES.COURSE_TEAM_MEMBER ? "团队报名名额" : role === ATTENDANCE_ROLES.COURSE_REGISTRANT || role === ATTENDANCE_ROLES.EVENT_REGISTRANT ? "活动报名" : "来宾",
       group_type: gf.label, group_value: normalizeDimensionValue(reg, gf.field),
       ...(role === ATTENDANCE_ROLES.CROSS_CLASS_MEMBER ? { home_class_name: String(reg.home_class_name || reg.class_name || "").trim() } : {}),
@@ -1705,6 +1706,7 @@ exports.main = async (event, context) => {
         group_name: reg.group_name || checkin?.group_name || "",
         group_num: reg.group_num ?? checkin?.group_num ?? null,
         onsite_seat: reg.onsite_seat || "",
+        checkin_badge: normalizeCheckinBadge(reg.checkin_badge),
         dinner_table_num: reg.dinner_table_num ?? checkin?.dinner_table_num ?? null,
         is_team: isTeamRegistrationSlot(reg, registrations),
         platform_member_id: reg.platform_member_id || "", member_code: reg.member_code || ""
@@ -1912,6 +1914,13 @@ exports.main = async (event, context) => {
     return { checkedIndexes, checkinByIndex };
   }
 
+  function normalizeCheckinBadge(value) {
+    const badge = String(value || "").trim();
+    if (badge === "塾生") return "熟生";
+    if (badge === "非塾生") return "非熟生";
+    return ["熟生", "非熟生", "特邀嘉宾", "桌长"].includes(badge) ? badge : "";
+  }
+
   function normalizeUploadPayload(payload) {
     const rows = payload.attendees || [];
     const eventName = String(payload.event_name || "").trim().replace(/\.(xlsx|xls|xlsm|xlsb|csv)$/i, "").trim();
@@ -1939,6 +1948,7 @@ exports.main = async (event, context) => {
     for (let i = 0; i < rows.length; i++) {
       const row = rows[i] || {};
       const onsiteSeat = String(row.onsite_seat || "").trim().slice(0, 48);
+      const badge = normalizeCheckinBadge(row.checkin_badge);
       const cleanRow = {
         name: String(row.name || "").trim(),
         phone: String(row.phone || "").trim().replace(/\s/g, "").replace(/-/g, ""),
@@ -1948,6 +1958,7 @@ exports.main = async (event, context) => {
         company: String(row.company || "").trim(),
         group_num: row.group_num || null,
         ...(onsiteSeat ? { onsite_seat: onsiteSeat } : {}),
+        ...(badge ? { checkin_badge: badge } : {}),
         dinner_table_num: row.dinner_table_num || null,
         ...(platformContext && platformContext.roster_verified ? { member_code: String(row.member_code || ""), platform_member_id: String(row.platform_member_id || row.member_id || "") } : {}),
         restore_checked_at: restoreCheckins && row.checked_at && !isNaN(Date.parse(row.checked_at)) ? new Date(row.checked_at).toISOString() : ""
@@ -2000,7 +2011,7 @@ exports.main = async (event, context) => {
       return (rows || []).map(row => JSON.stringify(fields.map(field => String(row[field] || "")))).sort();
     }
     return crypto.createHash("sha256").update(JSON.stringify(
-      stableRows(registrations, ["_id", "name", "registered_name", "actual_attendee_name", "phone", "center", "class_name", "group_name", "company", "group_num", "dinner_table_num", "attendance_status", "attendance_note", "batch_id"])
+      stableRows(registrations, ["_id", "name", "registered_name", "actual_attendee_name", "phone", "center", "class_name", "group_name", "company", "group_num", "dinner_table_num", "checkin_badge", "attendance_status", "attendance_note", "batch_id"])
     )).digest("hex");
   }
 
@@ -2725,6 +2736,7 @@ exports.main = async (event, context) => {
       const ds = await getDisplaySettings();
       const displayData = {
         ...nameCheckinCandidate(registration, eventItem, existing && existing.checked_at, false),
+        checkin_badge: normalizeCheckinBadge(registration.checkin_badge),
         attendance_role: ATTENDANCE_ROLES.CROSS_CLASS_MEMBER,
         attendance_role_label: "外班学长",
         home_class_name: String(registration.home_class_name || registration.class_name || "").trim(),
@@ -2835,7 +2847,9 @@ exports.main = async (event, context) => {
       const ds = await getDisplaySettings();
       const gf = groupFieldForEvent(selectedEvent, matchingRegs);
 
-      function makeDisplayData(reg) {
+      function makeDisplayData(rows) {
+        const reg = rows[0];
+        const badge = normalizeCheckinBadge(reg.checkin_badge);
         return {
           name: regName,
           phone,
@@ -2845,6 +2859,7 @@ exports.main = async (event, context) => {
           group_type: gf.label,
           group_value: normalizeDimensionValue(reg, gf.field),
           company: reg.company || "",
+          checkin_badge: rows.every(row => normalizeCheckinBadge(row.checkin_badge) === badge) ? badge : "",
           group_num: ds.show_group === "true" ? (reg.group_num || null) : null,
           dinner_table_num: ds.show_dinner_table === "true" ? (reg.dinner_table_num || null) : null,
           show_group: ds.show_group,
@@ -2856,7 +2871,7 @@ exports.main = async (event, context) => {
 
       if (remainingIndexes.length === 0) {
         const lastCheckin = Array.from(attendance.checkinByIndex.values()).sort((a, b) => String(b.checked_at || "").localeCompare(String(a.checked_at || "")))[0] || {};
-        return { statusCode: 200, headers: h, body: JSON.stringify({ ok: true, already: true, msg: "全部名额均已签到", data: { ...makeDisplayData(matchingRegs[0]), multi_checked: totalSlots, checked_at: lastCheckin.checked_at || "" } }) };
+        return { statusCode: 200, headers: h, body: JSON.stringify({ ok: true, already: true, msg: "全部名额均已签到", data: { ...makeDisplayData(matchingRegs), multi_checked: totalSlots, checked_at: lastCheckin.checked_at || "" } }) };
       }
 
       if (totalSlots > 1 && data.quantity === undefined) {
@@ -2875,7 +2890,7 @@ exports.main = async (event, context) => {
         await saveCheckin({ registration_id: reg._id || "", name: String(reg.name || "").trim(), phone, center: normalizeCenterValue(reg.center), class_name: normalizeGroupValue(reg.class_name), group_name: normalizeGroupValue(reg.group_name), company: reg.company || "", member_code: String(reg.member_code || "").trim(), platform_member_id: String(reg.platform_member_id || "").trim(), attendance_role: registrationAttendanceRole(reg, selectedEvent), home_class_org_unit_id: String(reg.home_class_org_unit_id || selectedEvent.class_org_unit_id || "").trim(), home_class_name: String(reg.home_class_name || reg.class_name || "").trim(), event_class_org_unit_id: String(reg.event_class_org_unit_id || selectedEvent.class_org_unit_id || "").trim(), registration_source: String(reg.registration_source || reg.source || ""), group_num: reg.group_num || null, dinner_table_num: reg.dinner_table_num || null, batch_id: selectedEventId, checked_at: now });
       }
       const newCheckedSlots = checkedSlots + quantity;
-      return { statusCode: 200, headers: h, body: JSON.stringify({ ok: true, msg: "签到成功，本次登记" + quantity + "人", checked_count: quantity, data: { ...makeDisplayData(matchingRegs[selectedIndexes[0]]), multi_checked: newCheckedSlots, checked_at: now } }) };
+      return { statusCode: 200, headers: h, body: JSON.stringify({ ok: true, msg: "签到成功，本次登记" + quantity + "人", checked_count: quantity, data: { ...makeDisplayData(selectedIndexes.map(index => matchingRegs[index])), multi_checked: newCheckedSlots, checked_at: now } }) };
     } catch (e) {
       return { statusCode: 200, headers: h, body: JSON.stringify({ ok: false, msg: "签到失败: " + (e.message || "") }) };
     }
@@ -3439,6 +3454,7 @@ exports.main = async (event, context) => {
           group_name: normalizeGroupValue(r.group_name),
           group_num: r.group_num || "",
           dinner_table_num: r.dinner_table_num || "",
+          checkin_badge: normalizeCheckinBadge(r.checkin_badge),
           sign_status: ck ? "已签到" : attendanceStatusLabel(r.attendance_status),
           sign_time: ck ? (ck.checked_at || "") : "",
           attendance_note: ck ? "" : (r.attendance_note || ""),

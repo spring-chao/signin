@@ -218,7 +218,7 @@ async function withUnavailablePostCommitList(eventId, action) {
   assert(immediateCalls.some(call => call.path.endsWith("/sync/scheduled")));
   delete process.env.CHECKIN_ROSTER_API_BASE; delete process.env.CHECKIN_ROSTER_API_KEY;
 
-  seedEvent("native"); seedRegistration("r-native", "native");
+  seedEvent("native"); seedRegistration("r-native", "native", { checkin_badge: "桌长" });
   const issuedAt = Math.floor(Date.now() / 1000);
   const ticketPayload = { purpose: "MEMBER_CHECKIN", event_id: "native", member, iat: issuedAt, exp: issuedAt + 300, binding_id: "binding-11", token_version: 1 };
   for (const skew of [-1, 1]) assert.equal(verifyCheckinTicket(signTicket({ ...ticketPayload, iat: issuedAt + skew, exp: issuedAt + skew + 300 }), process.env.SIGNIN_PLATFORM_API_KEY, issuedAt).event_id, "native", "one-second clock skew preserves a five-minute ticket");
@@ -239,6 +239,7 @@ async function withUnavailablePostCommitList(eventId, action) {
   assert.equal(offlineNative.data.ok, true, "preloaded ticket commits directly with the platform stopped");
   assert.equal(offlineNative.data.sync_status, "PENDING");
   assert.equal(offlineNative.data.checked_at, db.collections.checkins.find(row => row.batch_id === "native").checked_at);
+  assert.equal(offlineNative.data.data.checkin_badge, "桌长");
   const legacyNativeReceipt = await request("/checkin/confirm", "POST", { event_id: "native", registration_id: "r-native" }, "");
   const resumedNative = await request("/ops/v1/member-checkin/lookup", "POST", { event_id: "native", member });
   assert.deepEqual(resumedNative.data.receipt, legacyNativeReceipt.data.data, "reopened member success uses the original checkin receipt");
@@ -331,11 +332,15 @@ async function withUnavailablePostCommitList(eventId, action) {
   assert.equal(created.data.ok, true);
   assert.equal(db.collections.registrations.filter(row => row.batch_id === created.data.event_id).length, 0);
   assert.equal(db.collections.events.find(row => row.event_id === created.data.event_id).org_unit_id, "center-1");
-  const importPayload = { event_id: created.data.event_id, attendees: [{ name: "原报名联系人", company: "团队一" }, { name: "原报名联系人", company: "团队一" }] };
+  const importPayload = { event_id: created.data.event_id, attendees: [{ name: "原报名联系人", company: "团队一", checkin_badge: "特邀嘉宾" }, { name: "原报名联系人", company: "团队一" }] };
   const preview = await manage("import_preview", importPayload);
   assert.equal(preview.data.ok, true, preview.data.code || preview.data.msg); assert(preview.data.preview_token);
   const imported = await manage("import_apply", { ...importPayload, preview_token: preview.data.preview_token, preview_issued_at: preview.data.preview_issued_at });
   assert.equal(imported.data.added, 2, "repeated registration slots remain independent");
+  const importedDetail = await manage("event_detail", { event_id: created.data.event_id });
+  assert.deepEqual(importedDetail.data.rows.map(row => row.checkin_badge), ["特邀嘉宾", ""]);
+  const importedExport = await manage("export", { event_id: created.data.event_id });
+  assert.deepEqual(importedExport.data.rows.map(row => row.checkin_badge), ["特邀嘉宾", ""]);
   const stale = await manage("import_apply", { ...importPayload, preview_token: preview.data.preview_token, preview_issued_at: preview.data.preview_issued_at });
   assert.equal(stale.data.needs_preview, true);
   const badTimes = await manage("create_event", { ...metadata, event_name: "错误时间", scheduled_start_at: tomorrow + "T11:00" });

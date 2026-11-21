@@ -26,7 +26,7 @@ async function verifyActivityLink(query, expectedIds) {
   ];
   const context = vm.createContext({
     URLSearchParams, window: { location: { search: query } },
-    document: { getElementById(id) { if (!elements.has(id)) elements.set(id, element()); return elements.get(id); }, createElement: element },
+    document: { body: { dataset: {} }, getElementById(id) { if (!elements.has(id)) elements.set(id, element()); return elements.get(id); }, createElement: element },
     fetch: async () => ({ json: async () => ({ display_events: events, active_events: events.filter(e => e.checkin_status === "open"), active_event_count: 2 }) }),
     setInterval: () => 1, clearInterval() {}, setTimeout() {}
   });
@@ -38,6 +38,15 @@ async function verifyActivityLink(query, expectedIds) {
   assert.deepStrictEqual(Array.from(context.activityDisplayEvents, e => e.event_id).sort(), [...expectedIds].sort());
   if (expectedIds.length === 1) assert.equal(context.selectedActivityEventId, expectedIds[0]);
   if (query) assert.equal(elements.get("submitBtn").disabled, query !== "?event_id=morning");
+  assert.equal(context.document.body.dataset.receiptTheme, undefined);
+  if (!query) {
+    for (const [badge, theme] of [["熟生", "red"], ["非熟生", "blue"], ["特邀嘉宾", "purple"], ["桌长", "amber"], ["", ""]]) {
+      context.showSuccess({ ok: true, data: { name: "合成学员", checkin_badge: badge } });
+      assert.equal(context.document.body.dataset.receiptTheme, theme);
+      assert.equal(elements.get("checkinBadge").textContent, badge);
+      assert.equal(elements.get("checkinBadge").hidden, !theme);
+    }
+  }
 }
 
 (async () => {

@@ -1222,7 +1222,7 @@ async function exportExcel() {
     
     // Build Excel using SheetJS
     var rows = d.rows || [];
-    var headers = ["序号","实际到场姓名","原报名姓名","手机号","公司","分中心","班级","小组","签到身份","原班级","组号","桌号","签到状态","签到时间","跟进备注"];
+    var headers = ["序号","实际到场姓名","原报名姓名","手机号","公司","分中心","班级","小组","签到身份","原班级","组号","桌号","签到状态","签到时间","跟进备注","签到标识"];
     var data = [];
     rows.forEach(function(row, idx) {
       data.push([
@@ -1240,13 +1240,14 @@ async function exportExcel() {
         row.dinner_table_num,
         row.sign_status,
         row.sign_time,
-        row.attendance_note || ""
+        row.attendance_note || "",
+        row.checkin_badge || ""
       ]);
     });
     var ws = XLSX.utils.aoa_to_sheet([headers].concat(data));
     // Set column widths
     ws["!cols"] = [
-      {wch:6},{wch:14},{wch:14},{wch:15},{wch:18},{wch:14},{wch:12},{wch:10},{wch:12},{wch:12},{wch:6},{wch:6},{wch:10},{wch:20},{wch:24}
+      {wch:6},{wch:14},{wch:14},{wch:15},{wch:18},{wch:14},{wch:12},{wch:10},{wch:12},{wch:12},{wch:6},{wch:6},{wch:10},{wch:20},{wch:24},{wch:12}
     ];
     var wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, "签到名单");
@@ -1368,7 +1369,7 @@ function switchTab(t) {
 }
 
 function detectColumns(headers) {
-  var map = { name:-1, phone:-1, company:-1, center:-1, class_name:-1, group_name:-1, group_num:-1, dinner_table_num:-1, is_student:-1 };
+  var map = { name:-1, phone:-1, company:-1, center:-1, class_name:-1, group_name:-1, group_num:-1, dinner_table_num:-1, is_student:-1, checkin_badge:-1 };
   function normalizeHeader(h) {
     return String(h||"").trim().toLowerCase()
       .replace(/[（(][^）)]*[）)]/g, "")
@@ -1384,6 +1385,7 @@ function detectColumns(headers) {
     if (/^(组号|组别|大组|分组)$/i.test(h)) return "group_num";
     if (/^(小组|小组名称|组名)$/i.test(h)) return "group_name";
     if (/^(桌号|桌数|桌子|空巴桌号|晚宴桌号|dinner|table)$/i.test(h)) return "dinner_table_num";
+    if (/^(签到标识|checkinbadge)$/i.test(h)) return "checkin_badge";
     if (/^(是否学员|学员|is_student)$/i.test(h)) return "is_student";
     return null;
   }
@@ -1567,7 +1569,8 @@ function handleFile(e) {
       mapHtml += colStatus("class_name","班级") + "　";
       mapHtml += colStatus("group_name","小组") + "<br>";
       mapHtml += colStatus("group_num","组号") + "　";
-      mapHtml += colStatus("dinner_table_num","桌号");
+      mapHtml += colStatus("dinner_table_num","桌号") + "　";
+      mapHtml += colStatus("checkin_badge","签到标识（熟生 / 非熟生 / 特邀嘉宾 / 桌长）");
       document.getElementById("colMapInfo").innerHTML = mapHtml;
       document.getElementById("colMapInfo").style.display = "block";
       
@@ -1601,7 +1604,8 @@ function handleFile(e) {
           group_name: cellClean(col.group_name),
           company: cellClean(col.company),
           group_num: gn,
-          dinner_table_num: dn
+          dinner_table_num: dn,
+          checkin_badge: cell(col.checkin_badge)
         });
       }
       if (document.getElementById("activityTypeInput").value==="class_meeting") {

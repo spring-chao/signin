@@ -83,9 +83,9 @@ async function request(path, method, body, token) {
     checkin_start_at: `${TODAY}T00:00`,
     checkin_end_at: `${TODAY}T23:59`,
     attendees: [
-      { name: "张三", phone: "", company: "甲团队" },
-      { name: "代报名联系人", phone: "bad-phone", company: "甲团队" },
-      { name: "同名学员", phone: "", company: "A公司" },
+      { name: "张三", phone: "", company: "甲团队", checkin_badge: " 塾生 " },
+      { name: "代报名联系人", phone: "bad-phone", company: "甲团队", checkin_badge: "桌长" },
+      { name: "同名学员", phone: "", company: "A公司", checkin_badge: "标识3" },
       { name: "同名学员", phone: "", company: "B公司" }
     ]
   };
@@ -108,6 +108,7 @@ async function request(path, method, body, token) {
   assert(rows.some(row => row.phone === ""));
   assert(rows.some(row => row.phone === "badphone"));
   assert(rows.every(row => row.registered_name === row.name));
+  assert.deepEqual(rows.map(row => row.checkin_badge), ["熟生", "桌长", undefined, undefined]);
 
   db.insertChunks.length = 0;
   const large = {
@@ -153,15 +154,18 @@ async function request(path, method, body, token) {
   assert.equal(unique.data.status, "UNIQUE");
   assert.equal(unique.data.candidates[0].phone, undefined, "课程姓名候选不得暴露手机号");
   assert.equal(unique.data.candidates[0].phone_last4, undefined);
+  assert.equal(unique.data.candidates[0].checkin_badge, undefined);
   const direct = await request("/checkin/confirm", "POST", { event_id: eventId, registration_id: unique.data.candidates[0].registration_id, name: "张三" });
   assert.equal(direct.data.ok, true);
   assert.equal(direct.data.data.attendance_role, "COURSE_REGISTRANT");
+  assert.equal(direct.data.data.checkin_badge, "熟生");
   for (let i = 0; i < 10; i++) {
     const again = await request("/checkin/confirm", "POST", {
       event_id: eventId, registration_id: unique.data.candidates[0].registration_id, name: "张三"
     });
     assert.equal(again.data.ok, true);
     assert.equal(again.data.already, true);
+    assert.equal(again.data.data.checkin_badge, "熟生");
   }
   assert.equal(db.collections.checkins.filter(row => row.registration_id === rows[0]._id).length, 1);
   const legacyNameOnly = await request("/checkin", "POST", { event_id: eventId, name: "同名学员" });
@@ -186,6 +190,7 @@ async function request(path, method, body, token) {
   assert.equal(teamConfirm.data.data.attendance_role, "EVENT_TEAM_MEMBER");
   assert.equal(teamConfirm.data.data.name, "现场学员");
   assert.equal(teamConfirm.data.data.registered_name, "代报名联系人");
+  assert.equal(teamConfirm.data.data.checkin_badge, undefined);
   const consumed = db.collections.registrations.find(row => row.batch_id === eventId && row.company === "甲团队" && row.name === "代报名联系人");
   assert.equal(consumed.registered_name, "代报名联系人", "团队签到不得改写原始报名姓名");
   assert.equal(consumed.actual_attendee_name, "现场学员");
