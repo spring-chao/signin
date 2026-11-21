@@ -66,6 +66,28 @@ function signTicket(payload) {
   return encoded + "." + crypto.createHmac("sha256", process.env.SIGNIN_PLATFORM_API_KEY).update(encoded).digest("base64url");
 }
 
+async function withUnavailablePostCommitList(eventId, action) {
+  const collection = db.collection;
+  db.collection = name => {
+    const query = collection(name);
+    if (name === "checkins") {
+      const get = query.get.bind(query);
+      query.get = async () => {
+        if (db.collections.checkins.some(row => row.batch_id === eventId)) {
+          throw new Error("synthetic checkin list failure after durable commit");
+        }
+        return get();
+      };
+    }
+    return query;
+  };
+  try {
+    return await action();
+  } finally {
+    db.collection = collection;
+  }
+}
+
 (async () => {
   process.env.SIGNIN_DEPLOYMENT_MODE = "staging";
   for (const invalid of ["", "shengheshu-d2g2zyyl99f6c6fc2", "REPLACE_WITH_ISOLATED_STAGING_ENV_ID"]) {
@@ -212,9 +234,11 @@ function signTicket(payload) {
   assert.equal((await request("/native/v1/checkin/confirm", "POST", { ticket, member: { member_id: "12" } }, "")).status, 401, "native endpoint accepts only a signed authorization");
   assert.equal((await manage("admin_events", {}, { key: ticket })).status, 401, "check-in tickets cannot authorize management");
   failSync = true; blockedOps = true;
-  const offlineNative = await request("/native/v1/checkin/confirm", "POST", { ticket }, "");
+  const offlineNative = await withUnavailablePostCommitList("native",
+    () => request("/native/v1/checkin/confirm", "POST", { ticket }, ""));
   assert.equal(offlineNative.data.ok, true, "preloaded ticket commits directly with the platform stopped");
   assert.equal(offlineNative.data.sync_status, "PENDING");
+  assert.equal(offlineNative.data.checked_at, db.collections.checkins.find(row => row.batch_id === "native").checked_at);
   const legacyNativeReceipt = await request("/checkin/confirm", "POST", { event_id: "native", registration_id: "r-native" }, "");
   const resumedNative = await request("/ops/v1/member-checkin/lookup", "POST", { event_id: "native", member });
   assert.deepEqual(resumedNative.data.receipt, legacyNativeReceipt.data.data, "reopened member success uses the original checkin receipt");
@@ -508,6 +532,10 @@ function signTicket(payload) {
   const selected = { ...guestBody, candidate_token: lookup.data.candidates[0].candidate_token };
   for (const body of [{...selected, name:"未报名的人"}, {...selected, guest_id:"b".repeat(64)}, {...selected, candidate_token:selected.candidate_token+"bad"}]) assert.equal((await request("/ops/v1/guest-checkin/confirm", "POST", body)).status, 409);
   failSync = true;
+  const firstGuest = await withUnavailablePostCommitList("guest-scene",
+    () => request("/ops/v1/guest-checkin/confirm", "POST", selected));
+  assert.equal(firstGuest.data.ok, true);
+  assert.equal(firstGuest.data.checked_at, db.collections.checkins.find(row => row.batch_id === "guest-scene").checked_at);
   const guests = await Promise.all(Array.from({ length: 8 }, () => request("/ops/v1/guest-checkin/confirm", "POST", selected)));
   assert(guests.every(row => row.data.ok && row.data.checked_at && row.data.sync_status === "PENDING"));
   assert(guests.every(row => row.data.data.name === guestBody.name && row.data.data.event.event_id === "guest-scene"));
@@ -523,7 +551,19 @@ function signTicket(payload) {
   assert.equal((await request("/ops/v1/guest-checkin/lookup", "POST", {...guestBody,name:"旧错误来宾"})).data.candidates.length, 0);
   assert.equal((await request("/checkin/confirm", "POST", {event_id:"guest-scene",registration_id:"old-self-created"}, "")).data.ok, false);
   db.collections.events.find(row => row.event_id === "guest-scene").status = "closed";
-  assert.equal((await request("/ops/v1/guest-checkin/confirm", "POST", selected)).status, 409);
+  for (const operation of ["lookup", "confirm"]) {
+    const closed = await request("/ops/v1/guest-checkin/" + operation, "POST", selected);
+    assert.equal(closed.status, 200, "expected business results use the platform body contract");
+    assert.equal(closed.data.ok, false);
+    assert.equal(closed.data.code, "CHECKIN_SESSION_UNAVAILABLE");
+    assert.match(closed.data.msg, /今日签到/);
+  }
+  seedEvent("guest-upcoming", { checkin_start_at: new Date(Date.now() + 60000).toISOString() });
+  const upcoming = await request("/ops/v1/guest-checkin/lookup", "POST", { ...guestBody, event_id: "guest-upcoming" });
+  assert.equal(upcoming.status, 200);
+  assert.equal(upcoming.data.ok, false);
+  assert.match(upcoming.data.msg, /尚未开放/);
+  assert.equal(db.collections.checkins.filter(row => row.batch_id === "guest-scene").length, 1);
 
   seedEvent("legacy-member");
   seedRegistration("legacy-import", "legacy-member", {name:"已核验报名学员", registered_name:"已核验报名学员",phone:"19900000001",platform_member_id:"",member_code:"",registration_source:"EXCEL_UPLOAD"});

@@ -639,8 +639,20 @@ exports.main = async (event, context) => {
       registrationPatch = { ...(registrationPatch || {}), platform_member_id: platformContext.member.member_id, member_code: platformContext.member.member_code, ...confirmation };
     } else if (platformContext && platformContext.operation === "manual_checkin") row = { ...row, checkin_source: "MANUAL" };
     const saved = await persistCheckin(db, row, registrationPatch, options);
-    if (!(options && options.deferDelivery)) await deliverCheckin({ ...saved.checkin, _id: saved.id });
-    return saved;
+    const synced = saved.checkin.sync_state === "DELIVERED" || (
+      saved.checkin.sync_state === "PENDING" && !options.deferDelivery &&
+      await deliverCheckin({ ...saved.checkin, _id: saved.id })
+    );
+    return { ...saved, syncStatus: synced ? "SYNCED" : "PENDING" };
+  }
+
+  function checkinConfirmation(displayData, checkin, already, syncStatus, msg) {
+    const checkedAt = checkin.checked_at || "";
+    return { statusCode: 200, headers: h, body: JSON.stringify({
+      ok: true, already, msg, checked_at: checkedAt,
+      sync_status: syncStatus || (checkin.sync_state === "DELIVERED" ? "SYNCED" : "PENDING"),
+      data: { ...displayData, checked_in: true, checked_at: checkedAt }
+    }) };
   }
 
   async function retryPendingCheckins() {
@@ -878,6 +890,11 @@ exports.main = async (event, context) => {
     // database instead of reading the entire historical collection first.
     const rows=await getAll(collectionName, maxTotal || 5000, { batch_id: String(batchId || "") });
     return collectionName==='checkins'?rows.filter(row=>!row.konpa_voided):rows;
+  }
+
+  async function checkinsForRegistration(eventId, registrationId) {
+    const rows = await getAll("checkins", 5000, { batch_id: eventId, registration_id: String(registrationId) });
+    return rows.filter(row => !row.konpa_voided);
   }
 
   async function ensureLegacyEvent() {
@@ -1495,12 +1512,21 @@ exports.main = async (event, context) => {
     if (Object.keys(data).some(key => !["event_id", "guest_id", "name", "candidate_token", "konpa_choice"].includes(key)) || !/^[a-f0-9]{64}$/.test(guestId) || !name || name.length > 120 || /[\x00-\x1f\x7f]/.test(name)) return { statusCode: 400, headers: h, body: JSON.stringify({ ok: false, msg: "报名信息无效" }) };
     try {
       const eventItem = await getEventById(eventId);
-      if (!eventItem || !isPublicCheckinEligible(eventItem)) return { statusCode: 409, headers: h, body: JSON.stringify({ ok: false, msg: "当前活动已关闭或尚未开始" }) };
+      if (!isPublicCheckinEligible(eventItem)) {
+        // A business rejection goes through the platform's response-body
+        // handling so it is not reported as an upstream transport failure.
+        const msg = isPublicUpcoming(eventItem)
+          ? "本场次签到尚未开放，请在开放时间后重试"
+          : "本场次当前不可签到，请扫描正在开放的场次码，或从「今日签到」选择对应活动";
+        return { statusCode: 200, headers: h, body: JSON.stringify({ ok: false, code: "CHECKIN_SESSION_UNAVAILABLE", msg }) };
+      }
       const rows = await rowsForBatch("registrations", eventId, 5000);
       // Previously self-created WeChat guest rows are not enrollment evidence.
       const eligible = rows.filter(row => row.registration_source !== "WECHAT_GUEST" && row.source !== "wechat_guest" && namedRegistrationMatches(row, name));
       if (p.endsWith("/lookup")) {
-        const checkins = await rowsForBatch("checkins", eventId, 5000);
+        const checkins = eligible.length === 1
+          ? await checkinsForRegistration(eventId, eligible[0]._id)
+          : eligible.length ? await rowsForBatch("checkins", eventId, 5000) : [];
         const candidates = eligible.map(row => {
           const checked = checkins.find(item => String(item.registration_id) === String(row._id));
           const candidate = nameCheckinCandidate(row, eventItem, checked && checked.checked_at, false);
@@ -1516,10 +1542,7 @@ exports.main = async (event, context) => {
       const response = await exports.main({ path: "/checkin/confirm", httpMethod: "POST", headers: {}, body: JSON.stringify({ event_id: eventId, registration_id: registrationId, name }) }, { [TRUSTED_CONTEXT]: { konpa_native: true, konpa_choice: data.konpa_choice, service_request: true, management: false } });
       const result = JSON.parse(response.body);
       if (result.ok) {
-        const committed = (await rowsForBatch("checkins", eventId, 5000)).find(row => String(row.registration_id) === registrationId);
-        result.checked_at = committed && committed.checked_at;
         result.participant_type = "GUEST";
-        result.sync_status = committed && committed.sync_state === "DELIVERED" ? "SYNCED" : "PENDING";
         response.body = JSON.stringify(result);
       }
       return response;
@@ -1624,17 +1647,10 @@ exports.main = async (event, context) => {
         return { statusCode: 200, headers: h, body: JSON.stringify({ ok: true, status: crossCandidate ? "CROSS_CLASS" : "READY", notice: selfNameConfirmation ? "报名姓名与您的绑定姓名一致，请确认本人签到" : "", event: publicEvent(eventItem), registration_id: registration && registration._id || "", registration: registration ? { ...redact(registration), id: registration._id, registration_id: registration._id } : null, receipt: existing ? await nameCheckinReceipt(registration, eventItem, existing.checked_at) : null, cross_class_member: Boolean(crossCandidate), member: { member_id: memberId, member_code: memberCode, name: member.name || "" }, checked_in: Boolean(existing), already_checked_in: Boolean(existing), can_checkin: !existing, checked_at: existing && existing.checked_at || "", candidate: crossCandidate }) };
       }
       if (registration && data.registration_id && String(data.registration_id) !== String(registration._id)) return { statusCode: 403, headers: h, body: JSON.stringify({ ok: false, status: "REGISTRATION_MISMATCH" }) };
-      const response = await exports.main({
+      return await exports.main({
         path: crossCandidate ? "/checkin/cross-confirm" : "/checkin/confirm", httpMethod: "POST", headers: {},
         body: JSON.stringify(crossCandidate ? { event_id: eventId, name: member.name, candidate_token: crossCandidate.candidate_token } : { event_id: eventId, registration_id: registration._id, name: registration.name })
       }, { [TRUSTED_CONTEXT]: { member: { member_id: memberId, member_code: memberCode, name: member.name }, konpa_choice: data.konpa_choice, bound_name_confirmation: selfNameConfirmation, ticket_member: platformContext && platformContext.ticket_member, service_request: true, management: false } });
-      const result = JSON.parse(response.body);
-      if (result.ok) {
-        const committed = (await rowsForBatch("checkins", eventId, 5000)).find(row => String(row.platform_member_id || "") === memberId || String(row.member_code || "") === memberCode);
-        result.sync_status = committed && committed.sync_state === "DELIVERED" ? "SYNCED" : "PENDING";
-        response.body = JSON.stringify(result);
-      }
-      return response;
     } catch (error) {
       return { statusCode: 503, headers: h, body: JSON.stringify({ ok: false, status: "ERROR", code: "CHECKIN_ENGINE_UNAVAILABLE", msg: "身份签到服务暂时不可用，请稍后重试" }) };
     }
@@ -2416,11 +2432,12 @@ exports.main = async (event, context) => {
       if (data.name && !namedRegistrationMatches(reg, data.name)) {
         return { statusCode: 200, headers: h, body: JSON.stringify({ ok: false, msg: "姓名与活动报名记录不一致，请重新查询" }) };
       }
-      const currentCheckins = await rowsForBatch("checkins", eventId, 5000);
-      const existing = currentCheckins.find(row => String(row.registration_id || "") === registrationId);
+      const [existing] = await checkinsForRegistration(eventId, registrationId);
       const role = registrationAttendanceRole(reg, eventItem);
       const displayData = await nameCheckinReceipt(reg, eventItem, existing && existing.checked_at);
-      if (existing && !(platformContext && platformContext.member)) return { statusCode: 200, headers: h, body: JSON.stringify({ ok: true, already: true, msg: "您已签到，无需重复操作", data: displayData }) };
+      if (existing && !(platformContext && platformContext.member)) {
+        return checkinConfirmation(displayData, existing, true, null, "您已签到，无需重复操作");
+      }
       const now = new Date().toISOString();
       const saved = await saveCheckin({
         registration_id: registrationId,
@@ -2448,10 +2465,9 @@ exports.main = async (event, context) => {
           actual_attendee_at: now,
           actual_attendee_source: "DIRECT_NAME_CHECKIN"
       } : null, platformContext && platformContext.member ? undefined : { validateRegistration: current => namedRegistrationMatches(current, data.name || reg.name) });
-      displayData.checked_in = true;
-      displayData.checked_at = saved.checkin.checked_at;
       if (isRosterRegistrationEvent(eventItem)) displayData.actual_attendee_name = String(reg.name || "").trim();
-      return { statusCode: 200, headers: h, body: JSON.stringify({ ok: true, already: saved.already, msg: saved.already ? "您已签到，无需重复操作" : "签到成功", data: displayData }) };
+      return checkinConfirmation(displayData, saved.checkin, saved.already, saved.syncStatus,
+        saved.already ? "您已签到，无需重复操作" : "签到成功");
     } catch (e) {
       if (platformContext && platformContext.service_request) return { statusCode: 503, headers: h, body: JSON.stringify({ ok: false, code: "CHECKIN_ENGINE_UNAVAILABLE", msg: "签到服务暂时不可用，请稍后重试" }) };
       return { statusCode: 200, headers: h, body: JSON.stringify({ ok: false, msg: "签到失败，请稍后重试" }) };
@@ -2678,8 +2694,7 @@ exports.main = async (event, context) => {
         };
       }
       const registrationId = String(registration._id || "");
-      const currentCheckins = await rowsForBatch("checkins", eventId, 5000);
-      const existing = currentCheckins.find(item => String(item.registration_id || "") === registrationId);
+      const [existing] = await checkinsForRegistration(eventId, registrationId);
       const ds = await getDisplaySettings();
       const displayData = {
         ...nameCheckinCandidate(registration, eventItem, existing && existing.checked_at, false),
@@ -2693,7 +2708,7 @@ exports.main = async (event, context) => {
         checked_at: existing && existing.checked_at || ""
       };
       if (existing) {
-        return { statusCode: 200, headers: h, body: JSON.stringify({ ok: true, already: true, msg: "您已作为外班学长签到，无需重复操作", data: displayData }) };
+        return checkinConfirmation(displayData, existing, true, null, "您已作为外班学长签到，无需重复操作");
       }
       const now = new Date().toISOString();
       const saved = await saveCheckin({
@@ -2716,9 +2731,8 @@ exports.main = async (event, context) => {
         batch_id: eventId,
         checked_at: now
       });
-      displayData.checked_in = true;
-      displayData.checked_at = saved.checkin.checked_at;
-      return { statusCode: 200, headers: h, body: JSON.stringify({ ok: true, already: saved.already, msg: saved.already ? "您已作为外班学长签到，无需重复操作" : "外班签到成功", data: displayData }) };
+      return checkinConfirmation(displayData, saved.checkin, saved.already, saved.syncStatus,
+        saved.already ? "您已作为外班学长签到，无需重复操作" : "外班签到成功");
     } catch (e) {
       return { statusCode: 200, headers: h, body: JSON.stringify({ ok: false, msg: "外班签到失败，请重新查询后再试" }) };
     }
