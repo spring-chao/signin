@@ -21,6 +21,11 @@ async function reviewRequest({db,event,events,registrations,checkins,payload,act
  const afternoon=checkins.filter(r=>afternoonIds.has(String(r.batch_id))&&typeof r.konpa_choice==='boolean');
  const morning=checkins.filter(r=>morningIds.has(String(r.batch_id))&&typeof r.konpa_choice==='boolean');
  const permitted=rows.filter(r=>actor.members===null||actor.members.includes(String(r.platform_member_id||'')));
+ const groupIntent=actor.group_intent===true&&!actor.manage&&Array.isArray(actor.members);
+ const hasSessionChoice=reg=>{
+  const identity=memberKey(reg);
+  return Boolean(identity&&[...morning,...afternoon].some(row=>memberKey(row)===identity));
+ };
  if(payload.action==='list'||payload.action==='dinner_lock'){
   const output=[];
   for(const reg of permitted){
@@ -31,7 +36,8 @@ async function reviewRequest({db,event,events,registrations,checkins,payload,act
    output.push({registration_id:reg._id,name:reg.name,group_name:reg.group_name,member_code:reg.member_code,
     morning_choice:am?am.konpa_choice:null,afternoon_choice:source?source.konpa_choice:null,
     latest_choice:state.choice===null?(am?am.konpa_choice:null):state.choice,
-    status:state.status,choice:state.choice,revision:state.revision,confirmed_by:state.confirmed_by||null});
+    status:state.status,choice:state.choice,revision:state.revision,confirmed_by:state.confirmed_by||null,
+    can_set_intent:actor.manage||(groupIntent&&!review&&!checked&&!hasSessionChoice(reg))});
   }
   let dinner=await one(db,'config',key(id(event),'dinner'));
   if(payload.action==='dinner_lock'){
@@ -53,7 +59,8 @@ async function reviewRequest({db,event,events,registrations,checkins,payload,act
    dinner_removed:dinner?locked.filter(r=>r.latest_choice!==true).length:null,
    estimated_count:output.filter(r=>r.latest_choice===true).length,confirmed_count:output.filter(r=>r.status==='CONFIRMED').length};
  }
- if(!actor.manage||actor.members!==null)throw Error('无修改或确认权限');
+ const groupSet=groupIntent&&payload.action==='set';
+ if(!(actor.manage&&actor.members===null)&&!groupSet)throw Error('无修改或确认权限');
  const reg=permitted.find(r=>String(r._id)===String(payload.registration_id));
  if(!reg)throw Error('报名不在授权场次范围');
  if(!['set','confirm','auto','staff_attendance'].includes(payload.action))throw Error('操作无效');
@@ -69,6 +76,10 @@ async function reviewRequest({db,event,events,registrations,checkins,payload,act
   const checked=await one(tx,'checkins',attendanceId);
   const liveSource=source?await one(tx,'checkins',source._id):null;
   const state=rowState(existing,liveSource,checked);
+  if(groupSet){
+   if(!actor.members.includes(String(liveReg.platform_member_id||'')))throw Error('报名不在本组');
+   if(existing||checked||liveSource||hasSessionChoice(liveReg))throw Error('已有空巴记录，请由班级负责人调整');
+  }
   if(payload.action==='auto'){
    if(checked&&!existing&&liveSource)requireDatabaseSuccess(await tx.collection('checkins').doc(source._id).update({konpa_review:'CONFIRMED'}));
    if(checked&&!existing||existing&&!['PENDING','REVIEWED'].includes(existing.status)||now<Date.parse(policy.deadline(event))||!liveSource&&!existing)return {skipped:true};
