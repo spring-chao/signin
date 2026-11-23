@@ -74,3 +74,21 @@ test('dinner snapshot stays fixed while later intent changes are reported separa
  result=await reviewRequest({...f,payload:{action:'list'}});
  assert.equal(result.dinner_locked_count,1);assert.equal(result.dinner_removed,1);
 });
+
+test('group intent only fills a blank choice for a permitted current member',async()=>{
+ const f=fixture();
+ const actor={...f.actor,manage:false,members:['123'],group_intent:true};
+ const payload={action:'set',registration_id:'registration',expected_revision:'initial',choice:false};
+ await assert.rejects(()=>reviewRequest({...f,actor,payload}),/已有空巴记录/);
+ const morning={...f.events[1],event_id:'am',session_code:'MORNING'};
+ await assert.rejects(()=>reviewRequest({...f,actor,events:[...f.events,morning],
+  checkins:[{...f.checkins[0],batch_id:'am'}],payload}),/已有空巴记录/);
+ await assert.rejects(()=>reviewRequest({...f,actor:{...actor,members:['other']},checkins:[],payload}),/范围/);
+ const blank=await reviewRequest({...f,actor,checkins:[],payload:{action:'list'}});
+ assert.equal(blank.rows[0].can_set_intent,true);
+ const result=await reviewRequest({...f,actor,checkins:[],payload});
+ assert.equal(result.status,'REVIEWED');
+ await assert.rejects(()=>reviewRequest({...f,actor,checkins:[],payload:{...payload,action:'confirm',expected_revision:result.revision}}),/权限/);
+ await assert.rejects(()=>reviewRequest({...f,actor,checkins:[],payload:{...payload,expected_revision:result.revision}}),/已有空巴记录/);
+ assert.equal(f.db.collections.checkins.filter(r=>r.batch_id==='ev').length,0);
+});
