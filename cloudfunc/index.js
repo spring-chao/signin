@@ -1592,6 +1592,131 @@ exports.main = async (event, context) => {
     }catch(error){return {statusCode:409,headers:h,body:JSON.stringify({ok:false,msg:String(error.message||'空巴处理未完成').slice(0,160)})};}
   }
 
+  if (p === "/ops/v1/class-arrival" && method === "POST") {
+    if (!verifyServiceKey(event.headers, process.env.SIGNIN_PLATFORM_API_KEY)) {
+      return { statusCode: 401, headers: h, body: JSON.stringify({ ok: false, code: "SERVICE_AUTH_REQUIRED" }) };
+    }
+    const reply = data => ({ statusCode: 200, headers: h, body: JSON.stringify(data) });
+    const failure = msg => reply({ ok: false, msg });
+    const sameWindow = (item, classId) => item.class_org_unit_id === classId &&
+      item.activity_type === "class_meeting" && ["MORNING", "AFTERNOON"].includes(item.session_code) &&
+      isPublicCheckinEligible(item);
+    const { action, class_id: classId, actor_id: actorId, target_id: targetId } = data;
+    const classes = Array.isArray(data.class_ids) ? data.class_ids : [];
+    try {
+      if (action === "events") {
+        const items = (await getTodayEvents()).filter(item =>
+          classes.includes(item.class_org_unit_id) && sameWindow(item, item.class_org_unit_id)
+        );
+        return reply({ ok: true, events: items.sort(publicCheckinOrder).map(publicEvent) });
+      }
+      const selected = await getEventById(data.event_id);
+      if (action === "personal_konpa") {
+        if (!selected || !sameWindow(selected, selected.class_org_unit_id) ||
+            !konpaPolicy.requiresChoice(selected, process.env.KONPA_INTENT_ENABLED === "true") ||
+            typeof data.konpa_choice !== "boolean") return failure("当前场次不可补选空巴意向");
+        const existing = (await rowsForBatch("checkins", selected.event_id, 5000)).filter(row =>
+          row.platform_member_id === targetId && row.checkin_source === "CLASS_STAFF_CONFIRM"
+        );
+        if (existing.length !== 1) return failure("未找到本人的代确认记录");
+        const evening = (await getEventGroupById(selected.event_group_id)).find(item => item.session_code === "KONPA");
+        const patch = konpaPolicy.choicePatch(selected, data.konpa_choice, evening, Date.now());
+        await db.runTransaction(async tx => {
+          const liveEvent = documentData(await tx.collection("events").doc(selected._id).get());
+          const doc = tx.collection("checkins").doc(existing[0]._id);
+          const live = documentData(await doc.get());
+          if (!liveEvent || !sameWindow(liveEvent, selected.class_org_unit_id) || !live ||
+              live.platform_member_id !== targetId || live.checkin_source !== "CLASS_STAFF_CONFIRM") {
+            throw new Error("CHECKIN_EVENT_CLOSED");
+          }
+          if (live.konpa_choice === data.konpa_choice) return;
+          if (typeof live.konpa_choice === "boolean") throw new Error("KONPA_CHOICE_ALREADY_RECORDED");
+          requireDatabaseSuccess(await doc.update(patch));
+        });
+        return reply({ ok: true });
+      }
+      if (!selected || !actorId || !classes.includes(classId) || !sameWindow(selected, classId)) {
+        return failure("当前不在所负责班级的签到时间内");
+      }
+      const allowedMembers = new Set(Array.isArray(data.member_ids) ? data.member_ids : []);
+      const rows = await rowsForBatch("registrations", selected.event_id, 5000);
+      const eligible = reg => {
+        const memberId = String(reg.platform_member_id || "");
+        const role = registrationAttendanceRole(reg, selected);
+        return allowedMembers.has(memberId) && reg.registration_source !== "WECHAT_GUEST" &&
+          reg.source !== "wechat_guest" && (
+            (role === ATTENDANCE_ROLES.HOME_CLASS_MEMBER &&
+              (!reg.home_class_org_unit_id || reg.home_class_org_unit_id === classId)) ||
+            (memberId === actorId && role === ATTENDANCE_ROLES.CROSS_CLASS_MEMBER)
+          ) && namedRegistrationMatches(reg, reg.name);
+      };
+      const matches = new Map();
+      for (const row of rows) {
+        if (!eligible(row)) continue;
+        const id = String(row.platform_member_id);
+        matches.set(id, matches.has(id) ? null : row);
+      }
+      const actor = data.actor_member;
+      const visitingStaff = actor?.home_class_org_unit_id && actor.home_class_org_unit_id !== classId &&
+        actor.name && actor.member_code && !rows.some(row => String(row.platform_member_id) === actorId ||
+          (!row.platform_member_id && row.member_code === actor.member_code));
+      if (visitingStaff) {
+        matches.set(actorId, {
+          name: actor.name, member_code: actor.member_code, platform_member_id: actorId,
+          home_class_org_unit_id: actor.home_class_org_unit_id, home_class_name: actor.class_name,
+          class_name: actor.class_name, group_name: actor.group_name, batch_id: selected.event_id,
+          event_class_org_unit_id: classId, attendance_role: ATTENDANCE_ROLES.CROSS_CLASS_MEMBER,
+          registration_source: "CROSS_CLASS_SELF_CHECKIN", source: "cross_class_self_checkin",
+          event_group_id: selected.event_group_id, session_code: selected.session_code,
+          created_at: new Date().toISOString()
+        });
+      }
+      if (action === "roster") {
+        const checked = new Set((await rowsForBatch("checkins", selected.event_id, 5000)).map(row => String(row.registration_id)));
+        return reply({ ok: true, event: publicEvent(selected), rows: [...matches.values()].filter(Boolean).map(reg => ({
+          member_id: String(reg.platform_member_id), name: reg.name, group_name: reg.group_name || "",
+          self: String(reg.platform_member_id) === actorId, checked: checked.has(String(reg._id))
+        })) });
+      }
+      const reg = action === "confirm" && matches.get(targetId);
+      if (!reg) return failure("未找到唯一有效的报名，请刷新名单");
+      const [existing] = reg._id ? await checkinsForRegistration(selected.event_id, reg._id) : [];
+      if (existing) return reply({ ok: true, already: true, checked_at: existing.checked_at });
+      const self = actorId === targetId;
+      let choice = {};
+      if (self && konpaPolicy.requiresChoice(selected, process.env.KONPA_INTENT_ENABLED === "true")) {
+        if (typeof data.konpa_choice !== "boolean") return failure("请选择是否参加空巴");
+        const evening = (await getEventGroupById(selected.event_group_id)).find(item => item.session_code === "KONPA");
+        choice = konpaPolicy.choicePatch(selected, data.konpa_choice, evening, Date.now());
+      }
+      const registrationId = reg._id || (await ensureCrossRegistration(db, reg)).id;
+      const confirmedAt = new Date().toISOString();
+      const saved = await persistCheckin(db, {
+        batch_id: selected.event_id, registration_id: registrationId, platform_member_id: targetId,
+        member_code: reg.member_code, name: reg.name, registered_name: reg.registered_name || reg.name,
+        actual_attendee_name: reg.name, attendance_role: registrationAttendanceRole(reg, selected),
+        home_class_org_unit_id: reg.home_class_org_unit_id || classId,
+        event_class_org_unit_id: classId, class_name: reg.class_name, group_name: reg.group_name,
+        checked_at: confirmedAt, checkin_source: self ? "SELF_CONFIRM" : "CLASS_STAFF_CONFIRM",
+        confirmed_by_member_id: actorId, ...choice
+      }, null, {
+        eventDocumentId: selected._id,
+        validateEvent: item => sameWindow(item, classId),
+        validateRegistration: row => String(row.platform_member_id) === targetId && eligible(row),
+        audit: { action: "class_arrival.confirm", event_id: selected.event_id, registration_id: registrationId,
+          actor_member_id: actorId, target_member_id: targetId, class_org_unit_id: classId,
+          source: self ? "SELF_CONFIRM" : "CLASS_STAFF_CONFIRM", created_at: confirmedAt }
+      });
+      const synced = saved.checkin.sync_state === "DELIVERED" ||
+        await deliverCheckin({ ...saved.checkin, _id: saved.id });
+      return reply({ ok: true, already: saved.already, checked_at: saved.checkin.checked_at,
+        sync_status: synced ? "SYNCED" : "PENDING" });
+    } catch (error) {
+      if (error.message === "KONPA_CHOICE_ALREADY_RECORDED") return failure("空巴意向已登记，请刷新查看");
+      return failure("操作未完成，请刷新名单后重试");
+    }
+  }
+
   if (p === "/native/v1/checkin/confirm") {
     if (method !== "POST") return { statusCode: 405, headers: h, body: JSON.stringify({ ok: false, code: "METHOD_NOT_ALLOWED" }) };
     let authorized;
@@ -1672,7 +1797,10 @@ exports.main = async (event, context) => {
       if (p.endsWith("/lookup")) {
         const checkins = registration ? await rowsForBatch("checkins", eventId, 5000) : [];
         const existing = registration && checkins.find(row => String(row.registration_id) === String(registration._id));
-        return { statusCode: 200, headers: h, body: JSON.stringify({ ok: true, status: crossCandidate ? "CROSS_CLASS" : "READY", notice: selfNameConfirmation ? "报名姓名与您的绑定姓名一致，请确认本人签到" : "", event: publicEvent(eventItem), registration_id: registration && registration._id || "", registration: registration ? { ...redact(registration), id: registration._id, registration_id: registration._id } : null, receipt: existing ? await nameCheckinReceipt(registration, eventItem, existing.checked_at) : null, cross_class_member: Boolean(crossCandidate), member: { member_id: memberId, member_code: memberCode, name: member.name || "" }, checked_in: Boolean(existing), already_checked_in: Boolean(existing), can_checkin: !existing, checked_at: existing && existing.checked_at || "", candidate: crossCandidate }) };
+        const canAddKonpaChoice = Boolean(existing && existing.checkin_source === "CLASS_STAFF_CONFIRM" &&
+          String(existing.platform_member_id) === memberId && typeof existing.konpa_choice !== "boolean" &&
+          konpaPolicy.requiresChoice(eventItem, process.env.KONPA_INTENT_ENABLED === "true"));
+        return { statusCode: 200, headers: h, body: JSON.stringify({ ok: true, status: crossCandidate ? "CROSS_CLASS" : "READY", notice: selfNameConfirmation ? "报名姓名与您的绑定姓名一致，请确认本人签到" : "", event: publicEvent(eventItem), registration_id: registration && registration._id || "", registration: registration ? { ...redact(registration), id: registration._id, registration_id: registration._id } : null, receipt: existing ? await nameCheckinReceipt(registration, eventItem, existing.checked_at) : null, cross_class_member: Boolean(crossCandidate), member: { member_id: memberId, member_code: memberCode, name: member.name || "" }, checked_in: Boolean(existing), already_checked_in: Boolean(existing), can_checkin: !existing, can_add_konpa_choice: canAddKonpaChoice, checked_at: existing && existing.checked_at || "", candidate: crossCandidate }) };
       }
       if (registration && data.registration_id && String(data.registration_id) !== String(registration._id)) return { statusCode: 403, headers: h, body: JSON.stringify({ ok: false, status: "REGISTRATION_MISMATCH" }) };
       return await exports.main({

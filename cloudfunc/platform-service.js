@@ -168,6 +168,9 @@ async function persistCheckin(db, row, registrationPatch, options = {}) {
       sync_next_retry_at: new Date().toISOString(), sync_last_error_code: ""
     };
     requireDatabaseSuccess(await doc.set(checkin));
+    if (options.audit) {
+      requireDatabaseSuccess(await transaction.collection("event_audit_logs").doc(id).set(options.audit));
+    }
     if (registrationPatch) requireDatabaseSuccess(await regDoc.update(registrationPatch));
     if (claimDoc) requireDatabaseSuccess(await claimDoc.set({ checkin_id: id, event_id: row.batch_id, registration_id: row.registration_id }));
     return { id, already: false, checkin };
