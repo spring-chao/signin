@@ -200,6 +200,10 @@ async function withUnavailablePostCommitList(eventId, action) {
   assert.equal(matched.checked_at, historical.checked_at);
   assert.equal((await assisted("legacy-assisted")).data.already, true);
   assert.equal(db.collections.checkins.filter(row => row.registration_id === "legacy-assisted").length, 1);
+  historical.sync_next_retry_at = "2000-01-01T00:00:00Z";
+  const heartbeat = await api.main({ Type: "Timer", TriggerName: "konpaAutoConfirmEvery5Minutes" });
+  assert.equal(heartbeat.attendance_retry.delivered_count, 1);
+  assert.equal(db.collections.checkins.find(row => row.registration_id === "legacy-assisted").sync_state, "DELIVERED");
 
   for (const [days, status, expected] of [[29, "CONFIRMED", true], [31, "CONFIRMED", false], [1, "CANCELLED", false], [1, "DRAFT", false]]) {
     const id = `manual-window-${days}-${status}`;
@@ -617,7 +621,27 @@ async function withUnavailablePostCommitList(eventId, action) {
   assert.equal(teamPull.data.items.find(row => row.attendance_status === "PRESENT").member_id, null, "unbound team attendees never inherit the contact's identity");
 
   {
-  // Name-based scanning consumes existing enrollment; it never creates slots.
+  seedEvent("class-walk-in", { activity_type: "class_meeting", session_code: "MORNING" });
+  const walkIn = { event_id: "class-walk-in", guest_id: "a".repeat(64), name: "合成到场嘉宾" };
+  const walkInLookup = await request("/ops/v1/guest-checkin/lookup", "POST", walkIn);
+  assert.equal(walkInLookup.data.status, "WALK_IN_PHONE_REQUIRED");
+  assert.equal(db.collections.registrations.filter(row => row.batch_id === "class-walk-in").length, 0);
+  const walkInPayload = { ...walkIn, candidate_token: walkInLookup.data.walk_in_token, phone: "19900000009" };
+  const confirmWalkIn = payload => request("/ops/v1/guest-checkin/confirm", "POST", payload);
+  assert.equal((await confirmWalkIn({ ...walkInPayload, guest_id: "b".repeat(64) })).data.ok, false);
+  assert.equal((await confirmWalkIn({ ...walkInPayload, phone: "123" })).data.ok, false);
+  const guestAttempts = await Promise.all([confirmWalkIn(walkInPayload), confirmWalkIn(walkInPayload)]);
+  assert(guestAttempts.every(result => result.data.ok));
+  assert.equal(guestAttempts.filter(result => result.data.already).length, 1);
+  assert.equal(db.collections.registrations.filter(row => row.batch_id === "class-walk-in").length, 1);
+  assert.equal(db.collections.checkins.filter(row => row.batch_id === "class-walk-in").length, 1);
+  const guestFacts = await request("/ops/v1/attendance/records?event_id=class-walk-in", "GET", {}, process.env.SIGNIN_SERVICE_API_KEY);
+  assert.equal(guestFacts.data.items[0].participant_type, "GUEST");
+  assert.equal(guestFacts.data.items[0].score_eligible, false);
+  assert.equal(guestFacts.data.items[0].member_id, null);
+  assert(!JSON.stringify([guestFacts, guestAttempts]).includes(walkInPayload.phone));
+
+  // Outside a class meeting, name-based scanning requires existing enrollment.
   seedEvent("guest-scene"); seedRegistration("real-same-name", "guest-scene", { name: "同名来宾", registered_name: "同名来宾", platform_member_id: "", member_code: "", company: "示例企业", class_name: "一班" });
   const guestBody = { event_id: "guest-scene", guest_id: "a".repeat(64), name: "同名来宾" };
   assert.equal((await request("/ops/v1/guest-checkin/confirm", "POST", guestBody, "")).status, 401);

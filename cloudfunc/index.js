@@ -558,7 +558,7 @@ exports.main = async (event, context) => {
     return encoded + "." + crypto.createHmac("sha256", process.env.SIGNIN_PLATFORM_API_KEY).update(encoded).digest("base64url");
   }
 
-  function verifyGuestSelection(token, eventId, guestId, name) {
+  function verifyGuestSelection(token, eventId, guestId, name, purpose = "REGISTRATION_NAME_CHECKIN") {
     const parts = String(token || "").split(".");
     if (parts.length !== 2 || String(token).length > 2048) throw new Error("REGISTRATION_SELECTION_REQUIRED");
     const signature = Buffer.from(parts[1], "base64url");
@@ -566,8 +566,8 @@ exports.main = async (event, context) => {
     if (signature.length !== expected.length || !crypto.timingSafeEqual(signature, expected)) throw new Error("REGISTRATION_SELECTION_REQUIRED");
     const payload = JSON.parse(Buffer.from(parts[0], "base64url").toString("utf8"));
     const now = Math.floor(Date.now() / 1000);
-    if (payload.purpose !== "REGISTRATION_NAME_CHECKIN" || payload.event_id !== eventId || payload.guest_id !== guestId || payload.name !== normalizePersonName(name) || !payload.registration_id || !Number.isSafeInteger(payload.exp) || payload.exp <= now || payload.exp > now + 300) throw new Error("REGISTRATION_SELECTION_REQUIRED");
-    return String(payload.registration_id);
+    if (payload.purpose !== purpose || payload.event_id !== eventId || payload.guest_id !== guestId || payload.name !== normalizePersonName(name) || !Number.isSafeInteger(payload.exp) || payload.exp <= now || payload.exp > now + 300) throw new Error("REGISTRATION_SELECTION_REQUIRED");
+    return payload;
   }
 
   async function deliverCheckin(checkin) {
@@ -617,7 +617,7 @@ exports.main = async (event, context) => {
       const eventItem = await getEventById(row.batch_id);
       if (!eventItem) throw new Error("CHECKIN_EVENT_CLOSED");
       options.eventDocumentId = eventItem._id;
-      options.validateEvent = platformContext?.management && platformContext.operation === "manual_checkin"
+      options.validateEvent ??= platformContext?.management && platformContext.operation === "manual_checkin"
         ? canManuallyCheckIn
         : isPublicCheckinEligible;
     }
@@ -655,9 +655,9 @@ exports.main = async (event, context) => {
     }) };
   }
 
-  async function retryPendingCheckins() {
-    const pending = (await db.collection("checkins").where({ sync_state: "PENDING" }).orderBy("sync_next_retry_at", "asc").limit(40).get()).data || [];
-    const due = pending.filter(row => !row.sync_next_retry_at || Date.parse(row.sync_next_retry_at) <= Date.now()).slice(0, 40);
+  async function retryPendingCheckins(limit = 40) {
+    const pending = (await db.collection("checkins").where({ sync_state: "PENDING" }).orderBy("sync_next_retry_at", "asc").limit(limit).get()).data || [];
+    const due = pending.filter(row => !row.sync_next_retry_at || Date.parse(row.sync_next_retry_at) <= Date.now());
     let delivered = 0;
     for (const row of due) if (await deliverCheckin(row)) delivered++;
     return { pending_count: pending.length, attempted_count: due.length, delivered_count: delivered };
@@ -668,6 +668,11 @@ exports.main = async (event, context) => {
   }
 
   if (String(event.Type || event.type || '').toLowerCase()==='timer' && String(event.TriggerName||event.triggerName||'')==='konpaAutoConfirmEvery5Minutes') {
+    // Recover syncs even where the dedicated retry timer is not configured.
+    // Limit the batch to leave time for the scheduled Konpa confirmations.
+    let attendanceRetry;
+    try { attendanceRetry = await retryPendingCheckins(5); }
+    catch (_) { attendanceRetry = { error: "ATTENDANCE_RETRY_UNAVAILABLE" }; }
     const pending=await getAll('checkins',5000,{konpa_review:'PENDING'});
     const reviewed=await getAll('config',5000,{kind:'KONPA_REVIEW',status:'REVIEWED'});
     const jobs=[...pending.filter(r=>konpaPolicy.automaticDue(r,Date.now())),
@@ -688,7 +693,7 @@ exports.main = async (event, context) => {
         confirmed+=result.skipped?0:1;
       } catch (_) {failed++;}
     }
-    return {ok:failed===0,confirmed,failed};
+    return {ok:failed===0,confirmed,failed,attendance_retry:attendanceRetry};
   }
 
   if (isRosterTimer(event)) {
@@ -697,8 +702,8 @@ exports.main = async (event, context) => {
   }
 
   if (isScheduledAttendanceSyncEvent(event)) {
-    // Preserve the original scheduled pull's time budget. Durable retry uses
-    // its separate five-minute timer rather than preceding the full pull.
+    // Preserve the scheduled full pull's time budget. Pending records retry
+    // on a separate five-minute invocation.
     const result = await requestScheduledAttendanceSync();
     return {
       ok: true,
@@ -1529,7 +1534,7 @@ exports.main = async (event, context) => {
     if (method !== "POST") return { statusCode: 405, headers: h, body: JSON.stringify({ ok: false }) };
     if (!verifyServiceKey(event.headers, process.env.SIGNIN_PLATFORM_API_KEY)) return { statusCode: 401, headers: h, body: JSON.stringify({ ok: false, code: "SERVICE_AUTH_REQUIRED" }) };
     const eventId = String(data.event_id || "").trim(), guestId = String(data.guest_id || ""), name = String(data.name || "").trim();
-    if (Object.keys(data).some(key => !["event_id", "guest_id", "name", "candidate_token", "konpa_choice"].includes(key)) || !/^[a-f0-9]{64}$/.test(guestId) || !name || name.length > 120 || /[\x00-\x1f\x7f]/.test(name)) return { statusCode: 400, headers: h, body: JSON.stringify({ ok: false, msg: "报名信息无效" }) };
+    if (Object.keys(data).some(key => !["event_id", "guest_id", "name", "candidate_token", "konpa_choice", "phone"].includes(key)) || !/^[a-f0-9]{64}$/.test(guestId) || !name || name.length > 120 || /[\x00-\x1f\x7f]/.test(name)) return { statusCode: 400, headers: h, body: JSON.stringify({ ok: false, msg: "报名信息无效" }) };
     try {
       const eventItem = await getEventById(eventId);
       if (!isPublicCheckinEligible(eventItem)) {
@@ -1543,7 +1548,14 @@ exports.main = async (event, context) => {
       const rows = await rowsForBatch("registrations", eventId, 5000);
       // Previously self-created WeChat guest rows are not enrollment evidence.
       const eligible = rows.filter(row => row.registration_source !== "WECHAT_GUEST" && row.source !== "wechat_guest" && namedRegistrationMatches(row, name));
+      const allowsWalkIn = item => isPublicCheckinEligible(item) && isClassMeetingEvent(item) && !isKonpaSession(item);
+      const selection = { event_id: eventId, guest_id: guestId, name: normalizePersonName(name), exp: Math.floor(Date.now() / 1000) + 300 };
       if (p.endsWith("/lookup")) {
+        if (!eligible.length && allowsWalkIn(eventItem)) {
+          return { statusCode: 200, headers: h, body: JSON.stringify({ ok: true, candidates: [],
+            status: "WALK_IN_PHONE_REQUIRED", msg: "未找到报名姓名，请填写手机号后确认嘉宾签到",
+            walk_in_token: guestSelectionToken({ ...selection, purpose: "CLASS_MEETING_WALK_IN" }) }) };
+        }
         const checkins = eligible.length === 1
           ? await checkinsForRegistration(eventId, eligible[0]._id)
           : eligible.length ? await rowsForBatch("checkins", eventId, 5000) : [];
@@ -1551,12 +1563,32 @@ exports.main = async (event, context) => {
           const checked = checkins.find(item => String(item.registration_id) === String(row._id));
           const candidate = nameCheckinCandidate(row, eventItem, checked && checked.checked_at, false);
           delete candidate.phone_last4;
-          candidate.candidate_token = guestSelectionToken({ purpose: "REGISTRATION_NAME_CHECKIN", event_id: eventId, guest_id: guestId, name: normalizePersonName(name), registration_id: String(row._id), exp: Math.floor(Date.now() / 1000) + 300 });
+          candidate.candidate_token = guestSelectionToken({ ...selection, purpose: "REGISTRATION_NAME_CHECKIN", registration_id: String(row._id) });
           return candidate;
         });
         return { statusCode: 200, headers: h, body: JSON.stringify({ ok: true, candidates, status: candidates.length ? "REGISTERED" : "NOT_REGISTERED", msg: candidates.length ? "请核对报名信息并确认本人签到" : "本次报名名单中未找到该姓名，请确认是否报名，或联系工作人员" }) };
       }
-      const registrationId = verifyGuestSelection(data.candidate_token, eventId, guestId, name);
+      if (data.phone !== undefined) {
+        verifyGuestSelection(data.candidate_token, eventId, guestId, name, "CLASS_MEETING_WALK_IN");
+        if (!allowsWalkIn(eventItem) || eligible.length) throw new Error("REGISTRATION_SELECTION_REQUIRED");
+        if (typeof data.phone !== "string" || !/^1\d{10}$/.test(data.phone)) {
+          return { statusCode: 200, headers: h, body: JSON.stringify({ ok: false, msg: "请输入有效的11位手机号" }) };
+        }
+        const registrationId = "wx_guest_" + crypto.createHash("sha256").update(eventId + "\u001f" + guestId).digest("hex").slice(0, 48);
+        const now = new Date().toISOString();
+        const registration = { batch_id: eventId, name, registered_name: name, phone: data.phone,
+          event_class_org_unit_id: eventItem.class_org_unit_id || "", attendance_role: ATTENDANCE_ROLES.GUEST,
+          registration_source: "WECHAT_GUEST", source: "wechat_guest", created_at: now };
+        const saved = await saveCheckin({ ...registration, registration_id: registrationId,
+          actual_attendee_name: name, checked_at: now, checkin_source: "WECHAT_GUEST" }, null, {
+          guestRegistration: registration, validateEvent: allowsWalkIn,
+          validateRegistration: current => current.registration_source === "WECHAT_GUEST" &&
+            namedRegistrationMatches(current, name) && current.phone === data.phone
+        });
+        return checkinConfirmation({ name, event: publicEvent(eventItem), attendance_role: ATTENDANCE_ROLES.GUEST },
+          saved.checkin, saved.already, saved.syncStatus, saved.already ? "您已签到，无需重复操作" : "嘉宾签到成功");
+      }
+      const registrationId = verifyGuestSelection(data.candidate_token, eventId, guestId, name).registration_id;
       const registration = eligible.find(row => String(row._id) === registrationId);
       if (!registration) return { statusCode: 409, headers: h, body: JSON.stringify({ ok: false, code: "REGISTRATION_CHANGED", msg: "报名信息已变化，请重新核对" }) };
       const response = await exports.main({ path: "/checkin/confirm", httpMethod: "POST", headers: {}, body: JSON.stringify({ event_id: eventId, registration_id: registrationId, name }) }, { [TRUSTED_CONTEXT]: { konpa_native: true, konpa_choice: data.konpa_choice, service_request: true, management: false } });
@@ -1567,6 +1599,12 @@ exports.main = async (event, context) => {
       }
       return response;
     } catch (error) {
+      if (data.phone !== undefined && ["REGISTRATION_SELECTION_REQUIRED", "CHECKIN_REGISTRATION_CHANGED"].includes(error.message)) {
+        const msg = error.message === "CHECKIN_REGISTRATION_CHANGED"
+          ? "当前微信已登记本场嘉宾签到，请核对原姓名和手机号"
+          : "签到信息已变化，请重新按姓名查询";
+        return { statusCode: 200, headers: h, body: JSON.stringify({ ok: false, msg }) };
+      }
       return { statusCode: error.message === "REGISTRATION_SELECTION_REQUIRED" ? 409 : 503, headers: h, body: JSON.stringify({ ok: false, msg: "请先核对本场报名信息，再确认签到；无法匹配时请联系工作人员" }) };
     }
   }
