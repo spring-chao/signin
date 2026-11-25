@@ -107,6 +107,41 @@ async function withUnavailablePostCommitList(eventId, action) {
   delete process.env.SIGNIN_LEGACY_URL;
   delete process.env.SIGNIN_DEPLOYMENT_MODE; delete process.env.SIGNIN_CLOUDBASE_ENV_ID;
   seedEvent("manual-isolated");
+  const arrivalPath = "/ops/v1/class-arrival";
+  const family = { activity_type: "class_meeting", event_group_id: "arrival-family" };
+  seedEvent("arrival", { ...family, session_code: "AFTERNOON" });
+  seedEvent("arrival-konpa", { ...family, session_code: "KONPA", scheduled_end_at: new Date(Date.now() + 3600000).toISOString() });
+  seedRegistration("arrival-r", "arrival", { attendance_role: "HOME_CLASS_MEMBER" });
+  seedRegistration("arrival-self", "arrival", { attendance_role: "CROSS_CLASS_MEMBER", platform_member_id: "9", member_code: "M9" });
+  seedRegistration("arrival-guest", "arrival", { attendance_role: "GUEST", platform_member_id: "8" });
+  const arrival = { class_ids: ["class-1"], class_id: "class-1", actor_id: "9",
+    member_ids: ["11", "9", "8"], target_id: "11", event_id: "arrival" };
+  const sendArrival = (action, extra = {}, key) => request(arrivalPath, "POST", { ...arrival, action, ...extra }, key);
+  assert.equal((await sendArrival("roster", {}, "")).status, 401);
+  assert.equal((await sendArrival("roster", { class_ids: ["class-2"] })).data.ok, false);
+  assert.deepEqual((await sendArrival("roster")).data.rows.map(row => row.member_id).sort(), ["11", "9"]);
+  assert.equal((await sendArrival("confirm", { target_id: "8" })).data.ok, false);
+  process.env.KONPA_INTENT_ENABLED = "true";
+  const arrivals = await Promise.all([sendArrival("confirm", { konpa_choice: true }), sendArrival("confirm")]);
+  assert.ok(arrivals.every(result => result.data.ok));
+  const facts = db.collections.checkins.filter(row => row.batch_id === "arrival");
+  assert.equal(facts.length, 1);
+  assert.equal(facts[0].checkin_source, "CLASS_STAFF_CONFIRM");
+  assert.equal(facts[0].confirmed_by_member_id, "9");
+  assert.equal(facts[0].konpa_choice, undefined);
+  assert.equal(db.collections.event_audit_logs.filter(row => row.action === "class_arrival.confirm").length, 1);
+  assert.equal((await sendArrival("personal_konpa", { target_id: "9", konpa_choice: true })).data.ok, false);
+  assert.equal((await sendArrival("personal_konpa", { konpa_choice: true })).data.ok, true);
+  assert.equal((await sendArrival("confirm", { target_id: "9" })).data.ok, false);
+  assert.equal((await sendArrival("confirm", { target_id: "9", konpa_choice: false })).data.ok, true);
+  assert.equal(db.collections.checkins.find(row => row.registration_id === "arrival-self").checkin_source, "SELF_CONFIRM");
+  const visiting = { actor_id: "6", target_id: "6", member_ids: ["6"],
+    actor_member: { name: "跨班任职学长", member_code: "M6", home_class_org_unit_id: "class-2" },
+    konpa_choice: false };
+  assert.equal((await sendArrival("roster", visiting)).data.rows[0].self, true);
+  assert.equal((await sendArrival("confirm", visiting)).data.ok, true);
+  assert.equal(db.collections.checkins.find(row => row.platform_member_id === "6").home_class_org_unit_id, "class-2");
+  delete process.env.KONPA_INTENT_ENABLED;
   for (let i = 0; i < 5000; i++) seedRegistration("historical-" + i, "historical");
   seedRegistration("imported-manual", "manual-isolated", { name: "人工验收甲", registered_name: "人工验收甲", platform_member_id: "", member_code: "", class_name: "隔离一班", group_name: "隔离组", group_num: 4, dinner_table_num: 7, phone: "", company: "" });
   seedRegistration("other-manual", "manual-isolated", { name: "人工验收乙", registered_name: "人工验收乙", platform_member_id: "", member_code: "" });
