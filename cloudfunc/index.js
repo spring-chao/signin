@@ -4167,6 +4167,35 @@ exports.main = async (event, context) => {
         }
       }
 
+      // Old uploaded rosters may lack a member ID. An assisted check-in does
+      // not have a logged-in attendee, so use the saved attendee's name and
+      // phone with the same unique-match service used for verified imports.
+      const manualIdentityLookups = new Set();
+      const unresolvedManual = [];
+      for (const reg of registrations) {
+        const ck = checkinMap[String(reg._id)];
+        if (!ck || ck.checkin_source !== "MANUAL" || ck.platform_member_id || ck.member_code ||
+            reg.platform_member_id || reg.member_code ||
+            [reg.attendance_role, ck.attendance_role].some(role => [ATTENDANCE_ROLES.GUEST,
+              ATTENDANCE_ROLES.EVENT_TEAM_MEMBER, ATTENDANCE_ROLES.COURSE_TEAM_MEMBER].includes(role)) ||
+            reg.registration_source === "WECHAT_GUEST" || reg.source === "wechat_guest") continue;
+        manualIdentityLookups.add(String(reg._id));
+        const name = String(ck.actual_attendee_name || ck.name || "").trim();
+        const phone = normalizePhone(ck.phone);
+        if (name && /^1\d{10}$/.test(phone)) unresolvedManual.push({ _id: reg._id, name, phone });
+      }
+      const verifiedManual = new Map();
+      if (unresolvedManual.length) {
+        try {
+          for (const match of await resolveRegistrationMembers(session_id, unresolvedManual)) {
+            verifiedManual.set(String(match.registration_id), match);
+          }
+        } catch (error) {
+          // A transient identity outage must leave delivery eligible for retry.
+          return { statusCode: 503, headers: h, body: JSON.stringify({ detail: "报名身份核验暂不可用，请稍后同步" }) };
+        }
+      }
+
       const items = registrations.map(function(reg) {
         const ck = checkinMap[String(reg._id)] || null;
         const checkedIn = !!ck;
@@ -4177,14 +4206,16 @@ exports.main = async (event, context) => {
         const attendanceRole = Object.prototype.hasOwnProperty.call(ATTENDANCE_ROLES, storedRole) ? storedRole : "MEMBER";
         const crossClass = attendanceRole === ATTENDANCE_ROLES.CROSS_CLASS_MEMBER;
         const teamMember = [ATTENDANCE_ROLES.EVENT_TEAM_MEMBER, ATTENDANCE_ROLES.COURSE_TEAM_MEMBER].includes(attendanceRole);
-        const memberId = String(ck && ck.platform_member_id || (!teamMember && reg.platform_member_id) || "");
-        const memberCode = String(ck && ck.member_code || (!teamMember && reg.member_code) || "");
+        const match = verifiedManual.get(String(reg._id));
+        const memberId = String(ck && ck.platform_member_id || (!teamMember && reg.platform_member_id) || match?.platform_member_id || "");
+        const memberCode = String(ck && ck.member_code || (!teamMember && reg.member_code) || match?.member_code || "");
         return {
           external_record_id: String(reg._id),
           external_registration_id: String(reg._id),
           member_code: memberCode,
           member_id: /^\d+$/.test(memberId) ? Number(memberId) : null,
           platform_member_id: memberId || null,
+          ...(manualIdentityLookups.has(String(reg._id)) ? { member_identity_source: "MANUAL_REGISTRATION_LOOKUP" } : {}),
           name: ck && (ck.actual_attendee_name || ck.name) || reg.actual_attendee_name || reg.name || "",
           registered_name: reg.registered_name || reg.name || "",
           actual_attendee_name: ck && (ck.actual_attendee_name || ck.name) || reg.actual_attendee_name || "",

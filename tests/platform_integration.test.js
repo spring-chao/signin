@@ -26,6 +26,11 @@ let immediateCalls = [], failSync = false, blockedOps = false;
 api._test.setPlatformRequestHandler(async (path, body) => {
   immediateCalls.push({ path, body });
   if (failSync) throw new Error("isolated platform outage");
+  if (body.event_id === "assisted-history") {
+    const pull = await request(`/ops/v1/attendance/records?event_id=${body.event_id}&registration_id=${body.registration_id}`,
+      "GET", {}, process.env.SIGNIN_SERVICE_API_KEY);
+    if (pull.status !== 200) throw new Error("isolated identity lookup unavailable");
+  }
   return { success: true, data: { status: "SUCCESS", received_sessions: 1 } };
 });
 api._test.setRequestOpsHandler(async (path, params) => {
@@ -164,6 +169,38 @@ async function withUnavailablePostCommitList(eventId, action) {
   assert.equal(manualAfter.rows.find(row => row.registration_id === "other-manual").checked, false);
   assert.equal((await manage("manual_checkin", {event_id: "manual-isolated", registration_id: "imported-manual"})).data.already, true);
   assert.equal((await manage("event_detail", { event_id: "manual-isolated" })).data.total, 2);
+
+  seedEvent("assisted-history", { activity_type: "anniversary" });
+  const legacyIdentity = { name: "已核验报名学员", registered_name: "已核验报名学员",
+    phone: "19900000001", platform_member_id: "", member_code: "" };
+  seedRegistration("legacy-assisted", "assisted-history", legacyIdentity);
+  seedRegistration("unverified-assisted", "assisted-history", { ...legacyIdentity, phone: "" });
+  seedRegistration("guest-assisted", "assisted-history", { ...legacyIdentity, attendance_role: "GUEST" });
+  const assisted = registration_id => manage("manual_checkin", { event_id: "assisted-history", registration_id });
+  const pullAssisted = () => request("/ops/v1/attendance/records?event_id=assisted-history", "GET", {}, process.env.SIGNIN_SERVICE_API_KEY);
+  blockedOps = true;
+  assert.equal((await assisted("legacy-assisted")).data.sync_status, "PENDING");
+  assert.equal((await pullAssisted()).status, 503);
+  blockedOps = false;
+  assert.equal((await assisted("unverified-assisted")).data.ok, true);
+  assert.equal((await assisted("guest-assisted")).data.ok, true);
+  const matchedPull = await pullAssisted();
+  const matched = matchedPull.data.items.find(row => row.external_record_id === "legacy-assisted");
+  assert.equal(matched.member_id, 52);
+  assert.equal(matched.member_code, "M52");
+  assert.equal(matched.member_identity_source, "MANUAL_REGISTRATION_LOOKUP");
+  assert.equal(matched.attendance_status, "PRESENT");
+  assert.equal(matched.checkin_source, "MANUAL");
+  assert.equal(matched.score_eligible, true);
+  assert.equal(matchedPull.data.items.find(row => row.external_record_id === "unverified-assisted").member_id, null);
+  assert.equal(matchedPull.data.items.find(row => row.external_record_id === "guest-assisted").member_id, null);
+  assert(!JSON.stringify(matchedPull).includes(legacyIdentity.phone));
+  const historical = db.collections.checkins.find(row => row.registration_id === "legacy-assisted");
+  assert.equal(historical.platform_member_id, "", "sync never rewrites the original attendance fact");
+  assert.equal(matched.checked_at, historical.checked_at);
+  assert.equal((await assisted("legacy-assisted")).data.already, true);
+  assert.equal(db.collections.checkins.filter(row => row.registration_id === "legacy-assisted").length, 1);
+
   for (const [days, status, expected] of [[29, "CONFIRMED", true], [31, "CONFIRMED", false], [1, "CANCELLED", false], [1, "DRAFT", false]]) {
     const id = `manual-window-${days}-${status}`;
     seedEvent(id, {
